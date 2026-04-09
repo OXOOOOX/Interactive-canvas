@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Mindmap Studio</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="local.config.js" defer></script>
+    <script type="module" src="app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>语音交互思维导图工作台</h1>
+      <p>
+        通过语音和大模型对话，动态生成思维导图、附注与内容；支持手动编辑与多供应商 API 配置。
+      </p>
+    </header>
+
+    <main>
+      <section class="panel">
+        <h2>1) 供应商与接口配置</h2>
+        <div class="grid-two">
+          <label>
+            LLM 供应商
+            <select id="llmProvider">
+              <option value="tongyi" selected>通义千问 (Qwen)</option>
+              <option value="doubao">豆包 (Doubao)</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+
+          <label>
+            转写(STT)供应商
+            <select id="sttProvider">
+              <option value="tongyi" selected>通义千问</option>
+              <option value="doubao">豆包</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+
+          <label>
+            语音合成(TTS)供应商
+            <select id="ttsProvider">
+              <option value="tongyi" selected>通义千问</option>
+              <option value="doubao">豆包</option>
+              <option value="browser">浏览器内置语音</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+
+          <label>
+            API Key
+            <input id="apiKey" type="password" placeholder="可留空，之后配置" />
+          </label>
+
+          <label class="span-two">
+            LLM Endpoint
+            <input id="llmEndpoint" type="url" placeholder="例如: https://dashscope.aliyuncs.com/..." />
+          </label>
+          <label class="span-two">
+            STT Endpoint
+            <input id="sttEndpoint" type="url" placeholder="例如: https://api.volcengine.com/..." />
+          </label>
+          <label class="span-two">
+            TTS Endpoint
+            <input id="ttsEndpoint" type="url" placeholder="例如: https://dashscope.aliyuncs.com/..." />
+          </label>
+        </div>
+
+        <details>
+          <summary>OAuth（可选，支持 CODEX / antigravity 风格）</summary>
+          <div class="grid-two top-gap">
+            <label>
+              OAuth 提供方
+              <select id="oauthProvider">
+                <option value="none" selected>不使用</option>
+                <option value="codex">OAuth CODEX</option>
+                <option value="antigravity">OAuth-antigravity</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label>
+              Client ID
+              <input id="oauthClientId" type="text" placeholder="应用 client_id" />
+            </label>
+            <label class="span-two">
+              Authorize URL
+              <input id="oauthAuthUrl" type="url" placeholder="https://.../authorize" />
+            </label>
+            <label class="span-two">
+              Token URL
+              <input id="oauthTokenUrl" type="url" placeholder="https://.../token" />
+            </label>
+            <label>
+              Scope
+              <input id="oauthScope" type="text" value="openid profile" />
+            </label>
+            <label>
+              Redirect URI
+              <input id="oauthRedirect" type="url" />
+            </label>
+          </div>
+          <div class="actions top-gap">
+            <button id="oauthStart">开始 OAuth 登录</button>
+            <button id="oauthExchange">用回调 code 换 token</button>
+            <input id="oauthCode" type="text" placeholder="粘贴回调里的 code" />
+          </div>
+        </details>
+
+        <div class="actions">
+          <button id="saveConfig">保存配置</button>
+          <button id="loadConfig">加载配置</button>
+          <button id="resetDemo">加载演示数据</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>2) 语音对话与实时编辑</h2>
+        <div class="actions">
+          <button id="recordBtn">🎤 开始录音</button>
+          <button id="sendTextBtn">发送文本</button>
+          <button id="speakBtn">🔊 朗读最新回复</button>
+        </div>
+
+        <label>
+          手动输入（可编辑）
+          <textarea id="inputBox" rows="3" placeholder="例如：帮我围绕‘创业计划’生成一份思维导图，并加入市场分析注释"></textarea>
+        </label>
+
+        <div class="grid-two">
+          <div>
+            <h3>会话日志</h3>
+            <ul id="chatLog"></ul>
+          </div>
+          <div>
+            <h3>附注列表（双击可编辑）</h3>
+            <ul id="noteList"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>3) 交互式块画布（Canvas）</h2>
+        <p>
+          模型应返回 JSON（包含 <code>title</code>/<code>nodes</code>/<code>notes</code>）。节点支持拖拽，支持增删节点。
+        </p>
+        <div class="actions">
+          <button id="addChild">为选中块新增子块</button>
+          <button id="addSibling">为选中块新增同级块</button>
+          <button id="deleteNode">删除选中块</button>
+        </div>
+        <textarea id="mindmapJson" rows="12"></textarea>
+        <div class="actions">
+          <button id="applyJson">应用 JSON 到画布</button>
+          <button id="downloadJson">下载当前思维导图 JSON</button>
+        </div>
+        <div id="mindmapView" class="mindmap-view">
+          <svg id="linkLayer"></svg>
+          <div id="blockCanvas" class="block-canvas"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <small>
+        提示：本项目默认将配置保存在 localStorage，建议把 API Key 改为服务端代理后再上线。
+      </small>
+    </footer>
+  </body>
+</html>

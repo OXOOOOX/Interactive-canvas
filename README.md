@@ -7,6 +7,7 @@
 - ✍️ 双击可编辑节点标题、导图标题、附注。
 - ➕ 支持对选中块新增子块/同级块、删除块。
 - 🔌 可切换通义千问 / 豆包 / 自定义 API（LLM、STT、TTS 分离配置）。
+- ⚙️ 选择供应商后会自动填充 Endpoint，你只需要选择供应商 + 输入 API Key（选自定义时可手动改 Endpoint）。
 - 🔐 提供 OAuth 配置位（支持 CODEX / antigravity / 自定义）与 code 换 token 示例流程。
 
 ## 快速开始
@@ -21,7 +22,7 @@ python3 -m http.server 8080
 ## 页面能力
 
 1. **配置区**
-   - 选择 LLM、STT、TTS 供应商。
+   - 选择 LLM、STT、TTS 供应商（会自动填充默认 Endpoint）。
    - 填写 API Key 与各自 Endpoint。
    - 配置 OAuth 参数（可选），执行授权与 code 换 token。
    - 支持保存/加载 localStorage 配置。

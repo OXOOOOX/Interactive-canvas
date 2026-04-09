@@ -172,3 +172,9 @@ footer {
   padding: 0.5rem 0 2rem;
   color: var(--muted);
 }
+
+
+input:read-only {
+  opacity: 0.8;
+  border-style: dashed;
+}

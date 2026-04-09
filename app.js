@@ -2,6 +2,20 @@ const STORAGE_KEY = "voice-mindmap-config-v1";
 const BLOCK_WIDTH = 220;
 const BLOCK_HEIGHT = 72;
 
+const ENDPOINT_PRESETS = {
+  tongyi: {
+    llm: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    stt: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+    tts: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+  },
+  doubao: {
+    llm: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    stt: "https://openspeech.bytedance.com/api/v1/vc/ata/submit",
+    tts: "https://openspeech.bytedance.com/api/v1/tts",
+  },
+};
+
+
 const dom = {
   llmProvider: document.querySelector("#llmProvider"),
   sttProvider: document.querySelector("#sttProvider"),
@@ -89,8 +103,32 @@ function applyLocalConfig() {
     log("system", "已从 local.config.js 注入 DASHSCOPE_KEY（仅本地）");
   }
   if (!dom.llmEndpoint.value && cfg.DEFAULT_LLM_ENDPOINT) dom.llmEndpoint.value = cfg.DEFAULT_LLM_ENDPOINT;
-if (!dom.sttEndpoint.value && cfg.DEFAULT_STT_ENDPOINT) dom.sttEndpoint.value = cfg.DEFAULT_STT_ENDPOINT;
-if (!dom.ttsEndpoint.value && cfg.DEFAULT_TTS_ENDPOINT) dom.ttsEndpoint.value = cfg.DEFAULT_TTS_ENDPOINT;
+  if (!dom.sttEndpoint.value && cfg.DEFAULT_STT_ENDPOINT) dom.sttEndpoint.value = cfg.DEFAULT_STT_ENDPOINT;
+  if (!dom.ttsEndpoint.value && cfg.DEFAULT_TTS_ENDPOINT) dom.ttsEndpoint.value = cfg.DEFAULT_TTS_ENDPOINT;
+}
+
+
+
+function applyProviderPreset() {
+  const llmPreset = ENDPOINT_PRESETS[dom.llmProvider.value]?.llm || "";
+  const sttPreset = ENDPOINT_PRESETS[dom.sttProvider.value]?.stt || "";
+  const ttsPreset = ENDPOINT_PRESETS[dom.ttsProvider.value]?.tts || "";
+
+  const llmCustom = dom.llmProvider.value === "custom";
+  const sttCustom = dom.sttProvider.value === "custom";
+  const ttsCustom = dom.ttsProvider.value === "custom" || dom.ttsProvider.value === "browser";
+
+  dom.llmEndpoint.readOnly = !llmCustom;
+  dom.sttEndpoint.readOnly = !sttCustom;
+  dom.ttsEndpoint.readOnly = !ttsCustom;
+
+  if (!llmCustom) dom.llmEndpoint.value = llmPreset;
+  if (!sttCustom) dom.sttEndpoint.value = sttPreset;
+  if (!ttsCustom) dom.ttsEndpoint.value = ttsPreset;
+
+  dom.llmEndpoint.title = llmCustom ? "自定义可编辑" : "已根据供应商自动配置";
+  dom.sttEndpoint.title = sttCustom ? "自定义可编辑" : "已根据供应商自动配置";
+  dom.ttsEndpoint.title = ttsCustom ? "自定义可编辑" : "已根据供应商自动配置";
 }
 
 function getConfig() {
@@ -577,6 +615,9 @@ dom.resetDemo.onclick = () => {
 dom.addChild.onclick = addChildNode;
 dom.addSibling.onclick = addSiblingNode;
 dom.deleteNode.onclick = deleteNode;
+dom.llmProvider.onchange = applyProviderPreset;
+dom.sttProvider.onchange = applyProviderPreset;
+dom.ttsProvider.onchange = applyProviderPreset;
 dom.saveConfig.onclick = saveConfig;
 dom.loadConfig.onclick = loadConfig;
 
@@ -601,6 +642,7 @@ dom.oauthExchange.onclick = async () => {
 (function init() {
   dom.oauthRedirect.value = location.origin + location.pathname;
   loadConfig();
+  applyProviderPreset();
   applyLocalConfig();
   ensureLayout(appState.map);
   appState.selectedNodeId = traverse(appState.map.nodes)[0]?.node.id || "";

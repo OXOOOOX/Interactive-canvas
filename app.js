@@ -298,16 +298,74 @@ function syncMapToTextarea(render = true) {
   if (render) renderMindmap();
 }
 
+
+
+function extractAssistantText(payload) {
+  if (!payload) return "";
+  if (typeof payload === "string") return payload;
+  if (typeof payload.output_text === "string") return payload.output_text;
+  if (typeof payload.text === "string") return payload.text;
+
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => (typeof part === "string" ? part : part?.text || "")).join("\n");
+  }
+
+  return JSON.stringify(payload);
+}
+
+function normalizeNode(node) {
+  if (!node || typeof node !== "object") {
+    return { id: crypto.randomUUID(), label: "未命名节点", x: 120, y: 80, children: [] };
+  }
+
+  const normalized = {
+    id: String(node.id || crypto.randomUUID()),
+    label: String(node.label || "未命名节点"),
+    x: Number.isFinite(node.x) ? node.x : 120,
+    y: Number.isFinite(node.y) ? node.y : 80,
+    children: [],
+  };
+
+  if (Array.isArray(node.children)) {
+    normalized.children = node.children
+      .filter((child) => child !== null && child !== undefined)
+      .map((child) => {
+        if (typeof child === "object") return normalizeNode(child);
+        return {
+          id: String(child),
+          label: `节点 ${child}`,
+          x: normalized.x + 240,
+          y: normalized.y + 120,
+          children: [],
+        };
+      });
+  }
+
+  return normalized;
+}
+
 function tryParseModelJson(text) {
-  const match = text.match(/\{[\s\S]*\}/);
+  if (!text || typeof text !== "string") return null;
+
+  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
   if (!match) return null;
+
   try {
     const parsed = JSON.parse(match[0]);
-    if (parsed.title && Array.isArray(parsed.nodes) && Array.isArray(parsed.notes)) return parsed;
+    const maybeMap = parsed?.title && parsed?.nodes ? parsed : parsed?.data || parsed;
+    if (!maybeMap?.title || !Array.isArray(maybeMap.nodes)) return null;
+
+    return {
+      title: String(maybeMap.title),
+      nodes: maybeMap.nodes.map((node) => normalizeNode(node)),
+      notes: Array.isArray(maybeMap.notes) ? maybeMap.notes.map((n) => String(n)) : [],
+    };
   } catch {
     return null;
   }
-  return null;
 }
 
 async function callLlm(promptText) {
@@ -338,7 +396,7 @@ async function callLlm(promptText) {
 
   if (!res.ok) throw new Error(`LLM 请求失败: ${res.status}`);
   const data = await res.json();
-  return data.output_text || data.text || JSON.stringify(data);
+  return extractAssistantText(data);
 }
 
 async function transcribe(audioBlob) {
@@ -448,7 +506,7 @@ async function processUserPrompt(text) {
       syncMapToTextarea();
       log("system", "已根据模型输出更新块画布");
     } else {
-      log("system", "模型返回不是标准 JSON，未自动覆盖导图");
+      log("system", "模型返回不是标准 JSON（或结构不完整），未自动覆盖导图");
     }
   } catch (error) {
     log("error", error.message);

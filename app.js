@@ -1,4 +1,6 @@
 const STORAGE_KEY = "voice-mindmap-config-v1";
+const BLOCK_WIDTH = 220;
+const BLOCK_HEIGHT = 72;
 
 const dom = {
   llmProvider: document.querySelector("#llmProvider"),
@@ -26,6 +28,11 @@ const dom = {
   noteList: document.querySelector("#noteList"),
   mindmapJson: document.querySelector("#mindmapJson"),
   mindmapView: document.querySelector("#mindmapView"),
+  blockCanvas: document.querySelector("#blockCanvas"),
+  linkLayer: document.querySelector("#linkLayer"),
+  addChild: document.querySelector("#addChild"),
+  addSibling: document.querySelector("#addSibling"),
+  deleteNode: document.querySelector("#deleteNode"),
   applyJson: document.querySelector("#applyJson"),
   downloadJson: document.querySelector("#downloadJson"),
   oauthStart: document.querySelector("#oauthStart"),
@@ -39,16 +46,52 @@ let appState = {
       {
         id: crypto.randomUUID(),
         label: "核心主题",
+        x: 360,
+        y: 80,
         children: [
-          { id: crypto.randomUUID(), label: "分支 A", children: [] },
-          { id: crypto.randomUUID(), label: "分支 B", children: [] },
+          { id: crypto.randomUUID(), label: "分支 A", x: 100, y: 240, children: [] },
+          { id: crypto.randomUUID(), label: "分支 B", x: 620, y: 240, children: [] },
         ],
       },
     ],
-    notes: ["双击附注可以修改", "按录音按钮后可触发语音流程"],
+    notes: ["双击附注可以修改", "拖拽块可以重新布局"],
   },
+  selectedNodeId: "",
   lastAssistantReply: "",
 };
+
+function traverse(nodes, parent = null, acc = []) {
+  nodes.forEach((node, index) => {
+    acc.push({ node, parent, index });
+    if (Array.isArray(node.children) && node.children.length) {
+      traverse(node.children, node, acc);
+    }
+  });
+  return acc;
+}
+
+function ensureLayout(map) {
+  const nodes = traverse(map.nodes);
+  nodes.forEach(({ node }, i) => {
+    if (!node.id) node.id = crypto.randomUUID();
+    if (typeof node.x !== "number") node.x = 120 + (i % 4) * 260;
+    if (typeof node.y !== "number") node.y = 80 + Math.floor(i / 4) * 150;
+    if (!Array.isArray(node.children)) node.children = [];
+  });
+}
+
+
+
+function applyLocalConfig() {
+  const cfg = window.__LOCAL_CONFIG__ || {};
+  if (!dom.apiKey.value && typeof cfg.DASHSCOPE_KEY === "string") {
+    dom.apiKey.value = cfg.DASHSCOPE_KEY;
+    log("system", "已从 local.config.js 注入 DASHSCOPE_KEY（仅本地）");
+  }
+  if (!dom.llmEndpoint.value && cfg.DEFAULT_LLM_ENDPOINT) dom.llmEndpoint.value = cfg.DEFAULT_LLM_ENDPOINT;
+if (!dom.sttEndpoint.value && cfg.DEFAULT_STT_ENDPOINT) dom.sttEndpoint.value = cfg.DEFAULT_STT_ENDPOINT;
+if (!dom.ttsEndpoint.value && cfg.DEFAULT_TTS_ENDPOINT) dom.ttsEndpoint.value = cfg.DEFAULT_TTS_ENDPOINT;
+}
 
 function getConfig() {
   return {
@@ -71,9 +114,7 @@ function getConfig() {
 
 function setConfig(config) {
   for (const [key, value] of Object.entries(config)) {
-    if (dom[key] && typeof value === "string") {
-      dom[key].value = value;
-    }
+    if (dom[key] && typeof value === "string") dom[key].value = value;
   }
 }
 
@@ -115,34 +156,66 @@ function renderNotes() {
   });
 }
 
-function createNodeEl(node) {
-  const li = document.createElement("li");
-  li.className = "mm-node";
+function drawLinks(flat) {
+  dom.linkLayer.innerHTML = "";
+  const rect = dom.mindmapView.getBoundingClientRect();
+  dom.linkLayer.setAttribute("viewBox", `0 0 ${Math.max(rect.width, 1100)} ${Math.max(rect.height, 900)}`);
 
-  const label = document.createElement("span");
-  label.className = "mm-label";
-  label.textContent = node.label;
-  label.ondblclick = () => {
-    const edited = prompt("编辑节点标签", node.label);
-    if (edited !== null) {
-      node.label = edited;
-      syncMapToTextarea();
-    }
-  };
+  flat.forEach(({ node, parent }) => {
+    if (!parent) return;
+    const x1 = parent.x + BLOCK_WIDTH / 2;
+    const y1 = parent.y + BLOCK_HEIGHT;
+    const x2 = node.x + BLOCK_WIDTH / 2;
+    const y2 = node.y;
+    const midY = (y1 + y2) / 2;
 
-  li.append(label);
-  if (node.children?.length) {
-    const ul = document.createElement("ul");
-    node.children.forEach((child) => ul.append(createNodeEl(child)));
-    li.append(ul);
-  }
-  return li;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute(
+      "d",
+      `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`,
+    );
+    path.setAttribute("stroke", "#38bdf8");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("fill", "none");
+    path.setAttribute("opacity", "0.9");
+    dom.linkLayer.append(path);
+  });
+}
+
+function attachDrag(block, node) {
+  let dragging = false;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  block.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    block.setPointerCapture(event.pointerId);
+    offsetX = event.clientX - node.x;
+    offsetY = event.clientY - node.y;
+  });
+
+  block.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    node.x = Math.max(0, event.clientX - offsetX + dom.mindmapView.scrollLeft);
+    node.y = Math.max(0, event.clientY - offsetY + dom.mindmapView.scrollTop);
+    block.style.left = `${node.x}px`;
+    block.style.top = `${node.y}px`;
+    drawLinks(traverse(appState.map.nodes));
+  });
+
+  block.addEventListener("pointerup", () => {
+    dragging = false;
+    syncMapToTextarea(false);
+  });
 }
 
 function renderMindmap() {
-  dom.mindmapView.innerHTML = "";
-  const title = document.createElement("h3");
-  title.textContent = appState.map.title;
+  ensureLayout(appState.map);
+  dom.blockCanvas.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "mm-title";
+  title.textContent = `主题：${appState.map.title}（双击此处改标题）`;
   title.ondblclick = () => {
     const edited = prompt("编辑思维导图标题", appState.map.title);
     if (edited !== null) {
@@ -150,19 +223,41 @@ function renderMindmap() {
       syncMapToTextarea();
     }
   };
-  dom.mindmapView.append(title);
+  dom.blockCanvas.append(title);
 
-  const ul = document.createElement("ul");
-  ul.className = "mm-root";
-  appState.map.nodes.forEach((node) => ul.append(createNodeEl(node)));
-  dom.mindmapView.append(ul);
+  const flat = traverse(appState.map.nodes);
+  flat.forEach(({ node }) => {
+    const block = document.createElement("article");
+    block.className = "mm-block";
+    if (node.id === appState.selectedNodeId) block.classList.add("selected");
+    block.style.left = `${node.x}px`;
+    block.style.top = `${node.y}px`;
+    block.innerHTML = `<div class="mm-label">${node.label}</div>`;
 
+    block.onclick = () => {
+      appState.selectedNodeId = node.id;
+      renderMindmap();
+    };
+
+    block.ondblclick = () => {
+      const edited = prompt("编辑节点标签", node.label);
+      if (edited !== null) {
+        node.label = edited;
+        syncMapToTextarea();
+      }
+    };
+
+    attachDrag(block, node);
+    dom.blockCanvas.append(block);
+  });
+
+  drawLinks(flat);
   renderNotes();
 }
 
-function syncMapToTextarea() {
+function syncMapToTextarea(render = true) {
   dom.mindmapJson.value = JSON.stringify(appState.map, null, 2);
-  renderMindmap();
+  if (render) renderMindmap();
 }
 
 function tryParseModelJson(text) {
@@ -170,9 +265,7 @@ function tryParseModelJson(text) {
   if (!match) return null;
   try {
     const parsed = JSON.parse(match[0]);
-    if (parsed.title && Array.isArray(parsed.nodes) && Array.isArray(parsed.notes)) {
-      return parsed;
-    }
+    if (parsed.title && Array.isArray(parsed.nodes) && Array.isArray(parsed.notes)) return parsed;
   } catch {
     return null;
   }
@@ -181,23 +274,22 @@ function tryParseModelJson(text) {
 
 async function callLlm(promptText) {
   const cfg = getConfig();
-  const endpoint = cfg.llmEndpoint;
-  if (!endpoint) {
-    return `未配置 LLM endpoint。请在配置区填写后重试。`;
-  }
+  if (!cfg.llmEndpoint) return "未配置 LLM endpoint。请先配置。";
 
-  const systemPrompt =
-    "你是思维导图助手。请仅返回 JSON：{title:string,nodes:Node[],notes:string[]}，Node={id,label,children[]}。";
   const payload = {
     provider: cfg.llmProvider,
     model: cfg.llmProvider === "doubao" ? "doubao-1.5-pro" : "qwen-max",
     messages: [
-      { role: "system", content: systemPrompt },
+      {
+        role: "system",
+        content:
+          "你是思维导图助手。仅返回 JSON：{title:string,nodes:Node[],notes:string[]}，Node={id,label,x,y,children[]}。",
+      },
       { role: "user", content: promptText },
     ],
   };
 
-  const res = await fetch(endpoint, {
+  const res = await fetch(cfg.llmEndpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -206,35 +298,25 @@ async function callLlm(promptText) {
     body: JSON.stringify(payload),
   });
 
-  if (!res.ok) {
-    throw new Error(`LLM 请求失败: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`LLM 请求失败: ${res.status}`);
   const data = await res.json();
   return data.output_text || data.text || JSON.stringify(data);
 }
 
 async function transcribe(audioBlob) {
   const cfg = getConfig();
-  if (!cfg.sttEndpoint) {
-    throw new Error("未配置 STT endpoint");
-  }
+  if (!cfg.sttEndpoint) throw new Error("未配置 STT endpoint");
+
   const formData = new FormData();
   formData.append("file", audioBlob, "audio.webm");
   formData.append("provider", cfg.sttProvider);
 
   const res = await fetch(cfg.sttEndpoint, {
     method: "POST",
-    headers: {
-      Authorization: cfg.apiKey ? `Bearer ${cfg.apiKey}` : "",
-    },
+    headers: { Authorization: cfg.apiKey ? `Bearer ${cfg.apiKey}` : "" },
     body: formData,
   });
-
-  if (!res.ok) {
-    throw new Error(`STT 请求失败: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`STT 请求失败: ${res.status}`);
   const data = await res.json();
   return data.text || "";
 }
@@ -242,14 +324,12 @@ async function transcribe(audioBlob) {
 async function speak(text) {
   const cfg = getConfig();
   if (cfg.ttsProvider === "browser") {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "zh-CN";
-    speechSynthesis.speak(u);
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "zh-CN";
+    speechSynthesis.speak(utterance);
     return;
   }
-  if (!cfg.ttsEndpoint) {
-    throw new Error("未配置 TTS endpoint");
-  }
+  if (!cfg.ttsEndpoint) throw new Error("未配置 TTS endpoint");
 
   const res = await fetch(cfg.ttsEndpoint, {
     method: "POST",
@@ -260,10 +340,7 @@ async function speak(text) {
     body: JSON.stringify({ text, provider: cfg.ttsProvider }),
   });
 
-  if (!res.ok) {
-    throw new Error(`TTS 请求失败: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`TTS 请求失败: ${res.status}`);
   const data = await res.json();
   if (data.audioBase64) {
     const audio = new Audio(`data:audio/mpeg;base64,${data.audioBase64}`);
@@ -276,7 +353,6 @@ function buildOAuthUrl() {
   const auth = new URL(cfg.oauthAuthUrl);
   const state = crypto.randomUUID();
   const codeVerifier = crypto.randomUUID().replaceAll("-", "");
-  const codeChallenge = btoa(codeVerifier).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
   localStorage.setItem("oauthState", state);
   localStorage.setItem("oauthVerifier", codeVerifier);
@@ -286,18 +362,15 @@ function buildOAuthUrl() {
   auth.searchParams.set("redirect_uri", cfg.oauthRedirect || location.origin + location.pathname);
   auth.searchParams.set("scope", cfg.oauthScope || "openid profile");
   auth.searchParams.set("state", state);
-  auth.searchParams.set("code_challenge", codeChallenge);
+  auth.searchParams.set("code_challenge", codeVerifier);
   auth.searchParams.set("code_challenge_method", "plain");
-
   return auth.toString();
 }
 
 async function exchangeOAuthCode() {
   const cfg = getConfig();
   const code = dom.oauthCode.value.trim();
-  if (!code || !cfg.oauthTokenUrl) {
-    throw new Error("缺少 code 或 token URL");
-  }
+  if (!code || !cfg.oauthTokenUrl) throw new Error("缺少 code 或 token URL");
 
   const body = new URLSearchParams({
     grant_type: "authorization_code",
@@ -313,10 +386,7 @@ async function exchangeOAuthCode() {
     body,
   });
 
-  if (!res.ok) {
-    throw new Error(`Token 交换失败: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`Token 交换失败: ${res.status}`);
   const data = await res.json();
   if (data.access_token) {
     localStorage.setItem("oauthToken", data.access_token);
@@ -334,15 +404,74 @@ async function processUserPrompt(text) {
 
     const parsed = tryParseModelJson(assistantText);
     if (parsed) {
+      ensureLayout(parsed);
       appState.map = parsed;
+      appState.selectedNodeId = traverse(appState.map.nodes)[0]?.node.id || "";
       syncMapToTextarea();
-      log("system", "已根据模型输出更新思维导图");
+      log("system", "已根据模型输出更新块画布");
     } else {
-      log("system", "模型返回不是标准 JSON，未自动覆盖思维导图");
+      log("system", "模型返回不是标准 JSON，未自动覆盖导图");
     }
   } catch (error) {
     log("error", error.message);
   }
+}
+
+function addChildNode() {
+  const selected = traverse(appState.map.nodes).find(({ node }) => node.id === appState.selectedNodeId)?.node;
+  if (!selected) {
+    log("system", "请先选中一个块");
+    return;
+  }
+  const child = {
+    id: crypto.randomUUID(),
+    label: "新子块",
+    x: selected.x + 260,
+    y: selected.y + 150,
+    children: [],
+  };
+  selected.children.push(child);
+  appState.selectedNodeId = child.id;
+  syncMapToTextarea();
+}
+
+function addSiblingNode() {
+  const selectedItem = traverse(appState.map.nodes).find(({ node }) => node.id === appState.selectedNodeId);
+  if (!selectedItem) {
+    log("system", "请先选中一个块");
+    return;
+  }
+  const sibling = {
+    id: crypto.randomUUID(),
+    label: "新同级块",
+    x: selectedItem.node.x + 260,
+    y: selectedItem.node.y,
+    children: [],
+  };
+  if (selectedItem.parent) {
+    selectedItem.parent.children.push(sibling);
+  } else {
+    appState.map.nodes.push(sibling);
+  }
+  appState.selectedNodeId = sibling.id;
+  syncMapToTextarea();
+}
+
+function deleteNode() {
+  const selectedItem = traverse(appState.map.nodes).find(({ node }) => node.id === appState.selectedNodeId);
+  if (!selectedItem) {
+    log("system", "请先选中一个块");
+    return;
+  }
+
+  if (selectedItem.parent) {
+    selectedItem.parent.children.splice(selectedItem.index, 1);
+  } else {
+    appState.map.nodes.splice(selectedItem.index, 1);
+  }
+
+  appState.selectedNodeId = traverse(appState.map.nodes)[0]?.node.id || "";
+  syncMapToTextarea();
 }
 
 let recorder;
@@ -394,7 +523,9 @@ dom.applyJson.onclick = () => {
     if (!parsed.title || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.notes)) {
       throw new Error("JSON 字段不完整，需要 title/nodes/notes");
     }
+    ensureLayout(parsed);
     appState.map = parsed;
+    appState.selectedNodeId = traverse(appState.map.nodes)[0]?.node.id || "";
     syncMapToTextarea();
     log("system", "手动 JSON 已应用");
   } catch (error) {
@@ -411,9 +542,6 @@ dom.downloadJson.onclick = () => {
   URL.revokeObjectURL(a.href);
 };
 
-dom.saveConfig.onclick = saveConfig;
-dom.loadConfig.onclick = loadConfig;
-
 dom.resetDemo.onclick = () => {
   appState.map = {
     title: "创业计划",
@@ -421,25 +549,36 @@ dom.resetDemo.onclick = () => {
       {
         id: crypto.randomUUID(),
         label: "产品",
+        x: 360,
+        y: 80,
         children: [
-          { id: crypto.randomUUID(), label: "MVP", children: [] },
-          { id: crypto.randomUUID(), label: "迭代路线", children: [] },
+          { id: crypto.randomUUID(), label: "MVP", x: 80, y: 240, children: [] },
+          { id: crypto.randomUUID(), label: "迭代路线", x: 360, y: 240, children: [] },
         ],
       },
       {
         id: crypto.randomUUID(),
         label: "市场",
+        x: 640,
+        y: 80,
         children: [
-          { id: crypto.randomUUID(), label: "用户画像", children: [] },
-          { id: crypto.randomUUID(), label: "竞品分析", children: [] },
+          { id: crypto.randomUUID(), label: "用户画像", x: 640, y: 240, children: [] },
+          { id: crypto.randomUUID(), label: "竞品分析", x: 920, y: 240, children: [] },
         ],
       },
     ],
     notes: ["目标：3个月内验证 PMF", "附注：记录每次访谈结论"],
   };
+  appState.selectedNodeId = appState.map.nodes[0].id;
   syncMapToTextarea();
   log("system", "已加载演示数据");
 };
+
+dom.addChild.onclick = addChildNode;
+dom.addSibling.onclick = addSiblingNode;
+dom.deleteNode.onclick = deleteNode;
+dom.saveConfig.onclick = saveConfig;
+dom.loadConfig.onclick = loadConfig;
 
 dom.oauthStart.onclick = () => {
   try {
@@ -462,5 +601,8 @@ dom.oauthExchange.onclick = async () => {
 (function init() {
   dom.oauthRedirect.value = location.origin + location.pathname;
   loadConfig();
+  applyLocalConfig();
+  ensureLayout(appState.map);
+  appState.selectedNodeId = traverse(appState.map.nodes)[0]?.node.id || "";
   syncMapToTextarea();
 })();

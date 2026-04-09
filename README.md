@@ -3,8 +3,9 @@
 一个可直接打开运行的前端 Demo：
 
 - 🎤 语音录音 -> STT 转写 -> 发送到大模型 -> 返回思维导图 JSON。
-- 🧠 动态渲染思维导图（树形）+ 附注列表。
+- 🧩 **交互式块画布（Canvas）**：每个节点是可拖拽块，连线会实时跟随。
 - ✍️ 双击可编辑节点标题、导图标题、附注。
+- ➕ 支持对选中块新增子块/同级块、删除块。
 - 🔌 可切换通义千问 / 豆包 / 自定义 API（LLM、STT、TTS 分离配置）。
 - 🔐 提供 OAuth 配置位（支持 CODEX / antigravity / 自定义）与 code 换 token 示例流程。
 
@@ -13,7 +14,6 @@
 > 这是纯前端静态页面，不需要构建。
 
 ```bash
-# 在项目根目录直接启动一个静态服务
 python3 -m http.server 8080
 # 浏览器打开 http://localhost:8080
 ```
@@ -32,8 +32,12 @@ python3 -m http.server 8080
    - 文本送入 LLM endpoint，请求生成导图 JSON。
    - 日志区展示 system / user / assistant / error 事件。
 
-3. **思维导图区**
-   - 期望模型输出结构：
+3. **Canvas 画布区**
+   - 节点以 block 形式渲染，可拖拽重排。
+   - 连线为 SVG 曲线，拖拽时实时更新。
+   - 支持新增子块、同级块、删除块。
+
+模型建议输出结构：
 
 ```json
 {
@@ -42,12 +46,23 @@ python3 -m http.server 8080
     {
       "id": "uuid",
       "label": "一级节点",
+      "x": 360,
+      "y": 120,
       "children": []
     }
   ],
   "notes": ["附注1"]
 }
 ```
+
+
+## 本地测试 API Key（推荐做法）
+
+你提到要先用阿里云 DashScope key 做测试。为了避免把密钥提交到 Git：
+
+1. 复制 `local.config.example.js` 为 `local.config.js`。
+2. 在 `local.config.js` 中填写 `DASHSCOPE_KEY`。
+3. 刷新页面后，系统会自动把 key 注入到 API Key 输入框（仅本地，`local.config.js` 已被 gitignore）。
 
 ## API 对接建议
 
@@ -62,4 +77,4 @@ python3 -m http.server 8080
 
 - `index.html`: 页面结构与交互控件。
 - `styles.css`: 样式。
-- `app.js`: 主要逻辑（录音、STT/LLM/TTS、导图渲染、OAuth、配置存储）。
+- `app.js`: 主要逻辑（录音、STT/LLM/TTS、Canvas 拖拽块、OAuth、配置存储）。

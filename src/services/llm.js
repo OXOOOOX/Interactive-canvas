@@ -109,6 +109,14 @@ async function sendRequest(config, messages, isCanvas = false) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+
+    // 401/403 错误表示 API key 缺失或无效，触发自定义事件通知 UI
+    if (res.status === 401 || res.status === 403) {
+      window.dispatchEvent(new CustomEvent('api:key-missing', {
+        detail: { status: res.status, message: text.slice(0, 200) }
+      }));
+    }
+
     throw new Error(`LLM 请求失败 (${res.status}): ${text.slice(0, 200)}`);
   }
 

@@ -613,6 +613,31 @@ function bindEvents() {
     dom.oauthRedirect.value = location.origin + location.pathname;
   }
 
+  // ── API Key Missing Alert ──
+  window.addEventListener('api:key-missing', (e) => {
+    // 打开设置面板
+    dom.settingsOverlay.classList.add('open');
+    dom.settingsOverlay.setAttribute('aria-hidden', 'false');
+
+    // 给设置按钮添加闪动动画
+    dom.settingsBtn.classList.add('api-key-alert');
+
+    // 给 API key 输入框添加高亮红框
+    dom.apiKey.classList.add('api-key-highlight');
+
+    // 聚焦 API key 输入框
+    setTimeout(() => {
+      dom.apiKey.focus();
+      dom.apiKey.select();
+    }, 300);
+
+    // 动画结束后移除类
+    setTimeout(() => {
+      dom.settingsBtn.classList.remove('api-key-alert');
+      dom.apiKey.classList.remove('api-key-highlight');
+    }, 3000);
+  });
+
   // ── TTS speak ──
   if (dom.speakBtn) {
     dom.speakBtn.addEventListener('click', async () => {

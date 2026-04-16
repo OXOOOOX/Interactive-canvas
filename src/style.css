@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════
-   Canvas Studio — Design System
+   DreamCatcher (捕梦) — Design System
    ═══════════════════════════════════════════════════ */
 
 /* ── Google Fonts loaded in HTML ── */
@@ -60,9 +60,9 @@
   --shadow-glow-amber: 4px 4px 0px #000;
 
   /* Typography */
-  --font-display: 'Plus Jakarta Sans', 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --font-body: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --font-display: 'Plus Jakarta Sans', 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+  --font-body: 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', monospace;
 
   /* Transitions */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -130,10 +130,11 @@ html, body {
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 15px;
-  background: var(--grad-brand);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #000;
+}
+.logo-svg {
+  width: 20px;
+  height: 20px;
 }
 
 .board-title {
@@ -963,6 +964,74 @@ select.cfg-input {
 @keyframes typingBounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-6px); opacity: 1; }
+}
+
+
+/* ═══════════════════════════════════════════════════
+   API KEY MISSING ALERT (Shake + Flash animation)
+   ═══════════════════════════════════════════════════ */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+
+@keyframes highlightFlash {
+  0%, 100% {
+    background: transparent;
+    box-shadow: none;
+    border-color: transparent;
+  }
+  50% {
+    background: rgba(239, 68, 68, 0.25);
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.4);
+    border-color: rgba(239, 68, 68, 0.6);
+  }
+}
+
+.btn-icon.api-key-alert {
+  animation: shake 0.4s ease-in-out 3, highlightFlash 1s ease-in-out 3;
+  position: relative;
+}
+
+.btn-icon.api-key-alert::after {
+  content: '需设置 API Key';
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.9);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  animation: alertTooltip 1s ease-in-out 3;
+}
+
+@keyframes alertTooltip {
+  0%, 100% { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  50% { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* API Key 输入框高亮红框 */
+.cfg-input.api-key-highlight {
+  animation: inputRedGlow 1s ease-in-out 3;
+  border-color: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3);
+}
+
+@keyframes inputRedGlow {
+  0%, 100% {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3);
+  }
+  50% {
+    border-color: #dc2626;
+    box-shadow: 0 0 12px 4px rgba(239, 68, 68, 0.5);
+  }
 }
 
 

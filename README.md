@@ -59,9 +59,9 @@ python3 -m http.server 8080
 
 ## 本地测试 API Key（推荐做法）
 
-你提到要先用阿里云 DashScope key 做测试。为了避免把密钥提交到 Git：
+为避免把密钥提交到 Git，可使用本地配置文件：
 
-1. 复制 `local.config.example.js` 为 `local.config.js`。
+1. 复制 `public/local.config.example.js` 为 `public/local.config.js`。
 2. 在 `local.config.js` 中填写 `DASHSCOPE_KEY`。
 3. 刷新页面后，系统会自动把 key 注入到 API Key 输入框（仅本地，`local.config.js` 已被 gitignore）。
 

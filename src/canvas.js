@@ -515,6 +515,7 @@ function escapeHtml(text) {
 export function renderBlocks(newIds = []) {
   if (!appState.selectedBlockId) hideNodeToolbar();
   $blockCanvas.innerHTML = '';
+  $linkLayer.innerHTML = '';  // 清空连接线层
 
   // 空画布引导
   if (appState.canvas.blocks.length === 0) {

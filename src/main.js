@@ -7,6 +7,8 @@ import './style.css';
 import {
   appState, pushHistory, undo, redo, initHistory,
   saveConfig, loadConfig as loadSavedConfig, saveCanvas, loadCanvas,
+  getCanvasList, saveCanvasList, createCanvas, deleteCanvas, loadCanvasById,
+  saveCurrentCanvas, switchCanvas, getCurrentCanvasId, renameCanvas,
   ENDPOINT_PRESETS,
 } from './state.js';
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar } from './canvas.js';
@@ -25,11 +27,19 @@ const $ = (id) => document.getElementById(id);
 const dom = {
   // Top bar
   boardTitle: $('boardTitle'),
+  canvasListBtn: $('canvasListBtn'),
+  newCanvasBtn: $('newCanvasBtn'),
   undoBtn: $('undoBtn'),
   redoBtn: $('redoBtn'),
   downloadJson: $('downloadJson'),
   resetDemo: $('resetDemo'),
   settingsBtn: $('settingsBtn'),
+
+  // Canvas list menu
+  canvasListMenu: $('canvasListMenu'),
+  canvasListItems: $('canvasListItems'),
+  canvasListEmpty: $('canvasListEmpty'),
+  newCanvasFromListBtn: $('newCanvasFromListBtn'),
 
   // Canvas controls
   autoLayoutBtn: $('autoLayoutBtn'),
@@ -154,7 +164,7 @@ export async function checkAutoNaming() {
       if (name) {
         appState.canvas.title = name;
         dom.boardTitle.textContent = name;
-        saveCanvas();
+        saveCurrentCanvas();
       }
     } catch (e) {
       console.error('Naming failed', e);
@@ -165,7 +175,7 @@ export async function checkAutoNaming() {
 
 // ── Canvas change handler ──
 function onCanvasChange() {
-  saveCanvas();
+  saveCurrentCanvas();
 }
 
 // ── Reusable node actions ──
@@ -189,7 +199,7 @@ function handleAddChild() {
   appState.selectedBlockId = newBlock.id;
   pushHistory();
   renderBlocks([newBlock.id]);
-  saveCanvas();
+  saveCurrentCanvas();
   checkAutoNaming();
 }
 
@@ -219,7 +229,7 @@ function handleAddSibling() {
   appState.selectedBlockId = newBlock.id;
   pushHistory();
   renderBlocks([newBlock.id]);
-  saveCanvas();
+  saveCurrentCanvas();
   checkAutoNaming();
 }
 
@@ -246,7 +256,7 @@ function handleDeleteNode() {
   appState.selectedBlockId = null;
   pushHistory();
   renderBlocks();
-  saveCanvas();
+  saveCurrentCanvas();
 }
 
 // ── Create new block at position ──
@@ -263,7 +273,7 @@ function handleCreateBlock(x, y) {
   appState.selectedBlockId = newBlock.id;
   pushHistory();
   renderBlocks([newBlock.id]);
-  saveCanvas();
+  saveCurrentCanvas();
   checkAutoNaming();
 }
 
@@ -276,14 +286,34 @@ function init() {
   applyProviderPreset();
   applyLocalConfig();
 
-  // 2. Load or create canvas
-  if (!loadCanvas()) {
-    // Default empty canvas
-    appState.canvas = {
-      title: '未命名白板',
-      blocks: [],
-      connections: [],
-    };
+  // 2. Load canvas - try multi-canvas system first, fallback to single canvas
+  const currentId = getCurrentCanvasId();
+  if (currentId) {
+    const canvas = loadCanvasById(currentId);
+    if (canvas) {
+      appState.canvas = canvas;
+    } else {
+      // ID exists but canvas not found, create new
+      const newCanvas = createCanvas('未命名白板');
+      appState.canvas = newCanvas;
+    }
+  } else {
+    // Try old single canvas system
+    if (!loadCanvas()) {
+      // Check if there are any canvases in the list
+      const list = getCanvasList();
+      if (list.length > 0) {
+        // Use the first (most recent) canvas
+        switchCanvas(list[0].id);
+      } else {
+        // Default empty canvas
+        appState.canvas = {
+          title: '未命名白板',
+          blocks: [],
+          connections: [],
+        };
+      }
+    }
   }
   dom.boardTitle.textContent = appState.canvas.title;
 
@@ -334,7 +364,177 @@ function init() {
   bindEvents();
 }
 
+// ── Helper Functions ──
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function formatDate(timestamp) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diff = now - date;
+
+  // 小于 1 分钟
+  if (diff < 60000) return '刚刚';
+  // 小于 1 小时
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
+  // 小于 24 小时
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
+  // 小于 7 天
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)}天前`;
+
+  // 超过 7 天显示日期
+  return date.toLocaleDateString('zh-CN', {
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
 function bindEvents() {
+
+  // ── Canvas List ──
+  let canvasListOpen = false;
+
+  function updateCanvasListUI() {
+    const list = getCanvasList();
+    const currentId = appState.canvas.id || getCurrentCanvasId();
+
+    if (list.length === 0) {
+      dom.canvasListItems.innerHTML = '';
+      dom.canvasListEmpty.style.display = 'block';
+      return;
+    }
+
+    dom.canvasListEmpty.style.display = 'none';
+    dom.canvasListItems.innerHTML = list.map(canvas => `
+      <div class="canvas-list-item ${canvas.id === currentId ? 'active' : ''}" data-id="${canvas.id}">
+        <div class="canvas-list-item-info">
+          <span class="canvas-list-item-title">${escapeHtml(canvas.title)}</span>
+          <span class="canvas-list-item-meta">${formatDate(canvas.updatedAt)}</span>
+        </div>
+        <div class="canvas-list-item-actions">
+          <button class="btn-icon btn-xs rename-canvas-btn" data-id="${canvas.id}" title="重命名">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 10l5-1 5-5-4-4-5 5-1 5z" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+          <button class="btn-icon btn-xs delete-canvas-btn" data-id="${canvas.id}" title="删除">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M3 3v7h6V3M4 1h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function toggleCanvasList() {
+    canvasListOpen = !canvasListOpen;
+    dom.canvasListMenu.setAttribute('aria-hidden', !canvasListOpen);
+    dom.canvasListMenu.classList.toggle('open', canvasListOpen);
+    if (canvasListOpen) {
+      updateCanvasListUI();
+    }
+  }
+
+  function closeCanvasList() {
+    canvasListOpen = false;
+    dom.canvasListMenu.setAttribute('aria-hidden', 'true');
+    dom.canvasListMenu.classList.remove('open');
+  }
+
+  function handleCanvasListClick(e) {
+    const item = e.target.closest('.canvas-list-item');
+    if (!item) return;
+
+    // 忽略按钮点击（删除/重命名）
+    if (e.target.closest('.rename-canvas-btn') || e.target.closest('.delete-canvas-btn')) return;
+
+    const id = item.dataset.id;
+    if (id && id !== appState.canvas.id) {
+      if (switchCanvas(id)) {
+        dom.boardTitle.textContent = appState.canvas.title;
+        pushHistory();
+        renderBlocks();
+        updateCanvasListUI();
+        closeCanvasList();
+      }
+    }
+  }
+
+  function handleDeleteCanvas(e) {
+    const btn = e.target.closest('.delete-canvas-btn');
+    if (!btn) return;
+    const id = btn.dataset.id;
+
+    if (confirm('确定要删除这个画布吗？此操作无法撤销。')) {
+      deleteCanvas(id);
+      updateCanvasListUI();
+
+      // 如果删除的是当前画布，创建新的空白画布
+      if (appState.canvas.id === id) {
+        const newCanvas = createCanvas('未命名白板');
+        appState.canvas = newCanvas;
+        dom.boardTitle.textContent = newCanvas.title;
+        pushHistory();
+        renderBlocks();
+      }
+    }
+  }
+
+  function handleRenameCanvas(e) {
+    const btn = e.target.closest('.rename-canvas-btn');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const canvas = getCanvasList().find(c => c.id === id);
+
+    if (canvas) {
+      const newTitle = prompt('重命名画布', canvas.title);
+      if (newTitle !== null && newTitle.trim()) {
+        renameCanvas(id, newTitle.trim());
+        updateCanvasListUI();
+
+        // 如果是当前画布，同步更新标题显示
+        if (id === appState.canvas.id) {
+          dom.boardTitle.textContent = newTitle.trim();
+          appState.canvas.title = newTitle.trim();
+        }
+      }
+    }
+  }
+
+  // 画布列表按钮
+  dom.canvasListBtn.addEventListener('click', toggleCanvasList);
+
+  // 新建画布按钮（顶部）
+  dom.newCanvasBtn.addEventListener('click', () => {
+    const newCanvas = createCanvas('未命名白板');
+    appState.canvas = newCanvas;
+    dom.boardTitle.textContent = newCanvas.title;
+    pushHistory();
+    renderBlocks();
+    closeCanvasList();
+  });
+
+  // 新建画布按钮（列表中）
+  dom.newCanvasFromListBtn.addEventListener('click', () => {
+    const newCanvas = createCanvas('未命名白板');
+    appState.canvas = newCanvas;
+    dom.boardTitle.textContent = newCanvas.title;
+    pushHistory();
+    renderBlocks();
+    updateCanvasListUI();
+  });
+
+  // 画布列表点击委托
+  dom.canvasListItems.addEventListener('click', handleCanvasListClick);
+  dom.canvasListItems.addEventListener('click', handleDeleteCanvas);
+  dom.canvasListItems.addEventListener('click', handleRenameCanvas);
+
+  // 点击外部关闭画布列表
+  document.addEventListener('pointerdown', (e) => {
+    if (canvasListOpen && !dom.canvasListMenu.contains(e.target) && !dom.canvasListBtn.contains(e.target)) {
+      closeCanvasList();
+    }
+  });
 
   // ── Board title edit ──
   dom.boardTitle.addEventListener('click', () => {
@@ -342,25 +542,25 @@ function bindEvents() {
     if (newTitle !== null) {
       appState.canvas.title = newTitle;
       dom.boardTitle.textContent = newTitle;
-      saveCanvas();
+      saveCurrentCanvas();
     }
   });
 
   // ── Undo / Redo ──
   dom.undoBtn.addEventListener('click', () => {
-    if (undo()) { renderBlocks(); saveCanvas(); }
+    if (undo()) { renderBlocks(); saveCurrentCanvas(); }
   });
   dom.redoBtn.addEventListener('click', () => {
-    if (redo()) { renderBlocks(); saveCanvas(); }
+    if (redo()) { renderBlocks(); saveCurrentCanvas(); }
   });
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      if (undo()) { renderBlocks(); saveCanvas(); }
+      if (undo()) { renderBlocks(); saveCurrentCanvas(); }
     }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
       e.preventDefault();
-      if (redo()) { renderBlocks(); saveCanvas(); }
+      if (redo()) { renderBlocks(); saveCurrentCanvas(); }
     }
   });
 
@@ -373,7 +573,7 @@ function bindEvents() {
     pushHistory();
     renderBlocks();
     fitToView();
-    saveCanvas();
+    saveCurrentCanvas();
   });
   
   if (dom.aiOrganizeBtn) {
@@ -401,7 +601,7 @@ function bindEvents() {
           pushHistory();
           renderBlocks();
           fitToView();
-          saveCanvas();
+          saveCurrentCanvas();
         } else {
           alert('AI 认为目前无需整理');
         }
@@ -427,7 +627,7 @@ function bindEvents() {
         b.locked = !b.locked;
         pushHistory();
         renderBlocks();
-        saveCanvas();
+        saveCurrentCanvas();
       }
     });
   }
@@ -473,7 +673,7 @@ function bindEvents() {
       dom.refineConfirmBox.setAttribute('aria-hidden', 'true');
       tempRefineState = null;
       pushHistory();
-      saveCanvas();
+      saveCurrentCanvas();
     });
   }
   
@@ -685,7 +885,7 @@ function loadDemoData() {
   initHistory();
   renderBlocks(appState.canvas.blocks.map(b => b.id));
   setTimeout(fitToView, 500);
-  saveCanvas();
+  saveCurrentCanvas();
 }
 
 // ── Export Menu ──

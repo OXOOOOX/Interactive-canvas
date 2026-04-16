@@ -3,168 +3,263 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Voice Mindmap Studio</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="local.config.js" defer></script>
-    <script type="module" src="app.js" defer></script>
+    <title>Canvas Studio · 智能互动白板</title>
+    <meta name="description" content="边聊天边在白板上生长内容，AI驱动的交互式会议纪要工具" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header>
-      <h1>语音交互思维导图工作台</h1>
-      <p>
-        通过语音和大模型对话，动态生成思维导图、附注与内容；支持手动编辑与多供应商 API 配置。
-      </p>
-    </header>
 
-    <main>
-      <section class="panel">
-        <h2>1) 供应商与接口配置</h2>
-        <div class="grid-two">
-          <label>
-            LLM 供应商
-            <select id="llmProvider">
-              <option value="tongyi" selected>通义千问 (Qwen)</option>
-              <option value="doubao">豆包 (Doubao)</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
+    <!-- ── Top Bar ── -->
+    <nav class="topbar" id="topbar">
+      <div class="topbar-left">
+        <div class="logo">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+            <rect width="28" height="28" rx="0" fill="#FFD600" stroke="#000" stroke-width="2"/>
+            <circle cx="14" cy="10" r="3.5" fill="#000"/>
+            <circle cx="7" cy="21" r="2.5" fill="#000"/>
+            <circle cx="21" cy="21" r="2.5" fill="#000"/>
+            <line x1="14" y1="13.5" x2="7" y2="18.5" stroke="#000" stroke-width="2"/>
+            <line x1="14" y1="13.5" x2="21" y2="18.5" stroke="#000" stroke-width="2"/>
+            
+          </svg>
+          <span class="logo-text">Canvas Studio</span>
+        </div>
+      </div>
 
-          <label>
-            转写(STT)供应商
-            <select id="sttProvider">
-              <option value="tongyi" selected>通义千问</option>
-              <option value="doubao">豆包</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
+      <div class="topbar-center">
+        <h1 class="board-title" id="boardTitle" title="点击编辑标题">未命名白板</h1>
+      </div>
 
-          <label>
-            语音合成(TTS)供应商
-            <select id="ttsProvider">
-              <option value="tongyi" selected>通义千问</option>
-              <option value="doubao">豆包</option>
-              <option value="browser">浏览器内置语音</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
+      <div class="topbar-right">
+        <button class="btn-icon" id="undoBtn" title="撤销 Ctrl+Z" aria-label="撤销">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 5H9C11.2 5 13 6.8 13 9s-1.8 4-4 4H5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M5 3L3 5l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="btn-icon" id="redoBtn" title="重做 Ctrl+Y" aria-label="重做">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13 5H7C4.8 5 3 6.8 3 9s1.8 4 4 4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M11 3l2 2-2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="topbar-divider"></div>
+        <button class="btn btn-ghost" id="downloadJson">导出</button>
+        <button class="btn btn-primary" id="resetDemo">演示</button>
+        <div class="topbar-divider"></div>
+        <button class="btn-icon" id="settingsBtn" title="设置" aria-label="设置">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 11.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" stroke="currentColor" stroke-width="1.4"/><path d="M14.5 9c0-.4 0-.8-.1-1.2l1.6-1.2-1.5-2.6-1.9.8A6 6 0 0011 3.9L10.7 2h-3L7.4 4A6 6 0 005.7 4.9l-1.9-.8L2.3 6.7 3.9 7.8C3.8 8.2 3.7 8.6 3.7 9s0 .8.1 1.2l-1.6 1.2 1.5 2.6 1.9-.8a6 6 0 001.7.8L7.6 16h3l.3-2a6 6 0 001.7-.8l1.9.8 1.5-2.6-1.6-1.2c.1-.4.1-.8.1-1.2z" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+      </div>
+    </nav>
 
-          <label>
-            API Key
-            <input id="apiKey" type="password" placeholder="可留空，之后配置" />
-          </label>
+    <!-- ── Main Workspace: Canvas + Chat ── -->
+    <div class="workspace" id="workspace">
 
-          <label class="span-two">
-            LLM Endpoint
-            <input id="llmEndpoint" type="url" placeholder="例如: https://dashscope.aliyuncs.com/..." />
-          </label>
-          <label class="span-two">
-            STT Endpoint
-            <input id="sttEndpoint" type="url" placeholder="例如: https://api.volcengine.com/..." />
-          </label>
-          <label class="span-two">
-            TTS Endpoint
-            <input id="ttsEndpoint" type="url" placeholder="例如: https://dashscope.aliyuncs.com/..." />
-          </label>
+      <!-- Canvas Area (left, main) -->
+      <main class="canvas-area" id="canvasArea">
+        <!-- Canvas Controls (floating top-left) -->
+        <div class="canvas-controls" id="canvasControls">
+          <button class="ctrl-btn" id="autoLayoutBtn" title="自动布局">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="5" height="4" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="5" width="5" height="4" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="11" width="5" height="4" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M6 3h2a1 1 0 011 1v2M9 7h1M9 13h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          </button>
+          <button class="ctrl-btn" id="aiOrganizeBtn" title="AI智能整理">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v14M1 8h14M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="ctrl-divider"></div>
+          <button class="ctrl-btn" id="zoomOut" title="缩小">−</button>
+          <span class="zoom-label" id="zoomLabel">100%</span>
+          <button class="ctrl-btn" id="zoomIn" title="放大">+</button>
+          <div class="ctrl-divider"></div>
+          <button class="ctrl-btn" id="fitBtn" title="适应视口">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1.5 5V1.5H5M9 1.5h3.5V5M12.5 9v3.5H9M5 12.5H1.5V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
 
-        <details>
-          <summary>OAuth（可选，支持 CODEX / antigravity 风格）</summary>
-          <div class="grid-two top-gap">
-            <label>
-              OAuth 提供方
-              <select id="oauthProvider">
-                <option value="none" selected>不使用</option>
-                <option value="codex">OAuth CODEX</option>
-                <option value="antigravity">OAuth-antigravity</option>
-                <option value="custom">自定义</option>
-              </select>
-            </label>
-            <label>
-              Client ID
-              <input id="oauthClientId" type="text" placeholder="应用 client_id" />
-            </label>
-            <label class="span-two">
-              Authorize URL
-              <input id="oauthAuthUrl" type="url" placeholder="https://.../authorize" />
-            </label>
-            <label class="span-two">
-              Token URL
-              <input id="oauthTokenUrl" type="url" placeholder="https://.../token" />
-            </label>
-            <label>
-              Scope
-              <input id="oauthScope" type="text" value="openid profile" />
-            </label>
-            <label>
-              Redirect URI
-              <input id="oauthRedirect" type="url" />
-            </label>
-          </div>
-          <div class="actions top-gap">
-            <button id="oauthStart">开始 OAuth 登录</button>
-            <button id="oauthExchange">用回调 code 换 token</button>
-            <input id="oauthCode" type="text" placeholder="粘贴回调里的 code" />
-          </div>
-        </details>
-
-        <div class="actions">
-          <button id="saveConfig">保存配置</button>
-          <button id="loadConfig">加载配置</button>
-          <button id="resetDemo">加载演示数据</button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>2) 语音对话与实时编辑</h2>
-        <div class="actions">
-          <button id="recordBtn">🎤 开始录音</button>
-          <button id="sendTextBtn">发送文本</button>
-          <button id="speakBtn">🔊 朗读最新回复</button>
-        </div>
-
-        <label>
-          手动输入（可编辑）
-          <textarea id="inputBox" rows="3" placeholder="例如：帮我围绕‘创业计划’生成一份思维导图，并加入市场分析注释"></textarea>
-        </label>
-
-        <div class="grid-two">
-          <div>
-            <h3>会话日志</h3>
-            <ul id="chatLog"></ul>
-          </div>
-          <div>
-            <h3>附注列表（双击可编辑）</h3>
-            <ul id="noteList"></ul>
+        <!-- The infinite canvas -->
+        <div class="mindmap-view" id="mindmapView">
+          <div class="canvas-transform" id="canvasTransform">
+            <svg id="linkLayer" class="link-layer" aria-hidden="true" width="6000" height="6000" viewBox="0 0 6000 6000">
+              
+            </svg>
+            <div id="blockCanvas" class="block-canvas"></div>
           </div>
         </div>
-      </section>
 
-      <section class="panel">
-        <h2>3) 交互式块画布（Canvas）</h2>
-        <p>
-          模型应返回 JSON（包含 <code>title</code>/<code>nodes</code>/<code>notes</code>）。节点支持拖拽，支持增删节点。
-        </p>
-        <div class="actions">
-          <button id="addChild">为选中块新增子块</button>
-          <button id="addSibling">为选中块新增同级块</button>
-          <button id="deleteNode">删除选中块</button>
+        <!-- Floating node actions (show when node selected) -->
+        <div class="node-toolbar" id="nodeToolbar" aria-hidden="true">
+          <button class="ntb-btn" id="addChild" title="添加子块">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            子块
+          </button>
+          <button class="ntb-btn" id="addSibling" title="添加同级">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            同级
+          </button>
+          <button class="ntb-btn" id="pinNode" title="锁定/解锁">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v5m0 7v-2m-2-5h4M5 1h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            锁定
+          </button>
+          <button class="ntb-btn" id="refineNode" title="AI 内容提炼">
+            ✨
+            提炼
+          </button>
+          <div class="ntb-divider"></div>
+          <button class="ntb-btn ntb-btn--danger" id="deleteNode" title="删除">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5h4V4M11 4l-.8 7.5a1 1 0 01-1 .9H4.8a1 1 0 01-1-.9L3 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            删除
+          </button>
         </div>
-        <textarea id="mindmapJson" rows="12"></textarea>
-        <div class="actions">
-          <button id="applyJson">应用 JSON 到画布</button>
-          <button id="downloadJson">下载当前思维导图 JSON</button>
-        </div>
-        <div id="mindmapView" class="mindmap-view">
-          <svg id="linkLayer"></svg>
-          <div id="blockCanvas" class="block-canvas"></div>
-        </div>
-      </section>
-    </main>
 
-    <footer>
-      <small>
-        提示：本项目默认将配置保存在 localStorage，建议把 API Key 改为服务端代理后再上线。
-      </small>
-    </footer>
+        <!-- Refine Confirmation Dialog -->
+        <div class="refine-confirm-box" id="refineConfirmBox" aria-hidden="true">
+          <div style="font-size:12px; margin-bottom:4px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">✨ 预览 AI 提炼</div>
+          <div style="display:flex; gap:8px;">
+            <button class="rc-btn rc-btn-yes" id="refineYes">✔ 保留</button>
+            <button class="rc-btn rc-btn-no" id="refineNo">✖ 撤回</button>
+          </div>
+        </div>
+      </main>
+
+      <!-- Right Chat Panel -->
+      <aside class="chat-panel" id="chatPanel">
+        <div class="chat-panel-header">
+          <h2 class="chat-panel-title">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 2H2a1 1 0 00-1 1v8.5a1 1 0 001 1h1.5V15l3.5-2.5H14a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.3"/></svg>
+            对话
+          </h2>
+          <button class="btn-icon chat-collapse-btn" id="chatToggleBtn" title="折叠面板" aria-label="折叠聊天面板">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 3l5 4-5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+
+        <div class="chat-messages" id="chatMessages" aria-live="polite">
+          <div class="chat-welcome">
+            <div class="chat-welcome-icon">💡</div>
+            <p>你好！我是你的白板助手。</p>
+            <p>开始聊天，我会在白板上帮你整理内容。</p>
+            <div class="chat-welcome-hints">
+              <button class="hint-chip" data-hint="总结近期AI大模型的最新突破与应用方向">科技前沿探索</button>
+              <button class="hint-chip" data-hint="帮我梳理大语言模型底层的核心原理">学习技术原理</button>
+              <button class="hint-chip" data-hint="有哪些结合AI的创新产品点子？不妨头脑风暴一下">记录灵感创意</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input-area" id="chatInputArea">
+          <div class="chat-suggestions" id="chatSuggestions" aria-live="polite"></div>
+          <div class="waveform-bar" id="waveformBar" aria-hidden="true">
+            <canvas id="waveformCanvas" width="300" height="32"></canvas>
+            <span class="wave-time" id="waveTime">00:00</span>
+          </div>
+          <div class="chat-input-row">
+            <button class="voice-btn" id="recordBtn" title="点击开始/停止连续对话" aria-label="连续对话">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="5.5" y="1.5" width="7" height="9" rx="3.5" stroke="currentColor" stroke-width="1.4"/><path d="M3 8.5a6 6 0 0012 0M9 14.5V17" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              <span class="voice-pulse" id="voicePulse"></span>
+            </button>
+            <textarea id="chatInput" class="chat-input" rows="1" placeholder="输入消息..." aria-label="聊天输入"></textarea>
+            <button class="send-btn" id="sendBtn" title="发送" aria-label="发送">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M16 2L2 8l5.5 3L11 15l5-13z" fill="currentColor" opacity="0.15"/><path d="M16 2L2 8l5.5 3L11 15l5-13z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M16 2l-8.5 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Collapsed chat toggle (visible when panel collapsed) -->
+      <button class="chat-expand-btn" id="chatExpandBtn" aria-label="展开聊天面板" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M16 2H2a1.5 1.5 0 00-1.5 1.5v10A1.5 1.5 0 002 15h2v2.5l4-2.5h8a1.5 1.5 0 001.5-1.5v-10A1.5 1.5 0 0016 2z" stroke="currentColor" stroke-width="1.3"/></svg>
+      </button>
+    </div>
+
+    <!-- ── Settings Modal ── -->
+    <div class="modal-overlay" id="settingsOverlay" aria-hidden="true">
+      <div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-label="配置设置">
+        <div class="modal-header">
+          <h2 class="modal-title">设置</h2>
+          <button class="btn-icon" id="closeSettings" aria-label="关闭">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <!-- LLM -->
+          <div class="cfg-section">
+            <h3 class="cfg-title">大语言模型 (LLM)</h3>
+            <div class="cfg-grid">
+              <label class="cfg-label">供应商
+                <select id="llmProvider" class="cfg-input"><option value="tongyi" selected>通义千问</option><option value="doubao">豆包</option><option value="custom">自定义</option></select>
+              </label>
+              <label class="cfg-label full">Endpoint
+                <input id="llmEndpoint" type="url" class="cfg-input" placeholder="https://..." />
+              </label>
+              <label class="cfg-label full">模型 (Model)
+                <div style="display:flex; gap:8px;">
+                  <input id="llmModel" type="text" list="modelDataList" class="cfg-input" style="flex:1" placeholder="例如: qwen-max-latest" />
+                  <datalist id="modelDataList"></datalist>
+                  <button type="button" class="btn btn-ghost btn-sm" id="fetchModelsBtn">获取列表</button>
+                </div>
+              </label>
+            </div>
+          </div>
+          <!-- STT -->
+          <div class="cfg-section">
+            <h3 class="cfg-title">语音转写 (STT)</h3>
+            <div class="cfg-grid">
+              <label class="cfg-label">供应商
+                <select id="sttProvider" class="cfg-input"><option value="tongyi" selected>通义千问</option><option value="doubao">豆包</option><option value="custom">自定义</option></select>
+              </label>
+              <label class="cfg-label full">Endpoint
+                <input id="sttEndpoint" type="url" class="cfg-input" placeholder="https://..." />
+              </label>
+            </div>
+          </div>
+          <!-- TTS -->
+          <div class="cfg-section">
+            <h3 class="cfg-title">语音合成 (TTS)</h3>
+            <div class="cfg-grid">
+              <label class="cfg-label">供应商
+                <select id="ttsProvider" class="cfg-input"><option value="tongyi" selected>通义千问</option><option value="doubao">豆包</option><option value="browser">浏览器内置</option><option value="custom">自定义</option></select>
+              </label>
+              <label class="cfg-label full">Endpoint
+                <input id="ttsEndpoint" type="url" class="cfg-input" placeholder="https://..." />
+              </label>
+            </div>
+          </div>
+          <!-- Auth -->
+          <div class="cfg-section">
+            <h3 class="cfg-title">认证</h3>
+            <div class="cfg-grid">
+              <label class="cfg-label full">API Key
+                <input id="apiKey" type="password" class="cfg-input" placeholder="sk-..." />
+              </label>
+              <label class="cfg-label full">代理 URL（可选）
+                <input id="proxyUrl" type="url" class="cfg-input" placeholder="https://your-proxy/api" />
+              </label>
+            </div>
+          </div>
+          <!-- OAuth -->
+          <details class="cfg-section">
+            <summary class="cfg-title cfg-summary">OAuth（可选）</summary>
+            <div class="cfg-grid" style="margin-top:10px">
+              <label class="cfg-label">提供方
+                <select id="oauthProvider" class="cfg-input"><option value="none" selected>不使用</option><option value="codex">CODEX</option><option value="antigravity">antigravity</option><option value="custom">自定义</option></select>
+              </label>
+              <label class="cfg-label">Client ID<input id="oauthClientId" type="text" class="cfg-input"/></label>
+              <label class="cfg-label full">Authorize URL<input id="oauthAuthUrl" type="url" class="cfg-input"/></label>
+              <label class="cfg-label full">Token URL<input id="oauthTokenUrl" type="url" class="cfg-input"/></label>
+              <label class="cfg-label">Scope<input id="oauthScope" type="text" class="cfg-input" value="openid profile"/></label>
+              <label class="cfg-label">Redirect URI<input id="oauthRedirect" type="url" class="cfg-input"/></label>
+              <div class="cfg-row full">
+                <button class="btn btn-ghost btn-sm" id="oauthStart">OAuth 登录</button>
+                <input id="oauthCode" type="text" class="cfg-input" style="flex:1" placeholder="code"/>
+                <button class="btn btn-ghost btn-sm" id="oauthExchange">换 token</button>
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="loadConfig">加载已保存</button>
+          <button class="btn btn-primary" id="saveConfig">保存配置</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -1664,8 +1664,10 @@ select.cfg-input {
   left: 0;
   margin-bottom: 8px;
   min-width: 180px;
+  max-width: 200px;
   max-height: 240px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 6px;
   background: rgba(255, 255, 255, 0.98);
   backdrop-filter: blur(16px);
@@ -1675,6 +1677,7 @@ select.cfg-input {
   display: none;
   z-index: 100;
 }
+
 .group-list-item {
   display: flex;
   align-items: center;
@@ -1684,6 +1687,26 @@ select.cfg-input {
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all var(--duration-fast);
+  width: 100%;
+}
+
+.group-list-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.group-list-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.group-list-item:hover .group-list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .group-list-item:hover {
   background: var(--glass-hover);
@@ -1701,22 +1724,26 @@ select.cfg-input {
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  min-width: 0;
+}
+.group-list-item:hover .group-list-info {
+  min-width: 0;
 }
 .group-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
+  min-width: 0;
 }
-.group-list-name {
-  font-size: 12px;
-  color: var(--text-primary);
-  font-weight: 500;
+.group-list-item:hover .group-list-header {
+  min-width: 0;
 }
 .group-list-actions {
   display: flex;
   gap: 2px;
   align-items: center;
+  flex-shrink: 0;
 }
 .group-rename-btn,
 .group-delete-btn,
@@ -1742,6 +1769,12 @@ select.cfg-input {
 .group-rename-btn:hover {
   background: var(--glass-hover);
   color: var(--text-primary);
+}
+.group-delete-btn {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .group-delete-btn:hover {
   background: rgba(239, 68, 68, 0.12);

@@ -1628,8 +1628,12 @@ function createMinimap() {
     }
   });
 
-  // 点击组列表项选中整个组
+  // 点击组列表项选中整个组（排除操作按钮点击）
   groupListMenu.addEventListener('click', (e) => {
+    // 如果点击的是操作按钮，不触发选中组
+    if (e.target.closest('.group-rename-btn') || e.target.closest('.group-delete-btn') || e.target.closest('.group-arrange-btn')) {
+      return;
+    }
     const groupItem = e.target.closest('[data-group-id]');
     if (groupItem) {
       const groupId = groupItem.dataset.groupId;
@@ -1804,7 +1808,7 @@ function renderGroupList() {
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 11h3l7-7-3-3-7 7v3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
             </button>
             <button class="group-delete-btn" data-group-id="${group.id}" title="解散组">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 3L3 9M6 3l3 6M3 3l6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              <span style="font-size: 14px; font-weight: 700;">×</span>
             </button>
           </div>
         </div>
@@ -1812,6 +1816,28 @@ function renderGroupList() {
       </div>
     </div>
   `).join('');
+
+  // 计算并设置菜单宽度：根据最长组名动态计算
+  // 默认宽度 = 所有组名中最长的那个 + 两侧 padding(12px) + 左侧颜色块 (14px+8px) + 最小余量
+  // 最大宽度限制为约 10 个中文字 (200px)
+  const items = groupListMenu.querySelectorAll('.group-list-item');
+  let maxNameWidth = 0;
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.font = '500 12px system-ui';
+
+  items.forEach(item => {
+    const nameEl = item.querySelector('.group-list-name');
+    const text = nameEl.textContent;
+    const metrics = ctx.measureText(text);
+    if (metrics.width > maxNameWidth) {
+      maxNameWidth = metrics.width;
+    }
+  });
+
+  // 计算所需宽度：颜色块 (14+8=22px) + 组名 + 右侧留白 (8px) + padding(12px)
+  const neededWidth = 22 + maxNameWidth + 8 + 12;
+  const finalWidth = Math.min(Math.max(neededWidth, 180), 200);
+  groupListMenu.style.width = `${finalWidth}px`;
 
   // 更新剪刀按钮位置，使其跟随组选择器宽度变化
   setScissorsBtnPosition();
@@ -1931,10 +1957,9 @@ function showGroupArrangeMenu(groupId, anchorEl) {
   const group = appState.canvas.groups.find(g => g.id === groupId);
   if (!group) return;
 
-  // 隐藏组列表
+  // 获取组列表菜单的位置
   const groupListMenu = $groupSelector.querySelector('#groupListMenu');
-  groupListMenu.setAttribute('aria-hidden', 'true');
-  groupListMenu.style.display = 'none';
+  const groupListRect = groupListMenu.getBoundingClientRect();
 
   const arrangeMenu = document.createElement('div');
   arrangeMenu.className = 'group-arrange-menu';
@@ -1957,25 +1982,35 @@ function showGroupArrangeMenu(groupId, anchorEl) {
   `;
   document.body.appendChild(arrangeMenu);
 
-  const rect = anchorEl.getBoundingClientRect();
+  // 排列菜单出现在组列表菜单的右侧，与组列表菜单顶部对齐
   arrangeMenu.style.position = 'fixed';
-  arrangeMenu.style.left = `${rect.right + 8}px`;
-  arrangeMenu.style.top = `${rect.top}px`;
+  arrangeMenu.style.left = `${groupListRect.right + 8}px`;
+  arrangeMenu.style.top = `${groupListRect.top}px`;
 
+  // 点击选项后执行排列并关闭两个菜单
   arrangeMenu.querySelectorAll('.group-arrange-option').forEach(option => {
     option.addEventListener('click', (e) => {
       e.stopPropagation();
       const layout = option.dataset.layout;
       arrangeGroupBlocks(groupId, layout);
       arrangeMenu.remove();
+      groupListMenu.setAttribute('aria-hidden', 'true');
+      groupListMenu.style.display = 'none';
     });
   });
 
-  // 点击外部关闭
-  arrangeMenu.addEventListener('pointerdown', (e) => {
-    if (e.target === arrangeMenu) {
+  // 点击外部关闭两个菜单
+  const closeMenus = (e) => {
+    if (!arrangeMenu.contains(e.target) && !groupListMenu.contains(e.target) && !$groupSelector.contains(e.target)) {
       arrangeMenu.remove();
+      groupListMenu.setAttribute('aria-hidden', 'true');
+      groupListMenu.style.display = 'none';
+      document.removeEventListener('pointerdown', closeMenus);
     }
+  };
+  // 延迟一帧添加监听器，避免立即触发关闭
+  requestAnimationFrame(() => {
+    document.addEventListener('pointerdown', closeMenus);
   });
 }
 

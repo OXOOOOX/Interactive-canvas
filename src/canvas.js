@@ -322,34 +322,36 @@ function showCtxMenu(x, y, clickedBlock) {
     }
   }
 
-  // 退出组子菜单：显示选中的块已经加入的组（交集）
+  // 退出组子菜单：显示选中的块已加入的所有组（并集）
   if (removeFromGroupSubmenu) {
     if (selectedCount > 0 && hasGroups) {
-      // 找出所有选中块共同的组（交集）
-      const commonGroupIds = new Set(selectedBlocks[0]?.groupIds || []);
-      for (let i = 1; i < selectedBlocks.length; i++) {
-        const blockGroupIds = new Set(selectedBlocks[i].groupIds || []);
-        for (const id of commonGroupIds) {
-          if (!blockGroupIds.has(id)) {
-            commonGroupIds.delete(id);
-          }
+      // 找出所有选中块涉及到的组（并集）
+      const anyGroupIds = new Set();
+      selectedBlocks.forEach(block => {
+        if (block.groupIds) {
+          block.groupIds.forEach(id => anyGroupIds.add(id));
         }
-      }
+      });
 
-      // 只有当存在共同组时才显示退出组子菜单
-      const hasCommonGroups = commonGroupIds.size > 0;
-      removeFromGroupSubmenu.style.display = hasCommonGroups ? 'block' : 'none';
+      // 只要有任意块属于某个组，就显示该组
+      const hasAnyGroups = anyGroupIds.size > 0;
+      removeFromGroupSubmenu.style.display = hasAnyGroups ? 'block' : 'none';
 
-      if (hasCommonGroups) {
+      if (hasAnyGroups) {
         const submenuContent = removeFromGroupSubmenu.querySelector('.ctx-submenu');
         if (submenuContent) {
           submenuContent.innerHTML = appState.canvas.groups
-            .filter(group => commonGroupIds.has(group.id))
-            .map(group => `
-              <button class="ctx-item submenu-item" data-action="remove-from-group-single" data-group-id="${group.id}">
-                ${group.name || '组'}
-              </button>
-            `).join('');
+            .filter(group => anyGroupIds.has(group.id))
+            .map(group => {
+              // 计算有多少个选中的块属于这个组
+              const inGroupCount = selectedBlocks.filter(b => b.groupIds && b.groupIds.includes(group.id)).length;
+              const suffix = inGroupCount > 0 ? ` (${inGroupCount}个)` : '';
+              return `
+                <button class="ctx-item submenu-item" data-action="remove-from-group-single" data-group-id="${group.id}">
+                  ${group.name || '组'}${suffix}
+                </button>
+              `;
+            }).join('');
         }
       }
     } else {

@@ -24,7 +24,7 @@ const NODE_COLORS = [
 ];
 
 /** DOM 引用 */
-let $view, $transform, $blockCanvas, $linkLayer, $zoomLabel, $nodeToolbar, $ctxMenu;
+let $view, $transform, $blockCanvas, $linkLayer, $zoomLabel, $nodeToolbar, $ctxMenu, $linkScissorsModeBtn, $scissorsLayer;
 
 /** 回调 */
 let onCanvasChange = () => {};
@@ -32,6 +32,9 @@ let onDeleteNode = () => {};
 let onAddChild = () => {};
 let onAddSibling = () => {};
 let onCreateBlock = () => {};
+
+/** 剪刀模式状态 */
+let scissorsMode = false;
 
 /** 初始化画布 */
 export function initCanvas(callbacks) {
@@ -53,7 +56,44 @@ export function initCanvas(callbacks) {
   setupCanvasClick();
   setupKeyboard();
   createMinimap();
+  createScissorsModeButton();
+  createScissorsLayer();
   renderEmptyState();
+}
+
+/** 创建剪刀按钮层 */
+function createScissorsLayer() {
+  const scissorsLayer = document.createElement('div');
+  scissorsLayer.id = 'scissorsLayer';
+  scissorsLayer.className = 'scissors-layer';
+  scissorsLayer.style.pointerEvents = 'none';  // 层本身不响应事件
+  // 剪刀层需要和 canvasTransform 一样的尺寸和变换
+  scissorsLayer.style.position = 'absolute';
+  scissorsLayer.style.top = '0';
+  scissorsLayer.style.left = '0';
+  scissorsLayer.style.width = '6000px';
+  scissorsLayer.style.height = '6000px';
+  scissorsLayer.style.transformOrigin = '0 0';
+  $transform.appendChild(scissorsLayer);
+  $scissorsLayer = scissorsLayer;  // 保存引用
+}
+
+/** 创建剪刀模式按钮 */
+function createScissorsModeButton() {
+  $linkScissorsModeBtn = document.createElement('button');
+  $linkScissorsModeBtn.className = 'link-scissors-mode-btn';
+  $linkScissorsModeBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="6" cy="6" r="3"/>
+      <circle cx="6" cy="18" r="3"/>
+      <line x1="20" y1="4" x2="8.12" y2="15.88"/>
+      <line x1="14.47" y1="14.48" x2="20" y2="20"/>
+      <line x1="8.12" y1="8.12" x2="12" y2="12"/>
+    </svg>
+  `;
+  $linkScissorsModeBtn.title = '开启剪刀模式（点击连线删除）';
+  $linkScissorsModeBtn.addEventListener('click', toggleScissorsMode);
+  $view.appendChild($linkScissorsModeBtn);
 }
 
 /** 更新多选 UI 样式 */
@@ -389,6 +429,108 @@ function hideCtxMenu() {
 }
 
 // ═══════════════════════════════════════
+//  CONNECTION LINE DELETE (Ctrl + Click)
+// ═══════════════════════════════════════
+
+let isCtrlPressed = false;
+let $linkDeleteHint = null;
+
+function handleLinkMouseEnter(e) {
+  if (isCtrlPressed) {
+    e.target.classList.add('ctrl-hover');
+    showLinkDeleteHint(e);
+  }
+}
+
+function handleLinkMouseLeave(e) {
+  e.target.classList.remove('ctrl-hover');
+  hideLinkDeleteHint();
+}
+
+function handleLinkClick(e) {
+  if (!isCtrlPressed) return;
+
+  const connId = e.target.getAttribute('data-conn-id');
+  if (connId) {
+    const connIndex = appState.canvas.connections.findIndex(c => c.id === connId);
+    if (connIndex !== -1) {
+      appState.canvas.connections.splice(connIndex, 1);
+      pushHistory();
+      renderLinks();
+      updateMinimap();
+      onCanvasChange();
+      hideLinkDeleteHint();
+    }
+  }
+}
+
+function showLinkDeleteHint(e) {
+  if (!$linkDeleteHint) {
+    $linkDeleteHint = document.createElement('div');
+    $linkDeleteHint.className = 'link-delete-hint';
+    $linkDeleteHint.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 6L6 18M6 6l12 12"/>
+        <circle cx="12" cy="12" r="9"/>
+      </svg>
+      <span>点击删除连线</span>
+    `;
+    document.body.appendChild($linkDeleteHint);
+  }
+  $linkDeleteHint.style.left = `${e.clientX + 15}px`;
+  $linkDeleteHint.style.top = `${e.clientY + 15}px`;
+  $linkDeleteHint.classList.add('visible');
+}
+
+function hideLinkDeleteHint() {
+  if ($linkDeleteHint) {
+    $linkDeleteHint.classList.remove('visible');
+  }
+}
+
+// 全局键盘事件监听
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Control' || e.key === 'Meta') {
+    isCtrlPressed = true;
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'Control' || e.key === 'Meta') {
+    isCtrlPressed = false;
+    hideLinkDeleteHint();
+    // 移除所有连线的 hover 状态
+    $linkLayer.querySelectorAll('path.ctrl-hover').forEach(p => {
+      p.classList.remove('ctrl-hover');
+    });
+  }
+});
+
+/** 删除指定 ID 的连接 */
+function deleteConnection(connId) {
+  const connIndex = appState.canvas.connections.findIndex(c => c.id === connId);
+  if (connIndex !== -1) {
+    appState.canvas.connections.splice(connIndex, 1);
+    pushHistory();
+    renderLinks();
+    updateMinimap();
+    onCanvasChange();
+  }
+}
+
+/** 切换剪刀模式 */
+function toggleScissorsMode() {
+  scissorsMode = !scissorsMode;
+  console.log('[剪刀模式] 状态:', scissorsMode ? '开启' : '关闭');
+  renderLinks();
+  // 更新按钮状态
+  if ($linkScissorsModeBtn) {
+    $linkScissorsModeBtn.classList.toggle('active', scissorsMode);
+    $linkScissorsModeBtn.setAttribute('title', scissorsMode ? '关闭剪刀模式' : '开启剪刀模式（点击连线删除）');
+  }
+}
+
+// ═══════════════════════════════════════
 //  INLINE EDITING
 // ═══════════════════════════════════════
 
@@ -699,6 +841,9 @@ function getBlockWidth(block) {
 }
 
 function renderLinks() {
+  // 清除旧的剪刀按钮
+  $linkLayer.querySelectorAll('.link-scissors-btn').forEach(btn => btn.remove());
+
   const blockMap = {};
   for (const b of appState.canvas.blocks) blockMap[b.id] = b;
 
@@ -720,6 +865,7 @@ function renderLinks() {
     const y1 = from.y + fromH;
     const x2 = to.x + toW / 2;
     const y2 = to.y;
+    const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
 
     const pathD = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
@@ -730,7 +876,14 @@ function renderLinks() {
       path.setAttribute('data-conn-id', conn.id);
       path.setAttribute('stroke-width', '3');
       path.setAttribute('fill', 'none');
+      path.style.pointerEvents = 'stroke';  // 只响应描边区域的点击
+      path.style.cursor = 'default';
       $linkLayer.appendChild(path);
+
+      // 为连线添加鼠标事件监听器（用于 Ctrl+ 点击删除）
+      path.addEventListener('mouseenter', handleLinkMouseEnter);
+      path.addEventListener('mouseleave', handleLinkMouseLeave);
+      path.addEventListener('click', handleLinkClick);
     }
 
     path.setAttribute('d', pathD);
@@ -743,13 +896,51 @@ function renderLinks() {
       path.setAttribute('stroke', '#000');
       path.setAttribute('opacity', '1');
     }
+
+    // 为每条连线添加剪刀按钮（触屏模式）
+    let scissorsBtn = $scissorsLayer.querySelector(`.link-scissors-btn[data-conn-id="${conn.id}"]`);
+    if (!scissorsBtn) {
+      scissorsBtn = document.createElement('div');
+      scissorsBtn.className = 'link-scissors-btn';
+      scissorsBtn.setAttribute('data-conn-id', conn.id);
+      scissorsBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="6" cy="6" r="3"/>
+          <circle cx="6" cy="18" r="3"/>
+          <line x1="20" y1="4" x2="8.12" y2="15.88"/>
+          <line x1="14.47" y1="14.48" x2="20" y2="20"/>
+          <line x1="8.12" y1="8.12" x2="12" y2="12"/>
+        </svg>
+      `;
+      scissorsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        console.log('[剪刀按钮] 点击删除连线:', conn.id);
+        deleteConnection(conn.id);
+      });
+      $scissorsLayer.appendChild(scissorsBtn);
+      console.log('[剪刀按钮] 创建新按钮，连线 ID:', conn.id);
+    }
+
+    // 更新剪刀按钮位置（连线中点）
+    // 注意：不需要手动乘以 zoom 或加上 panX/Y，因为 scissorsLayer 是 $transform 的子元素
+    // transform 会自动应用这些变换
+    const btnLeft = midX - 14;  // 14 是按钮宽度的一半 (28/2)
+    const btnTop = midY - 14;   // 14 是按钮高度的一半 (28/2)
+
+    if (scissorsMode) {
+      scissorsBtn.classList.add('visible');
+      scissorsBtn.style.left = `${btnLeft}px`;
+      scissorsBtn.style.top = `${btnTop}px`;
+    } else {
+      scissorsBtn.classList.remove('visible');
+    }
   }
 
-  // Remove stale paths that belong to connections
-  const allConnPaths = $linkLayer.querySelectorAll('path[data-conn-id]');
-  allConnPaths.forEach(p => {
-    if (!validConnIds.has(p.getAttribute('data-conn-id'))) {
-      p.remove();
+  // 移除废弃的剪刀按钮
+  const allScissorsBtns = $scissorsLayer.querySelectorAll('.link-scissors-btn');
+  allScissorsBtns.forEach(btn => {
+    if (!validConnIds.has(btn.getAttribute('data-conn-id'))) {
+      btn.remove();
     }
   });
 }

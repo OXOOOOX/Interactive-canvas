@@ -425,6 +425,16 @@ html, body {
   overflow: visible;
 }
 
+/* 剪刀按钮层 - 独立于连线层，确保按钮可点击 */
+.scissors-layer {
+  position: absolute;
+  top: 0; left: 0;
+  width: 6000px;
+  height: 6000px;
+  pointer-events: none;
+  z-index: 500;
+}
+
 .block-canvas {
   position: absolute;
   top: 0; left: 0;
@@ -1896,11 +1906,126 @@ select.cfg-input {
 .link-layer path {
   stroke-dasharray: 8 4;
   animation: flowDash 20s linear infinite;
+  cursor: default;
+  transition: stroke-width var(--duration-fast), stroke var(--duration-fast);
 }
+
+/* Ctrl 键按下时的连线交互状态 */
+.link-layer path.ctrl-hover {
+  stroke: #ef4444 !important;
+  stroke-width: 5 !important;
+  cursor: not-allowed !important;
+}
+
+/* 剪刀提示 */
+.link-delete-hint {
+  position: fixed;
+  z-index: 1000;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--duration-fast);
+}
+.link-delete-hint.visible {
+  opacity: 1;
+}
+.link-delete-hint svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 删除重复的剪刀按钮定义 - 已在上面定义 */
+
+/* ═══════════════════════════════════════════════════
+   LINK SCISSORS BUTTON (touch mode)
+   ═══════════════════════════════════════════════════ */
+.link-scissors-btn {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  background: #ef4444;
+  border: 2px solid #000;
+  border-radius: 50%;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+  transition: transform var(--duration-fast), opacity var(--duration-fast);
+}
+.link-scissors-btn.visible {
+  display: flex;
+  animation: scissorsPop 0.2s var(--ease-spring);
+}
+@keyframes scissorsPop {
+  from { transform: scale(0); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.link-scissors-btn:hover {
+  transform: scale(1.1);
+  background: #dc2626;
+}
+.link-scissors-btn:active {
+  transform: scale(0.95);
+}
+.link-scissors-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: #fff;
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+/* 剪刀模式切换按钮 */
+.link-scissors-mode-btn {
+  position: absolute;
+  bottom: var(--space-md);
+  right: calc(var(--space-md) + 28px + 8px);  /* 组列表按钮宽度 + 间距 */
+  width: 40px;
+  height: 40px;
+  background: var(--bg-surface);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  box-shadow: var(--shadow-md);
+  transition: all var(--duration-fast);
+  opacity: 0.7;
+}
+.link-scissors-mode-btn:hover {
+  opacity: 1;
+  background: var(--glass-hover);
+}
+.link-scissors-mode-btn.active {
+  background: #ef4444;
+  border-color: #000;
+  opacity: 1;
+}
+.link-scissors-mode-btn.active svg {
+  stroke: #fff;
+}
+.link-scissors-mode-btn svg {
+  width: 20px;
+  height: 20px;
+  stroke: var(--text-primary);
+  stroke-width: 2;
+}
+
 @keyframes flowDash {
   to { stroke-dashoffset: -240; }
 }
-
 
 /* ═══════════════════════════════════════════════════
    KEYBOARD SHORTCUT HINTS (on block hover)
@@ -2091,37 +2216,40 @@ select.cfg-input {
 .link-layer path {
   stroke-dasharray: 8 4;
   animation: flowDash 20s linear infinite;
-}
-@keyframes flowDash {
-  to { stroke-dashoffset: -240; }
+  cursor: default;
+  transition: stroke-width var(--duration-fast), stroke var(--duration-fast);
 }
 
+/* Ctrl 键按下时的连线交互状态 */
+.link-layer path.ctrl-hover {
+  stroke: #ef4444 !important;
+  stroke-width: 5 !important;
+  cursor: not-allowed !important;
+}
 
-/* ═══════════════════════════════════════════════════
-   KEYBOARD SHORTCUT HINTS (on block hover)
-   ═══════════════════════════════════════════════════ */
-.mm-block.selected::after {
-  content: 'Tab: 子块  Enter: 同级  F2: 编辑  Del: 删除';
-  position: absolute;
-  top: -20px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  opacity: 0;
-  visibility: hidden;
+/* 剪刀提示 */
+.link-delete-hint {
+  position: fixed;
+  z-index: 1000;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
   pointer-events: none;
-  transition: opacity var(--duration-fast) var(--ease-out),
-              visibility var(--duration-fast) var(--ease-out);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--duration-fast);
 }
-.mm-block.selected:hover::after {
-  opacity: 0.6;
-  visibility: visible;
+.link-delete-hint.visible {
+  opacity: 1;
 }
-
-
-/* ═══════════════════════════════════════════════════
+.link-delete-hint svg {
+  width: 14px;
+  height: 14px;
+}
    SNAP GRID INDICATOR
    ═══════════════════════════════════════════════════ */
 .mm-block.dragging {

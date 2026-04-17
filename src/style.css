@@ -676,6 +676,7 @@ html, body {
    CHAT PANEL (right side)
    ═══════════════════════════════════════════════════ */
 .chat-panel {
+  position: relative;  /* 作为剪刀模式按钮的定位容器 */
   width: var(--chat-width);
   display: flex;
   flex-direction: column;
@@ -1985,13 +1986,10 @@ select.cfg-input {
   pointer-events: none;
 }
 
-/* 剪刀模式切换按钮 */
+/* 剪刀模式切换按钮 - 固定在组选择器右侧 */
 .link-scissors-mode-btn {
   position: absolute;
-  bottom: var(--space-md);
-  right: calc(var(--space-md) + 28px + 8px);  /* 组列表按钮宽度 + 间距 */
   width: 40px;
-  height: 40px;
   background: var(--bg-surface);
   border: 2px solid var(--glass-border);
   border-radius: var(--radius-md);
@@ -2000,7 +1998,6 @@ select.cfg-input {
   align-items: center;
   justify-content: center;
   z-index: 100;
-  box-shadow: var(--shadow-md);
   transition: all var(--duration-fast);
   opacity: 0.7;
 }

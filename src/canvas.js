@@ -59,6 +59,9 @@ export function initCanvas(callbacks) {
   createScissorsModeButton();
   createScissorsLayer();
   renderEmptyState();
+
+  // 初始化剪刀按钮位置
+  setScissorsBtnPosition();
 }
 
 /** 创建剪刀按钮层 */
@@ -841,8 +844,9 @@ function getBlockWidth(block) {
 }
 
 function renderLinks() {
-  // 清除旧的剪刀按钮
-  $linkLayer.querySelectorAll('.link-scissors-btn').forEach(btn => btn.remove());
+  // 清除旧的连线和剪刀按钮
+  $linkLayer.innerHTML = '';
+  $scissorsLayer?.querySelectorAll('.link-scissors-btn').forEach(btn => btn.remove());
 
   const blockMap = {};
   for (const b of appState.canvas.blocks) blockMap[b.id] = b;
@@ -935,14 +939,6 @@ function renderLinks() {
       scissorsBtn.classList.remove('visible');
     }
   }
-
-  // 移除废弃的剪刀按钮
-  const allScissorsBtns = $scissorsLayer.querySelectorAll('.link-scissors-btn');
-  allScissorsBtns.forEach(btn => {
-    if (!validConnIds.has(btn.getAttribute('data-conn-id'))) {
-      btn.remove();
-    }
-  });
 }
 
 function escapeHtml(text) {
@@ -1553,6 +1549,28 @@ export function fitToView() {
   applyTransform();
 }
 
+/** 设置剪刀模式按钮位置（固定在组选择器右侧） */
+export function setScissorsBtnPosition() {
+  if (!$linkScissorsModeBtn || !$groupSelector) return;
+  // 获取组选择器的实际位置
+  const groupSelectorRect = $groupSelector.getBoundingClientRect();
+  const viewRect = document.querySelector('.canvas-area').getBoundingClientRect();
+
+  // 计算相对于 canvas-area 的位置
+  // 组选择器右侧 + 2px 间距
+  const left = groupSelectorRect.right - viewRect.left + 2;
+  // 顶部对齐组选择器容器
+  const top = groupSelectorRect.top - viewRect.top;
+  // 高度与组选择器一致
+  const height = groupSelectorRect.height;
+
+  $linkScissorsModeBtn.style.left = `${left}px`;
+  $linkScissorsModeBtn.style.top = `${top}px`;
+  $linkScissorsModeBtn.style.height = `${height}px`;
+  $linkScissorsModeBtn.style.right = 'auto';
+  $linkScissorsModeBtn.style.bottom = 'auto';
+}
+
 // ═══════════════════════════════════════
 //  MINIMAP
 // ═══════════════════════════════════════
@@ -1755,6 +1773,9 @@ function updateGroupSelector() {
   // 隐藏组列表菜单
   groupListMenu.setAttribute('aria-hidden', 'true');
   groupListMenu.style.display = 'none';
+
+  // 更新剪刀按钮位置，使其跟随组选择器宽度变化
+  setScissorsBtnPosition();
 }
 
 /**
@@ -1791,6 +1812,9 @@ function renderGroupList() {
       </div>
     </div>
   `).join('');
+
+  // 更新剪刀按钮位置，使其跟随组选择器宽度变化
+  setScissorsBtnPosition();
 
   // 为重命名按钮添加事件
   groupListMenu.querySelectorAll('.group-rename-btn').forEach(btn => {

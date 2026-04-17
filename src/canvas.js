@@ -2,7 +2,7 @@
  * canvas.js — 画布渲染 + 拖拽 + 缩放平移 + 内联编辑 + 颜色 + 右键菜单
  */
 
-import { appState, pushHistory } from './state.js';
+import { appState, pushHistory, createGroup, deleteGroup, getGroupBlocks, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName, saveCurrentCanvas, toggleGroupFold, addBlocksToGroup, removeBlocksFromGroup, loadConfig } from './state.js';
 import { getBoundingBox } from './utils/layout.js';
 import { renderMarkdown } from './utils/parser.js';
 
@@ -56,6 +56,25 @@ export function initCanvas(callbacks) {
   renderEmptyState();
 }
 
+/** 更新多选 UI 样式 */
+function updateMultiSelectUI() {
+  $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+    b.classList.remove('selected');
+    b.classList.remove('selected-multi');
+  });
+
+  appState.selectedBlockIds.forEach(id => {
+    const el = $blockCanvas.querySelector(`[data-id="${id}"]`);
+    if (el) {
+      el.classList.add('selected-multi');
+      // 如果只有一个选中，同时添加 selected 类
+      if (appState.selectedBlockIds.length === 1) {
+        el.classList.add('selected');
+      }
+    }
+  });
+}
+
 // ═══════════════════════════════════════
 //  CONTEXT MENU
 // ═══════════════════════════════════════
@@ -91,6 +110,22 @@ function createContextMenu() {
       </div>
     </div>
     <div class="ctx-divider"></div>
+    <!-- 组操作 -->
+    <button class="ctx-item group-action" data-action="create-group" style="display:none;">
+      🔗 创建组
+    </button>
+    <!-- 加入组子菜单 -->
+    <div class="ctx-item group-action ctx-submenu-trigger" data-submenu="add-to-group" style="display:none;">
+      📁 加入组
+      <div class="ctx-submenu">
+        <!-- 动态生成 -->
+      </div>
+    </div>
+    <!-- 从组移除 -->
+    <button class="ctx-item group-action" data-action="remove-from-group" style="display:none;">
+      🚪 退出组
+    </button>
+    <div class="ctx-divider"></div>
     <button class="ctx-item ctx-danger" data-action="delete">
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5h4V4M11 4l-.8 7.5a1 1 0 01-1 .9H4.8a1 1 0 01-1-.9L3 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
       删除
@@ -99,29 +134,76 @@ function createContextMenu() {
   $ctxMenu.style.display = 'none';
   document.body.appendChild($ctxMenu);
 
+  // 清除之前的鼠标悬停监听器（如果有）
+  const oldClone = $ctxMenu.cloneNode(true);
+  $ctxMenu.parentNode?.replaceChild($ctxMenu, $ctxMenu);
+
   // Ctx menu actions
   $ctxMenu.addEventListener('click', (e) => {
     const item = e.target.closest('[data-action]');
     const colorDot = e.target.closest('[data-color]');
 
     if (colorDot) {
-      const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
-      if (block) {
-        const colorVal = colorDot.dataset.color || null;
-        block.color = colorVal;
-        pushHistory();
-        renderBlocks();
-        onCanvasChange();
+      const colorVal = colorDot.dataset.color || null;
+      // 支持多选时同时修改多个块的颜色
+      if (appState.selectedBlockIds.length > 0) {
+        appState.selectedBlockIds.forEach(id => {
+          const block = appState.canvas.blocks.find(b => b.id === id);
+          if (block) {
+            block.color = colorVal;
+          }
+        });
+      } else {
+        const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+        if (block) {
+          block.color = colorVal;
+        }
       }
+      pushHistory();
+      renderBlocks();
+      onCanvasChange();
       hideCtxMenu();
       return;
     }
 
     if (!item) return;
     const action = item.dataset.action;
-    const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+
+    if (action === 'create-group') {
+      hideCtxMenu();
+      handleCreateGroupFromMenu();
+      return;
+    }
+
+    // 加入组
+    if (action === 'add-to-group-single') {
+      const groupId = item.dataset.groupId;
+      hideCtxMenu();
+      if (groupId) {
+        addBlocksToGroup(appState.selectedBlockIds, groupId);
+        pushHistory();
+        renderBlocks();
+        onCanvasChange();
+      }
+      return;
+    }
+
+    // 从组移除
+    if (action === 'remove-from-group') {
+      hideCtxMenu();
+      if (uniqueGroupIds.size === 1 && allGroupIds.length > 0) {
+        const groupId = allGroupIds[0];
+        removeBlocksFromGroup(appState.selectedBlockIds, groupId);
+        pushHistory();
+        renderBlocks();
+        onCanvasChange();
+      }
+      return;
+    }
+
     hideCtxMenu();
 
+    const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
     switch (action) {
       case 'edit':
         if (block) startInlineEdit(block, 'label');
@@ -131,7 +213,14 @@ function createContextMenu() {
         break;
       case 'addChild': onAddChild(); break;
       case 'addSibling': onAddSibling(); break;
-      case 'delete': onDeleteNode(); break;
+      case 'delete':
+        // 支持多选删除
+        if (appState.selectedBlockIds.length > 0) {
+          onDeleteNode();
+        } else if (block) {
+          onDeleteNode();
+        }
+        break;
     }
   });
 
@@ -141,7 +230,58 @@ function createContextMenu() {
   });
 }
 
-function showCtxMenu(x, y) {
+function showCtxMenu(x, y, clickedBlock) {
+  const selectedCount = appState.selectedBlockIds.length;
+  const selectedBlocks = appState.canvas.blocks.filter(b =>
+    appState.selectedBlockIds.includes(b.id)
+  );
+
+  // 收集所有选中的块所属的组 ID
+  const allGroupIds = [];
+  selectedBlocks.forEach(b => {
+    if (b.groupIds) {
+      allGroupIds.push(...b.groupIds);
+    }
+  });
+  const uniqueGroupIds = new Set(allGroupIds);
+
+  // 更新菜单项显示
+  const createGroupBtn = $ctxMenu.querySelector('[data-action="create-group"]');
+
+  if (createGroupBtn) {
+    createGroupBtn.style.display = selectedCount >= 2 ? 'block' : 'none';
+    createGroupBtn.textContent = selectedCount >= 2 ? `🔗 创建组 (${selectedCount}个块)` : '🔗 创建组';
+  }
+
+  // 加入组子菜单和从组移除
+  const addToGroupSubmenu = $ctxMenu.querySelector('[data-submenu="add-to-group"]');
+  const removeFromGroupBtn = $ctxMenu.querySelector('[data-action="remove-from-group"]');
+
+  // 有选中的块且存在组 → 显示加入组子菜单
+  const hasGroups = appState.canvas.groups && appState.canvas.groups.length > 0;
+  if (addToGroupSubmenu) {
+    addToGroupSubmenu.style.display = (selectedCount > 0 && hasGroups) ? 'block' : 'none';
+    if (selectedCount > 0 && hasGroups) {
+      const submenuContent = addToGroupSubmenu.querySelector('.ctx-submenu');
+      if (submenuContent) {
+        submenuContent.innerHTML = appState.canvas.groups.map(group => {
+          const isAlreadyInGroup = selectedBlocks.every(b => b.groupIds && b.groupIds.includes(group.id));
+          const disabled = isAlreadyInGroup ? ' disabled' : '';
+          const suffix = isAlreadyInGroup ? ' (已在组内)' : '';
+          return `<button class="ctx-item submenu-item" data-action="add-to-group-single" data-group-id="${group.id}"${disabled}>
+            ${group.name || '组'}${suffix}
+          </button>`;
+        }).join('');
+      }
+    }
+  }
+
+  // 选中的块都在同一个组内 → 显示从组移除
+  if (removeFromGroupBtn) {
+    const allInOneGroup = uniqueGroupIds.size === 1 && selectedCount > 0 && allGroupIds.length > 0;
+    removeFromGroupBtn.style.display = allInOneGroup ? 'block' : 'none';
+  }
+
   $ctxMenu.style.display = 'block';
   $ctxMenu.style.left = `${x}px`;
   $ctxMenu.style.top = `${y}px`;
@@ -154,7 +294,97 @@ function showCtxMenu(x, y) {
   });
 }
 
+async function handleCreateGroupFromMenu() {
+  const selectedIds = appState.selectedBlockIds;
+  console.log('[Group] Creating group with selected ids:', selectedIds);
+
+  if (selectedIds.length < 2) {
+    console.warn('[Group] Not enough blocks selected:', selectedIds.length);
+    alert('请至少选中 2 个块才能创建组');
+    return;
+  }
+
+  // 确保 groups 数组存在
+  if (!appState.canvas.groups) {
+    appState.canvas.groups = [];
+  }
+
+  // 选择一个颜色（基于组的索引）
+  const GROUP_COLORS_LOCAL = [
+    { name: '黄色', value: '#FFD600' },
+    { name: '蓝色', value: '#2979FF' },
+    { name: '绿色', value: '#00E676' },
+    { name: '粉红', value: '#FF4081' },
+    { name: '紫色', value: '#D500F9' },
+    { name: '橙色', value: '#FF9100' },
+  ];
+  const colorIndex = appState.canvas.groups.length % GROUP_COLORS_LOCAL.length;
+  const color = GROUP_COLORS_LOCAL[colorIndex].value;
+
+  // 先创建组（默认名称）
+  const group = createGroup(selectedIds, color);
+  console.log('[Group] Created group with default name:', group.name);
+
+  // AI 推荐组名（异步，不阻塞创建）
+  // 优先从 localStorage 读取配置，如果没有则尝试从 UI 表单读取
+  let config = loadConfig();
+  if (!config) {
+    const apiKeyInput = document.getElementById('apiKey');
+    if (apiKeyInput && apiKeyInput.value) {
+      config = { apiKey: apiKeyInput.value };
+    }
+  }
+  suggestGroupName(selectedIds, config).then(name => {
+    if (name && name.length > 0) {
+      console.log('[Group] AI recommended name:', name);
+      group.name = name;
+      updateGroupSelector();
+      saveCurrentCanvas();
+    }
+  });
+
+  pushHistory();
+  renderBlocks();
+  onCanvasChange();
+
+  console.log('[Group] Group created successfully');
+}
+
+/**
+ * 高亮显示指定组的所有成员块
+ * @param {string} groupId - 组 ID
+ * @param {boolean} highlight - 是否高亮
+ * @param {string} borderColor - 边框颜色（可选，默认使用组的颜色）
+ */
+function highlightGroupMembers(groupId, highlight, borderColor = null) {
+  const group = appState.canvas.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  // 如果没有指定颜色，使用组的颜色
+  const color = borderColor || group.color;
+
+  group.blockIds.forEach(blockId => {
+    const el = $blockCanvas.querySelector(`[data-id="${blockId}"]`);
+    if (el) {
+      if (highlight) {
+        el.classList.add('group-highlight');
+        if (color) {
+          el.style.setProperty('--highlight-color', color);
+        }
+      } else {
+        el.classList.remove('group-highlight');
+        el.style.removeProperty('--highlight-color');
+      }
+    }
+  });
+}
+
 function hideCtxMenu() {
+  // 清除所有高亮
+  $blockCanvas.querySelectorAll('.group-highlight').forEach(el => {
+    el.classList.remove('group-highlight');
+    el.style.removeProperty('--highlight-color');
+  });
   $ctxMenu.style.display = 'none';
 }
 
@@ -327,8 +557,8 @@ function setupKeyboard() {
     // Skip when editing text
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
 
-    // Delete / Backspace → 删除选中节点
-    if ((e.key === 'Delete' || e.key === 'Backspace') && appState.selectedBlockId) {
+    // Delete / Backspace → 删除选中节点（支持多选）
+    if ((e.key === 'Delete' || e.key === 'Backspace') && (appState.selectedBlockId || appState.selectedBlockIds.length > 0)) {
       e.preventDefault();
       onDeleteNode();
       return;
@@ -357,9 +587,14 @@ function setupKeyboard() {
     }
 
     // Escape → 取消选中
-    if (e.key === 'Escape' && appState.selectedBlockId) {
+    if (e.key === 'Escape' && (appState.selectedBlockId || appState.selectedBlockIds.length > 0)) {
+      e.preventDefault();
       appState.selectedBlockId = null;
-      $blockCanvas.querySelectorAll('.mm-block.selected').forEach(b => b.classList.remove('selected'));
+      appState.selectedBlockIds = [];
+      $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+        b.classList.remove('selected');
+        b.classList.remove('selected-multi');
+      });
       hideNodeToolbar();
       hideCtxMenu();
       return;
@@ -378,6 +613,9 @@ function setupKeyboard() {
 function navigateNodes(key) {
   const current = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
   if (!current) return;
+
+  // 方向键导航时清除多选状态
+  appState.selectedBlockIds = [];
 
   let best = null;
   let bestDist = Infinity;
@@ -409,9 +647,16 @@ function navigateNodes(key) {
 
   if (best) {
     appState.selectedBlockId = best.id;
-    $blockCanvas.querySelectorAll('.mm-block.selected').forEach(b => b.classList.remove('selected'));
+    appState.selectedBlockIds = [best.id];
+    $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+      b.classList.remove('selected');
+      b.classList.remove('selected-multi');
+    });
     const el = $blockCanvas.querySelector(`[data-id="${best.id}"]`);
-    if (el) el.classList.add('selected');
+    if (el) {
+      el.classList.add('selected');
+      el.classList.add('selected-multi');
+    }
     showNodeToolbar(best);
   }
 }
@@ -421,7 +666,11 @@ function setupCanvasClick() {
   $view.addEventListener('pointerdown', (e) => {
     if (e.target === $view || e.target === $transform || e.target === $blockCanvas) {
       appState.selectedBlockId = null;
-      $blockCanvas.querySelectorAll('.mm-block.selected').forEach(b => b.classList.remove('selected'));
+      appState.selectedBlockIds = [];
+      $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+        b.classList.remove('selected');
+        b.classList.remove('selected-multi');
+      });
       hideNodeToolbar();
       hideCtxMenu();
     }
@@ -513,7 +762,7 @@ function escapeHtml(text) {
 
 /** 渲染所有块 */
 export function renderBlocks(newIds = []) {
-  if (!appState.selectedBlockId) hideNodeToolbar();
+  if (!appState.selectedBlockId && appState.selectedBlockIds.length === 0) hideNodeToolbar();
   $blockCanvas.innerHTML = '';
   $linkLayer.innerHTML = '';  // 清空连接线层
 
@@ -529,10 +778,27 @@ export function renderBlocks(newIds = []) {
     $blockCanvas.appendChild(empty);
     applyTransform();
     updateMinimap();
+    updateGroupSelector();
     return;
   }
 
+  // 收集所有折叠组内的块 ID（除了代表块）
+  const foldedBlockIds = new Set();
+  if (appState.canvas.groups && appState.canvas.groups.length > 0) {
+    appState.canvas.groups.forEach(group => {
+      if (group.folded && group.blockIds.length > 1) {
+        // 折叠组：隐藏除第一个块外的所有块
+        group.blockIds.slice(1).forEach(id => foldedBlockIds.add(id));
+      }
+    });
+  }
+
   for (const block of appState.canvas.blocks) {
+    // 跳过折叠组内被隐藏的块
+    if (foldedBlockIds.has(block.id)) {
+      continue;
+    }
+
     const el = document.createElement('article');
     el.className = 'mm-block';
     el.dataset.id = block.id;
@@ -541,7 +807,23 @@ export function renderBlocks(newIds = []) {
     const isRoot = !appState.canvas.connections.some(c => c.toId === block.id);
     if (isRoot) el.classList.add('root-node');
 
-    if (block.id === appState.selectedBlockId) el.classList.add('selected');
+    // 选中状态：单选或多选
+    if (block.id === appState.selectedBlockId) {
+      el.classList.add('selected');
+    }
+    if (appState.selectedBlockIds.includes(block.id)) {
+      el.classList.add('selected-multi');
+    }
+
+    // 组标识 - 左上角颜色圆点
+    if (block.groupId) {
+      const group = getBlockGroup(block.id);
+      if (group) {
+        el.dataset.groupId = block.groupId;
+        // 组内块添加特殊类
+        el.classList.add('mm-block-in-group');
+      }
+    }
 
     // 入场动画
     if (newIds.includes(block.id)) {
@@ -577,9 +859,35 @@ export function renderBlocks(newIds = []) {
       ? `<div class="mm-lock-icon" title="已锁定">🔒</div>`
       : '';
 
+    // 组标识圆点（支持多组，显示多个圆点）
+    const groupIndicators = block.groupIds && block.groupIds.length > 0
+      ? block.groupIds.map(groupId => {
+          const group = appState.canvas.groups.find(g => g.id === groupId);
+          const color = group ? group.color : '#FFD600';
+          const groupName = group ? `组 (${group.color})` : '组';
+          // 如果是折叠组的代表块，添加折叠指示器
+          const isFolded = group && group.folded && group.blockIds.length > 1;
+          const foldedIcon = isFolded ? `<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5h6M5 2v6" stroke="#000" stroke-width="1.5"/></svg>` : '';
+          return `<div class="mm-group-indicator ${isFolded ? 'folded' : ''}" style="background:${color}" title="${isFolded ? '已折叠（点击展开）' : groupName}">${foldedIcon}</div>`;
+        }).join('')
+      : '';
+
+    // 折叠指示器（显示块数量）
+    let foldedBadge = '';
+    if (block.groupIds && block.groupIds.length > 0) {
+      block.groupIds.forEach(groupId => {
+        const group = appState.canvas.groups.find(g => g.id === groupId);
+        if (group && group.folded && group.blockIds.length > 1) {
+          foldedBadge = `<div class="mm-folded-badge">+${group.blockIds.length - 1}块</div>`;
+        }
+      });
+    }
+
     el.innerHTML = `
       ${colorBar}
       ${lockIcon}
+      ${groupIndicators}
+      ${foldedBadge}
       <div class="mm-label">${escapeHtml(block.label)}</div>
       <div class="mm-content ${block.content ? '' : 'mm-content-placeholder'}">${block.content ? renderMarkdown(block.content) : '点击添加内容…'}</div>
       <div class="mm-resize-handle mm-resize-r" data-resize="r"></div>
@@ -588,16 +896,60 @@ export function renderBlocks(newIds = []) {
       <div class="mm-link-handle" title="连线到其他块"></div>
     `;
 
+    // 为折叠指示器添加点击展开事件
+    el.querySelectorAll('.mm-group-indicator.folded').forEach(indicator => {
+      indicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // 找到对应的组 ID 并展开
+        block.groupIds.forEach(groupId => {
+          const group = appState.canvas.groups.find(g => g.id === groupId);
+          if (group && group.folded) {
+            toggleGroupFold(groupId, false);
+          }
+        });
+        renderBlocks();
+        saveCurrentCanvas();
+      });
+    });
+
     // 选中（不重建 DOM，仅切换 CSS 类，保留 dblclick）
     el.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       // 如果点击的是 resize handle，不处理选中
       if (e.target.closest('.mm-resize-handle')) return;
-      // 取消其他节点的选中状态
-      $blockCanvas.querySelectorAll('.mm-block.selected').forEach(b => b.classList.remove('selected'));
-      appState.selectedBlockId = block.id;
-      el.classList.add('selected');
-      showNodeToolbar(block);
+
+      const isMultiSelect = e.shiftKey || e.ctrlKey;
+
+      if (!isMultiSelect) {
+        // 单击：取消其他选中，只选中当前
+        $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+          b.classList.remove('selected');
+          b.classList.remove('selected-multi');
+        });
+        appState.selectedBlockIds = [block.id];
+        appState.selectedBlockId = block.id;
+        el.classList.add('selected');
+        el.classList.add('selected-multi');
+        showNodeToolbar(block);
+      } else {
+        // Shift/Ctrl+ 点击：累加/取消选中
+        const idx = appState.selectedBlockIds.indexOf(block.id);
+        if (idx > -1) {
+          // 取消选中
+          appState.selectedBlockIds = appState.selectedBlockIds.filter(id => id !== block.id);
+          el.classList.remove('selected');
+          el.classList.remove('selected-multi');
+        } else {
+          // 添加选中
+          appState.selectedBlockIds.push(block.id);
+          appState.selectedBlockId = block.id;
+          el.classList.add('selected-multi');
+        }
+        // 更新所有选中块的样式
+        updateMultiSelectUI();
+        // 显示-toolbar（以最后选中的块为准）
+        showNodeToolbar(block);
+      }
       e.stopPropagation();
     });
 
@@ -616,10 +968,23 @@ export function renderBlocks(newIds = []) {
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      $blockCanvas.querySelectorAll('.mm-block.selected').forEach(b => b.classList.remove('selected'));
-      appState.selectedBlockId = block.id;
-      el.classList.add('selected');
-      showCtxMenu(e.clientX, e.clientY);
+
+      const isSelected = appState.selectedBlockIds.includes(block.id);
+
+      // 如果当前块未被选中，则选中它（但不清空其他选中）
+      if (!isSelected) {
+        // 取消其他选中，只选中当前
+        $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+          b.classList.remove('selected');
+          b.classList.remove('selected-multi');
+        });
+        appState.selectedBlockIds = [block.id];
+        appState.selectedBlockId = block.id;
+        el.classList.add('selected');
+        el.classList.add('selected-multi');
+      }
+
+      showCtxMenu(e.clientX, e.clientY, block);
     });
 
     // 拖拽
@@ -635,6 +1000,7 @@ export function renderBlocks(newIds = []) {
   renderLinks();
   applyTransform();
   updateMinimap();
+  updateGroupSelector();
 }
 
 // ═══════════════════════════════════════
@@ -647,6 +1013,7 @@ function setupDrag(el, block) {
   let offsetX, offsetY;
   let startScreenX, startScreenY;
   let pointerId = null;
+  let initialPositions = []; // 记录组内所有块的初始位置
 
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || e.target.isContentEditable) return;
@@ -666,6 +1033,18 @@ function setupDrag(el, block) {
     const canvasY = (e.clientY - rect.top - appState.viewport.panY) / zoom;
     offsetX = canvasX - block.x;
     offsetY = canvasY - block.y;
+
+    // 如果块在组内（且只属于一个组），记录组内所有块的初始位置
+    if (block.groupIds && block.groupIds.length === 1) {
+      const groupId = block.groupIds[0];
+      const groupBlocks = getGroupBlocks(groupId);
+      initialPositions = groupBlocks.map(b => ({
+        id: b.id,
+        x: b.x,
+        y: b.y,
+        el: $blockCanvas.querySelector(`[data-id="${b.id}"]`)
+      }));
+    }
   });
 
   el.addEventListener('pointermove', (e) => {
@@ -689,15 +1068,41 @@ function setupDrag(el, block) {
     const canvasX = (e.clientX - rect.left - appState.viewport.panX) / zoom;
     const canvasY = (e.clientY - rect.top - appState.viewport.panY) / zoom;
     // Snap to grid unless Alt is held
+    let newX, newY;
     if (e.altKey) {
-      block.x = canvasX - offsetX;
-      block.y = canvasY - offsetY;
+      newX = canvasX - offsetX;
+      newY = canvasY - offsetY;
     } else {
-      block.x = Math.round((canvasX - offsetX) / SNAP_GRID) * SNAP_GRID;
-      block.y = Math.round((canvasY - offsetY) / SNAP_GRID) * SNAP_GRID;
+      newX = Math.round((canvasX - offsetX) / SNAP_GRID) * SNAP_GRID;
+      newY = Math.round((canvasY - offsetY) / SNAP_GRID) * SNAP_GRID;
     }
+
+    block.x = newX;
+    block.y = newY;
     el.style.left = `${block.x}px`;
     el.style.top = `${block.y}px`;
+
+    // 如果块在组内（且只属于一个组），同时移动组内所有其他块
+    if (block.groupIds && block.groupIds.length === 1 && initialPositions.length > 0) {
+      const currentInitPos = initialPositions.find(p => p.id === block.id);
+      if (currentInitPos) {
+        const dx = block.x - currentInitPos.x;
+        const dy = block.y - currentInitPos.y;
+
+        initialPositions.forEach(p => {
+          if (p.id !== block.id) {
+            const b = appState.canvas.blocks.find(b => b.id === p.id);
+            if (b) {
+              b.x = p.x + dx;
+              b.y = p.y + dy;
+              p.el.style.left = `${b.x}px`;
+              p.el.style.top = `${b.y}px`;
+            }
+          }
+        });
+      }
+    }
+
     renderLinks();
     if (appState.selectedBlockId === block.id) hideNodeToolbar();
   });
@@ -712,6 +1117,7 @@ function setupDrag(el, block) {
     }
     dragReady = false;
     pointerId = null;
+    initialPositions = [];
   });
 }
 
@@ -960,7 +1366,7 @@ export function fitToView() {
 //  MINIMAP
 // ═══════════════════════════════════════
 
-let $minimap, $minimapCanvas, minimapCtx;
+let $minimap, $minimapCanvas, minimapCtx, $groupSelector;
 
 function createMinimap() {
   $minimap = document.createElement('div');
@@ -972,6 +1378,57 @@ function createMinimap() {
   document.querySelector('.canvas-area').appendChild($minimap);
   $minimapCanvas = $minimap.querySelector('.minimap-canvas');
   minimapCtx = $minimapCanvas.getContext('2d');
+
+  // 创建组选择器（小地图右侧）
+  $groupSelector = document.createElement('div');
+  $groupSelector.className = 'group-selector';
+  $groupSelector.innerHTML = `
+    <div class="group-dots" id="groupDots">
+      <!-- 最近 3 个组的颜色圆点 -->
+    </div>
+    <button class="group-list-btn" id="groupListBtn" title="组列表">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="4" r="1.5" fill="currentColor"/><circle cx="7" cy="7" r="1.5" fill="currentColor"/><circle cx="7" cy="10" r="1.5" fill="currentColor"/></svg>
+    </button>
+    <div class="group-list-menu" id="groupListMenu" aria-hidden="true">
+      <!-- 动态生成组列表 -->
+    </div>
+  `;
+  document.querySelector('.canvas-area').appendChild($groupSelector);
+
+  // 组列表按钮点击事件
+  const groupListBtn = $groupSelector.querySelector('#groupListBtn');
+  const groupListMenu = $groupSelector.querySelector('#groupListMenu');
+  groupListBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isHidden = groupListMenu.getAttribute('aria-hidden') === 'true';
+    if (isHidden) {
+      renderGroupList();
+      groupListMenu.setAttribute('aria-hidden', 'false');
+      groupListMenu.style.display = 'block';
+    } else {
+      groupListMenu.setAttribute('aria-hidden', 'true');
+      groupListMenu.style.display = 'none';
+    }
+  });
+
+  // 点击空白处关闭组列表
+  document.addEventListener('pointerdown', (e) => {
+    if (!$groupSelector.contains(e.target)) {
+      groupListMenu.setAttribute('aria-hidden', 'true');
+      groupListMenu.style.display = 'none';
+    }
+  });
+
+  // 点击组列表项选中整个组
+  groupListMenu.addEventListener('click', (e) => {
+    const groupItem = e.target.closest('[data-group-id]');
+    if (groupItem) {
+      const groupId = groupItem.dataset.groupId;
+      selectGroup(groupId);
+      groupListMenu.setAttribute('aria-hidden', 'true');
+      groupListMenu.style.display = 'none';
+    }
+  });
 
   // Click on minimap to navigate
   $minimap.addEventListener('pointerdown', (e) => {
@@ -1071,4 +1528,404 @@ function updateMinimap() {
   minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
   minimapCtx.lineWidth = 1.5;
   minimapCtx.strokeRect(vx, vy, vw, vh);
+}
+
+/**
+ * 更新组选择器显示
+ */
+function updateGroupSelector() {
+  if (!$groupSelector) return;
+
+  const groups = appState.canvas.groups || [];
+  const groupDots = $groupSelector.querySelector('#groupDots');
+  const groupListMenu = $groupSelector.querySelector('#groupListMenu');
+
+  // 获取最近 3 个组（按创建顺序，最新的在前）
+  const recentGroups = groups.slice(-3).reverse();
+
+  // 更新颜色圆点
+  if (recentGroups.length === 0) {
+    groupDots.innerHTML = '<span class="no-groups">暂无组</span>';
+  } else {
+    groupDots.innerHTML = recentGroups.map(group =>
+      `<div class="group-dot" style="background:${group.color}" data-group-id="${group.id}" title="组 (${group.blockIds.length}个块)"></div>`
+    ).join('');
+
+    // 为每个圆点添加点击事件
+    groupDots.querySelectorAll('.group-dot').forEach(dot => {
+      dot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const groupId = dot.dataset.groupId;
+        selectGroup(groupId);
+      });
+    });
+  }
+
+  // 隐藏组列表菜单
+  groupListMenu.setAttribute('aria-hidden', 'true');
+  groupListMenu.style.display = 'none';
+}
+
+/**
+ * 渲染组列表菜单
+ */
+function renderGroupList() {
+  const groupListMenu = $groupSelector.querySelector('#groupListMenu');
+  const groups = appState.canvas.groups || [];
+
+  if (groups.length === 0) {
+    groupListMenu.innerHTML = '<div class="group-list-empty">暂无组</div>';
+    return;
+  }
+
+  groupListMenu.innerHTML = groups.map(group => `
+    <div class="group-list-item" data-group-id="${group.id}">
+      <div class="group-list-color" style="background:${group.color}" data-group-id="${group.id}" title="点击修改颜色"></div>
+      <div class="group-list-info">
+        <div class="group-list-header">
+          <span class="group-list-name">${escapeHtml(group.name || '组')}</span>
+          <div class="group-list-actions">
+            <button class="group-arrange-btn" data-group-id="${group.id}" title="组内排列">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1" y="1" width="4" height="4" stroke="currentColor" stroke-width="1.2"/><rect x="7" y="1" width="4" height="4" stroke="currentColor" stroke-width="1.2"/><rect x="1" y="7" width="4" height="4" stroke="currentColor" stroke-width="1.2"/><rect x="7" y="7" width="4" height="4" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+            <button class="group-rename-btn" data-group-id="${group.id}" title="重命名">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 11h3l7-7-3-3-7 7v3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="group-delete-btn" data-group-id="${group.id}" title="解散组">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 3L3 9M6 3l3 6M3 3l6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+        <span class="group-list-count">${group.blockIds.length}个块</span>
+      </div>
+    </div>
+  `).join('');
+
+  // 为重命名按钮添加事件
+  groupListMenu.querySelectorAll('.group-rename-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const groupId = btn.dataset.groupId;
+      showRenameGroupDialog(groupId);
+    });
+  });
+
+  // 为组内排列按钮添加事件
+  groupListMenu.querySelectorAll('.group-arrange-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const groupId = btn.dataset.groupId;
+      showGroupArrangeMenu(groupId, btn);
+    });
+  });
+
+  // 为解散组按钮添加事件
+  groupListMenu.querySelectorAll('.group-delete-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const groupId = btn.dataset.groupId;
+      deleteGroup(groupId);
+      pushHistory();
+      renderBlocks();
+      renderGroupList();
+      updateGroupSelector();
+      saveCurrentCanvas();
+    });
+  });
+
+  // 为颜色圆圈添加点击事件（打开颜色选择器）
+  groupListMenu.querySelectorAll('.group-list-color').forEach(colorDot => {
+    colorDot.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const groupId = colorDot.dataset.groupId;
+      showGroupColorPicker(groupId, colorDot);
+    });
+  });
+
+  // 双击组列表项也可以重命名
+  groupListMenu.querySelectorAll('.group-list-item').forEach(item => {
+    item.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      const groupId = item.dataset.groupId;
+      if (groupId) {
+        showRenameGroupDialog(groupId);
+      }
+    });
+  });
+}
+
+/**
+ * 显示组颜色选择器
+ */
+function showGroupColorPicker(groupId, anchorEl) {
+  const group = appState.canvas.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  const GROUP_COLORS_LOCAL = [
+    { name: '黄色', value: '#FFD600' },
+    { name: '蓝色', value: '#2979FF' },
+    { name: '绿色', value: '#00E676' },
+    { name: '粉红', value: '#FF4081' },
+    { name: '紫色', value: '#D500F9' },
+    { name: '橙色', value: '#FF9100' },
+    { name: '无', value: null },
+  ];
+
+  // 创建颜色选择器
+  const picker = document.createElement('div');
+  picker.className = 'group-color-picker';
+  picker.innerHTML = `
+    <div class="group-color-grid">
+      ${GROUP_COLORS_LOCAL.map(c => `
+        <button class="group-color-option" data-color="${c.value || ''}" style="background:${c.value || 'rgba(255,255,255,0.1)'}; ${!c.value ? 'border: 1px dashed rgba(0,0,0,0.3)' : ''}" title="${c.name}"></button>
+      `).join('')}
+    </div>
+  `;
+  document.body.appendChild(picker);
+
+  // 定位在颜色圆圈下方
+  const rect = anchorEl.getBoundingClientRect();
+  picker.style.position = 'fixed';
+  picker.style.left = `${rect.left}px`;
+  picker.style.top = `${rect.bottom + 4}px`;
+
+  // 点击颜色选项
+  picker.querySelectorAll('.group-color-option').forEach(option => {
+    option.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const color = option.dataset.color === '' ? null : option.dataset.color;
+      group.color = color;
+      updateGroupSelector();
+      saveCurrentCanvas();
+      picker.remove();
+    });
+  });
+
+  // 点击外部关闭
+  picker.addEventListener('pointerdown', (e) => {
+    if (e.target === picker) {
+      picker.remove();
+    }
+  });
+}
+
+/**
+ * 显示组内排列菜单
+ */
+function showGroupArrangeMenu(groupId, anchorEl) {
+  const group = appState.canvas.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  // 隐藏组列表
+  const groupListMenu = $groupSelector.querySelector('#groupListMenu');
+  groupListMenu.setAttribute('aria-hidden', 'true');
+  groupListMenu.style.display = 'none';
+
+  const arrangeMenu = document.createElement('div');
+  arrangeMenu.className = 'group-arrange-menu';
+  arrangeMenu.innerHTML = `
+    <div class="group-arrange-header">
+      <span>${escapeHtml(group.name || '组')} - 排列方式</span>
+    </div>
+    <button class="group-arrange-option" data-layout="horizontal">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="4" width="4" height="8" stroke="currentColor" stroke-width="1.2"/><rect x="8" y="4" width="4" height="8" stroke="currentColor" stroke-width="1.2"/><path d="M13 8h2" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span>横向排列</span>
+    </button>
+    <button class="group-arrange-option" data-layout="vertical">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="4" y="2" width="8" height="4" stroke="currentColor" stroke-width="1.2"/><rect x="4" y="8" width="8" height="4" stroke="currentColor" stroke-width="1.2"/><path d="M8 13v2" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span>纵向排列</span>
+    </button>
+    <button class="group-arrange-option" data-layout="grid">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="2" width="5" height="5" stroke="currentColor" stroke-width="1.2"/><rect x="2" y="9" width="5" height="5" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="9" width="5" height="5" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span>网格排列</span>
+    </button>
+  `;
+  document.body.appendChild(arrangeMenu);
+
+  const rect = anchorEl.getBoundingClientRect();
+  arrangeMenu.style.position = 'fixed';
+  arrangeMenu.style.left = `${rect.right + 8}px`;
+  arrangeMenu.style.top = `${rect.top}px`;
+
+  arrangeMenu.querySelectorAll('.group-arrange-option').forEach(option => {
+    option.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const layout = option.dataset.layout;
+      arrangeGroupBlocks(groupId, layout);
+      arrangeMenu.remove();
+    });
+  });
+
+  // 点击外部关闭
+  arrangeMenu.addEventListener('pointerdown', (e) => {
+    if (e.target === arrangeMenu) {
+      arrangeMenu.remove();
+    }
+  });
+}
+
+/**
+ * 组内块自动排列
+ */
+function arrangeGroupBlocks(groupId, layout) {
+  const group = appState.canvas.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  const blocks = appState.canvas.blocks.filter(b => group.blockIds.includes(b.id));
+  if (blocks.length === 0) return;
+
+  const BLOCK_WIDTH = 200;
+  const BLOCK_HEIGHT = 72;
+  const H_GAP = 40;  // 水平间距
+  const V_GAP = 40;  // 垂直间距
+
+  // 计算组的边界框（代表块的位置作为锚点）
+  const representative = blocks[0];
+  const anchorX = representative.x;
+  const anchorY = representative.y;
+
+  if (layout === 'horizontal') {
+    // 横向排列：所有块水平排列，以代表块为起点
+    blocks.forEach((block, index) => {
+      if (!block.locked) {
+        block.x = anchorX + index * (BLOCK_WIDTH + H_GAP);
+        block.y = anchorY;
+      }
+    });
+  } else if (layout === 'vertical') {
+    // 纵向排列：所有块垂直排列，以代表块为起点
+    blocks.forEach((block, index) => {
+      if (!block.locked) {
+        block.x = anchorX;
+        block.y = anchorY + index * (BLOCK_HEIGHT + V_GAP);
+      }
+    });
+  } else if (layout === 'grid') {
+    // 网格排列：计算行列数，然后排列
+    const cols = Math.ceil(Math.sqrt(blocks.length));
+    const rows = Math.ceil(blocks.length / cols);
+    let index = 0;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols && index < blocks.length; col++) {
+        const block = blocks[index];
+        if (!block.locked) {
+          block.x = anchorX + col * (BLOCK_WIDTH + H_GAP);
+          block.y = anchorY + row * (BLOCK_HEIGHT + V_GAP);
+        }
+        index++;
+      }
+    }
+  }
+
+  pushHistory();
+  renderBlocks();
+  saveCurrentCanvas();
+}
+
+/**
+ * 显示组重命名对话框
+ */
+function showRenameGroupDialog(groupId) {
+  const group = appState.canvas.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  // 隐藏组列表
+  const groupListMenu = $groupSelector.querySelector('#groupListMenu');
+  groupListMenu.setAttribute('aria-hidden', 'true');
+  groupListMenu.style.display = 'none';
+
+  // 创建对话框
+  const dialog = document.createElement('div');
+  dialog.className = 'group-rename-dialog';
+  dialog.innerHTML = `
+    <div class="group-rename-box">
+      <div class="group-rename-header">
+        <span>重命名组</span>
+      </div>
+      <input type="text" class="group-rename-input" value="${escapeHtml(group.name || '')}" placeholder="输入组名称" />
+      <div class="group-rename-actions">
+        <button class="group-rename-cancel">取消</button>
+        <button class="group-rename-save">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+
+  const input = dialog.querySelector('.group-rename-input');
+  const cancelBtn = dialog.querySelector('.group-rename-cancel');
+  const saveBtn = dialog.querySelector('.group-rename-save');
+
+  // 自动聚焦输入框
+  setTimeout(() => input.focus(), 0);
+  input.select();
+
+  // 点击取消
+  cancelBtn.addEventListener('click', () => {
+    dialog.remove();
+  });
+
+  // 点击保存
+  saveBtn.addEventListener('click', () => {
+    const newName = input.value.trim();
+    if (newName) {
+      renameGroup(groupId, newName);
+      pushHistory();
+      updateGroupSelector();
+      saveCurrentCanvas();
+    }
+    dialog.remove();
+  });
+
+  // Enter 键保存
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const newName = input.value.trim();
+      if (newName) {
+        renameGroup(groupId, newName);
+        pushHistory();
+        updateGroupSelector();
+        saveCurrentCanvas();
+      }
+      dialog.remove();
+    }
+    if (e.key === 'Escape') {
+      dialog.remove();
+    }
+  });
+
+  // 点击外部关闭
+  dialog.addEventListener('pointerdown', (e) => {
+    if (e.target === dialog) {
+      dialog.remove();
+    }
+  });
+}
+
+/**
+ * 选中整个组
+ */
+function selectGroup(groupId) {
+  const group = appState.canvas.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  // 选中组内所有块
+  appState.selectedBlockIds = [...group.blockIds];
+  appState.selectedBlockId = group.blockIds[0];
+
+  // 更新 UI
+  $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+    b.classList.remove('selected');
+    b.classList.remove('selected-multi');
+  });
+
+  group.blockIds.forEach((id, index) => {
+    const el = $blockCanvas.querySelector(`[data-id="${id}"]`);
+    if (el) {
+      el.classList.add('selected');
+      el.classList.add('selected-multi');
+    }
+  });
+
+  showNodeToolbar(appState.canvas.blocks.find(b => b.id === group.blockIds[0]));
+  pushHistory();
 }

@@ -3,6 +3,7 @@
  *
  * 根据 blocks + connections 计算所有节点的 (x, y) 坐标
  * 策略：简单树形布局（根节点居中，子节点向下展开）
+ * 组内块保持相对位置，组作为整体参与布局
  */
 
 const BLOCK_W = 200;
@@ -13,7 +14,7 @@ const V_GAP = 140; // 垂直间距 (调大以防密集)
 /**
  * 从 blocks + connections 推算出树结构
  */
-function buildTree(blocks, connections) {
+function buildTree(blocks, connections, groups = []) {
   const childMap = {};  // parentId → [childId]
   const hasParent = new Set();
 
@@ -32,12 +33,44 @@ function buildTree(blocks, connections) {
 /**
  * 计算子树宽度（用于居中对齐）
  */
-function subtreeWidth(blockId, childMap, blockMap) {
+function subtreeWidth(blockId, childMap, blockMap, groupMap = {}) {
   const children = childMap[blockId] || [];
   if (children.length === 0) return BLOCK_W;
+
+  // 如果当前块是组的代表块，计算整个组的宽度
+  const group = groupMap[blockId];
+  if (group) {
+    // 组的宽度 = 组内所有块的最大宽度
+    let maxGroupWidth = 0;
+    group.blockIds.forEach(id => {
+      const b = blockMap[id];
+      if (b) {
+        const w = b.width || BLOCK_W;
+        if (w > maxGroupWidth) maxGroupWidth = w;
+      }
+    });
+    // 组的子树宽度考虑组内所有块的子节点
+    let totalChildWidth = 0;
+    const allChildIds = [];
+    group.blockIds.forEach(id => {
+      (childMap[id] || []).forEach(cid => {
+        if (!group.blockIds.includes(cid)) {
+          allChildIds.push(cid);
+        }
+      });
+    });
+    if (allChildIds.length > 0) {
+      allChildIds.forEach(cid => {
+        totalChildWidth += subtreeWidth(cid, childMap, blockMap, groupMap) + H_GAP;
+      });
+      totalChildWidth -= H_GAP;
+    }
+    return Math.max(maxGroupWidth, totalChildWidth);
+  }
+
   let total = 0;
   for (const cid of children) {
-    total += subtreeWidth(cid, childMap, blockMap) + H_GAP;
+    total += subtreeWidth(cid, childMap, blockMap, groupMap) + H_GAP;
   }
   return total - H_GAP; // 去掉最后一个间距
 }
@@ -45,9 +78,23 @@ function subtreeWidth(blockId, childMap, blockMap) {
 /**
  * 递归布局
  */
-function layoutSubtree(blockId, x, y, childMap, blockMap) {
+function layoutSubtree(blockId, x, y, childMap, blockMap, groupMap = {}, positionedGroups = new Set()) {
   const block = blockMap[blockId];
   if (!block) return;
+
+  // 检查块是否在组内
+  const group = groupMap[blockId];
+  if (group && !positionedGroups.has(group.id)) {
+    // 这是组的代表块，布局整个组
+    // 组的位置就是代表块的位置
+    group.blockIds.forEach(id => {
+      const b = blockMap[id];
+      if (b && b.id !== blockId) {
+        // 其他块暂时不处理，等代表块定位后再应用相对偏移
+      }
+    });
+    positionedGroups.add(group.id);
+  }
 
   if (!block.locked) {
     block.x = x;
@@ -61,13 +108,13 @@ function layoutSubtree(blockId, x, y, childMap, blockMap) {
   const children = childMap[blockId] || [];
   if (children.length === 0) return;
 
-  const totalW = subtreeWidth(blockId, childMap, blockMap);
+  const totalW = subtreeWidth(blockId, childMap, blockMap, groupMap);
   let curX = x + BLOCK_W / 2 - totalW / 2;
 
   for (const cid of children) {
-    const cw = subtreeWidth(cid, childMap, blockMap);
+    const cw = subtreeWidth(cid, childMap, blockMap, groupMap);
     const cx = curX + cw / 2 - BLOCK_W / 2;
-    layoutSubtree(cid, cx, y + BLOCK_H + V_GAP, childMap, blockMap);
+    layoutSubtree(cid, cx, y + BLOCK_H + V_GAP, childMap, blockMap, groupMap, positionedGroups);
     curX += cw + H_GAP;
   }
 }
@@ -76,22 +123,57 @@ function layoutSubtree(blockId, x, y, childMap, blockMap) {
  * 对全部 blocks 执行自动布局
  * 会直接修改 block.x / block.y
  */
-export function autoLayout(blocks, connections) {
+export function autoLayout(blocks, connections, groups = []) {
   if (blocks.length === 0) return;
 
   const blockMap = {};
   for (const b of blocks) blockMap[b.id] = b;
 
-  const { roots, childMap } = buildTree(blocks, connections);
+  // 构建组映射：块 ID → 组对象
+  const groupMap = {};
+  if (groups && groups.length > 0) {
+    groups.forEach(group => {
+      // 每个组的第一个块作为代表块
+      const representativeId = group.blockIds[0];
+      groupMap[representativeId] = group;
+    });
+  }
+
+  // 保存组内块的相对位置（相对于组代表块）
+  const groupInternalOffsets = {};
+  if (groups && groups.length > 0) {
+    groups.forEach(group => {
+      const representative = blockMap[group.blockIds[0]];
+      if (representative) {
+        const repCx = representative.x + (representative.width || BLOCK_W) / 2;
+        const repCy = representative.y;
+
+        groupInternalOffsets[group.id] = group.blockIds.map(id => {
+          const b = blockMap[id];
+          if (!b) return { id, offsetX: 0, offsetY: 0 };
+          const bCx = b.x + (b.width || BLOCK_W) / 2;
+          const bCy = b.y;
+          return {
+            id,
+            offsetX: bCx - repCx,  // 块中心相对于代表块中心的偏移
+            offsetY: bCy - repCy,   // 块顶部相对于代表块顶部的偏移
+          };
+        });
+      }
+    });
+  }
+
+  const { roots, childMap } = buildTree(blocks, connections, groups);
+  const positionedGroups = new Set();
 
   // 布局每棵树
   let startX = 100;
   const startY = 100;
 
   for (const root of roots) {
-    const tw = subtreeWidth(root.id, childMap, blockMap);
+    const tw = subtreeWidth(root.id, childMap, blockMap, groupMap);
     const rx = startX + tw / 2 - BLOCK_W / 2;
-    layoutSubtree(root.id, rx, startY, childMap, blockMap);
+    layoutSubtree(root.id, rx, startY, childMap, blockMap, groupMap, positionedGroups);
     startX += tw + H_GAP * 2;
   }
 
@@ -117,6 +199,31 @@ export function autoLayout(blocks, connections) {
       }
       orphanX += BLOCK_W + H_GAP;
     }
+  }
+
+  // 应用组内相对位置
+  if (groups && groups.length > 0) {
+    groups.forEach(group => {
+      const offsets = groupInternalOffsets[group.id];
+      if (offsets && offsets.length > 0) {
+        // 找到代表块的新位置
+        const representativeId = group.blockIds[0];
+        const representative = blockMap[representativeId];
+        if (representative) {
+          const repCx = representative.x + (representative.width || BLOCK_W) / 2;
+          const repCy = representative.y;
+
+          // 应用偏移到组内所有块
+          offsets.forEach(offset => {
+            const b = blockMap[offset.id];
+            if (b && b.id !== representativeId && !b.locked) {
+              b.x = repCx + offset.offsetX - (b.width || BLOCK_W) / 2;
+              b.y = repCy + offset.offsetY;
+            }
+          });
+        }
+      }
+    });
   }
 }
 

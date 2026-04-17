@@ -10,6 +10,7 @@ import {
   getCanvasList, saveCanvasList, createCanvas, deleteCanvas, loadCanvasById,
   saveCurrentCanvas, switchCanvas, getCurrentCanvasId, renameCanvas,
   ENDPOINT_PRESETS,
+  createGroup, deleteGroup, getGroupBlocks, isBlockInGroup, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName,
 } from './state.js';
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar } from './canvas.js';
 import { initChat, sendText } from './chat.js';
@@ -234,11 +235,17 @@ function handleAddSibling() {
 }
 
 function handleDeleteNode() {
-  if (!appState.selectedBlockId) return;
-  const idx = appState.canvas.blocks.findIndex(b => b.id === appState.selectedBlockId);
-  if (idx === -1) return;
-  // Also remove children recursively
-  const toRemove = new Set([appState.selectedBlockId]);
+  // 支持多选删除
+  const selectedIds = appState.selectedBlockIds.length > 0
+    ? [...appState.selectedBlockIds]
+    : appState.selectedBlockId
+      ? [appState.selectedBlockId]
+      : [];
+
+  if (selectedIds.length === 0) return;
+
+  // 递归收集要删除的块（包括子节点）
+  const toRemove = new Set(selectedIds);
   let changed = true;
   while (changed) {
     changed = false;
@@ -249,11 +256,29 @@ function handleDeleteNode() {
       }
     }
   }
+
+  // 删除块
   appState.canvas.blocks = appState.canvas.blocks.filter(b => !toRemove.has(b.id));
+
+  // 删除相关连接
   appState.canvas.connections = appState.canvas.connections.filter(
     c => !toRemove.has(c.fromId) && !toRemove.has(c.toId)
   );
+
+  // 删除组内的块引用，如果组为空则删除组
+  if (appState.canvas.groups) {
+    for (let i = appState.canvas.groups.length - 1; i >= 0; i--) {
+      const group = appState.canvas.groups[i];
+      group.blockIds = group.blockIds.filter(id => !toRemove.has(id));
+      if (group.blockIds.length === 0) {
+        appState.canvas.groups.splice(i, 1);
+      }
+    }
+  }
+
+  // 清除选中状态
   appState.selectedBlockId = null;
+  appState.selectedBlockIds = [];
   pushHistory();
   renderBlocks();
   saveCurrentCanvas();
@@ -311,9 +336,14 @@ function init() {
           title: '未命名白板',
           blocks: [],
           connections: [],
+          groups: [],
         };
       }
     }
+  }
+  // 确保 groups 字段存在
+  if (!appState.canvas.groups) {
+    appState.canvas.groups = [];
   }
   dom.boardTitle.textContent = appState.canvas.title;
 
@@ -564,12 +594,83 @@ function bindEvents() {
     }
   });
 
+  // ── Group Shortcuts ──
+  document.addEventListener('keydown', (e) => {
+    // Skip when editing text
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+    // Ctrl+G → 创建组
+    if ((e.ctrlKey || e.metaKey) && e.key === 'g' && !e.shiftKey) {
+      const selectedIds = appState.selectedBlockIds;
+      if (selectedIds.length >= 2) {
+        e.preventDefault();
+        // 确保 groups 数组存在
+        if (!appState.canvas.groups) {
+          appState.canvas.groups = [];
+        }
+        // 选择一个颜色（基于组的索引）
+        const GROUP_COLORS_LOCAL = [
+          { name: '黄色', value: '#FFD600' },
+          { name: '蓝色', value: '#2979FF' },
+          { name: '绿色', value: '#00E676' },
+          { name: '粉红', value: '#FF4081' },
+          { name: '紫色', value: '#D500F9' },
+          { name: '橙色', value: '#FF9100' },
+        ];
+        const colorIndex = appState.canvas.groups.length % GROUP_COLORS_LOCAL.length;
+        const color = GROUP_COLORS_LOCAL[colorIndex].value;
+
+        // 先创建组
+        const group = createGroup(selectedIds, color);
+
+        // AI 推荐组名（异步）
+        suggestGroupName(selectedIds, getConfig()).then(name => {
+          if (name && name.length > 0) {
+            group.name = name;
+            renderBlocks();
+            saveCurrentCanvas();
+          }
+        });
+
+        pushHistory();
+        renderBlocks();
+        saveCurrentCanvas();
+      }
+    }
+
+    // Ctrl+Shift+G → 解散组
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'g' || e.key === 'G')) {
+      const selectedIds = appState.selectedBlockIds;
+      if (selectedIds.length > 0) {
+        // 检查选中的块所属的组
+        const allGroupIds = [];
+        selectedIds.forEach(id => {
+          const block = appState.canvas.blocks.find(b => b.id === id);
+          if (block?.groupIds) {
+            allGroupIds.push(...block.groupIds);
+          }
+        });
+        const uniqueGroupIds = new Set(allGroupIds);
+
+        // 如果所有选中的块都在同一个组内
+        if (uniqueGroupIds.size === 1 && allGroupIds.length > 0) {
+          e.preventDefault();
+          const groupId = uniqueGroupIds.values().next().value;
+          deleteGroup(groupId);
+          pushHistory();
+          renderBlocks();
+          saveCurrentCanvas();
+        }
+      }
+    }
+  });
+
   // ── Canvas controls ──
   dom.zoomIn.addEventListener('click', zoomIn);
   dom.zoomOut.addEventListener('click', zoomOut);
   dom.fitBtn.addEventListener('click', fitToView);
   dom.autoLayoutBtn.addEventListener('click', () => {
-    autoLayout(appState.canvas.blocks, appState.canvas.connections);
+    autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
     pushHistory();
     renderBlocks();
     fitToView();
@@ -597,7 +698,7 @@ function bindEvents() {
         
         if (parsed.operations && parsed.operations.length > 0) {
           executeOperations(appState.canvas, parsed.operations);
-          autoLayout(appState.canvas.blocks, appState.canvas.connections);
+          autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
           pushHistory();
           renderBlocks();
           fitToView();

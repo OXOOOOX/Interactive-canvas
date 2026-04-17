@@ -494,7 +494,7 @@ html, body {
   cursor: default;
   user-select: none;
   box-shadow: var(--shadow-md);
-  overflow: hidden;
+  overflow: visible;
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out),
@@ -510,6 +510,49 @@ html, body {
   border-width: 3px;
   background: #fff;
   box-shadow: 0 0 0 4px rgba(0,0,0,0.15), var(--shadow-lg);
+}
+
+/* 多选状态 - 蓝色虚线边框 */
+.mm-block.selected-multi {
+  border-color: #3b82f6;
+  border-width: 2px;
+  outline: 2px dashed #3b82f6;
+  outline-offset: 2px;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+/* 组内块标识 - 右下角颜色圆点（支持多组，垂直排列） */
+.mm-group-indicator {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #000;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* 第一个圆点在底部 */
+.mm-group-indicator:nth-of-type(1) {
+  bottom: 8px;
+}
+
+/* 第二个圆点在第一个上面 */
+.mm-group-indicator:nth-of-type(2) {
+  bottom: 22px;
+}
+
+/* 第三个及以后的圆点 */
+.mm-group-indicator:nth-of-type(n+3) {
+  bottom: calc(22px + (var(--index, 2) - 1) * 14px);
+}
+
+/* 组内成员悬停高亮 - 边框高亮 */
+.mm-block.group-highlight {
+  border: 3px solid var(--highlight-color, #2979FF);
+  box-shadow: 0 0 12px rgba(41, 121, 255, 0.4);
 }
 
 /* Root node special style */
@@ -1252,6 +1295,8 @@ select.cfg-input {
   font-size: 12px;
   cursor: pointer;
   transition: all var(--duration-fast);
+  justify-content: flex-start;
+  text-align: left;
 }
 .ctx-item:hover {
   background: var(--glass-hover);
@@ -1295,6 +1340,41 @@ select.cfg-input {
 .ctx-color-dot:hover {
   transform: scale(1.25);
   border-color: rgba(255,255,255,0.4);
+}
+
+/* 子菜单容器 */
+.ctx-submenu-trigger {
+  position: relative;
+  justify-content: space-between;
+}
+
+.ctx-submenu-trigger .ctx-item {
+  justify-content: flex-start;
+}
+
+.ctx-submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  min-width: 160px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  z-index: 301;
+  margin-left: 4px;
+}
+
+.ctx-submenu .ctx-item {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.ctx-submenu-trigger:hover .ctx-submenu {
+  display: block;
 }
 
 
@@ -1508,6 +1588,309 @@ select.cfg-input {
 
 
 /* ═══════════════════════════════════════════════════
+   GROUP SELECTOR (next to minimap)
+   ═══════════════════════════════════════════════════ */
+.group-selector {
+  position: absolute;
+  bottom: var(--space-md);
+  left: calc(var(--space-md) + 180px + var(--space-md));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(12px);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  z-index: 10;
+  opacity: 0.75;
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+.group-selector:hover {
+  opacity: 1;
+}
+.group-dots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.group-dots .no-groups {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+.group-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #000;
+  cursor: pointer;
+  transition: transform var(--duration-fast);
+}
+.group-dot:hover {
+  transform: scale(1.2);
+}
+.group-list-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #000;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  color: var(--text-secondary);
+}
+.group-list-btn:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+.group-list-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 8px;
+  min-width: 180px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(16px);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: none;
+  z-index: 100;
+}
+.group-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+.group-list-item:hover {
+  background: var(--glass-hover);
+  border-color: var(--glass-border);
+}
+.group-list-color {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #000;
+  flex-shrink: 0;
+}
+.group-list-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.group-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.group-list-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.group-list-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+.group-rename-btn,
+.group-delete-btn,
+.group-arrange-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--glass-border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  color: var(--text-muted);
+  opacity: 0;
+}
+.group-list-item:hover .group-rename-btn,
+.group-list-item:hover .group-delete-btn,
+.group-list-item:hover .group-arrange-btn {
+  opacity: 1;
+}
+.group-rename-btn:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+.group-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--accent-red);
+}
+.group-arrange-btn:hover {
+  background: var(--glass-hover);
+  color: var(--accent-purple);
+}
+.group-list-count {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.group-list-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px;
+  text-align: center;
+}
+
+/* 组颜色选择器 */
+.group-color-picker {
+  z-index: 1001;
+  background: var(--bg-surface);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  box-shadow: var(--shadow-lg);
+}
+.group-color-grid {
+  display: flex;
+  gap: 4px;
+}
+.group-color-option {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #000;
+  cursor: pointer;
+  transition: transform var(--duration-fast);
+}
+.group-color-option:hover {
+  transform: scale(1.15);
+}
+
+/* 组内排列菜单 */
+.group-arrange-menu {
+  position: fixed;
+  z-index: 1001;
+  background: var(--bg-surface);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 8px;
+  box-shadow: var(--shadow-lg);
+  min-width: 160px;
+}
+.group-arrange-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  margin-bottom: 4px;
+}
+.group-arrange-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.group-arrange-option:hover {
+  background: var(--glass-hover);
+}
+.group-arrange-option svg {
+  flex-shrink: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════
+   GROUP RENAME DIALOG
+   ═══════════════════════════════════════════════════ */
+.group-rename-dialog {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s var(--ease-out);
+}
+.group-rename-box {
+  background: var(--bg-surface);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  min-width: 280px;
+  box-shadow: var(--shadow-lg);
+  animation: slideUp 0.2s var(--ease-spring);
+}
+.group-rename-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+.group-rename-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-family: inherit;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+.group-rename-input:focus {
+  outline: none;
+  border-color: var(--accent-purple);
+}
+.group-rename-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.group-rename-cancel,
+.group-rename-save {
+  padding: 6px 12px;
+  border: 2px solid #000;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+.group-rename-cancel {
+  background: transparent;
+  color: var(--text-secondary);
+}
+.group-rename-cancel:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+.group-rename-save {
+  background: var(--accent-purple);
+  color: #fff;
+  border-color: var(--accent-purple);
+}
+.group-rename-save:hover {
+  opacity: 0.9;
+}
+
+/* ═══════════════════════════════════════════════════
    CONNECTION LINE ANIMATION
    ═══════════════════════════════════════════════════ */
 .link-layer path {
@@ -1523,9 +1906,9 @@ select.cfg-input {
    KEYBOARD SHORTCUT HINTS (on block hover)
    ═══════════════════════════════════════════════════ */
 .mm-block.selected::after {
-  content: 'Tab: \u5B50\u5757  Enter: \u540C\u7EA7  F2: \u7F16\u8F91  Del: \u5220\u9664';
+  content: 'Tab: 子块  Enter: 同级  F2: 编辑  Del: 删除';
   position: absolute;
-  bottom: -22px;
+  top: -20px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 10px;
@@ -1559,11 +1942,11 @@ select.cfg-input {
    ═══════════════════════════════════════════════════ */
 .mm-link-handle {
   position: absolute;
-  bottom: -6px;
+  bottom: -10px;
   left: 50%;
   transform: translateX(-50%);
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--glass-bg);
   border: 2px solid #000;
@@ -1582,7 +1965,7 @@ select.cfg-input {
 
 .mm-link-handle:hover {
   background: var(--accent-purple);
-  transform: translateX(-50%) scale(1.2);
+  transform: translateX(-50%) scale(1.3);
   box-shadow: var(--shadow-glow-purple);
 }
 .mm-color-bar {
@@ -1718,9 +2101,9 @@ select.cfg-input {
    KEYBOARD SHORTCUT HINTS (on block hover)
    ═══════════════════════════════════════════════════ */
 .mm-block.selected::after {
-  content: 'Tab: \u5B50\u5757  Enter: \u540C\u7EA7  F2: \u7F16\u8F91  Del: \u5220\u9664';
+  content: 'Tab: 子块  Enter: 同级  F2: 编辑  Del: 删除';
   position: absolute;
-  bottom: -22px;
+  top: -20px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 10px;
@@ -1754,11 +2137,11 @@ select.cfg-input {
    ═══════════════════════════════════════════════════ */
 .mm-link-handle {
   position: absolute;
-  bottom: -6px;
+  bottom: -10px;
   left: 50%;
   transform: translateX(-50%);
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--glass-bg);
   border: 2px solid #000;
@@ -1777,7 +2160,7 @@ select.cfg-input {
 
 .mm-link-handle:hover {
   background: var(--accent-purple);
-  transform: translateX(-50%) scale(1.2);
+  transform: translateX(-50%) scale(1.3);
   box-shadow: var(--shadow-glow-purple);
 }
 

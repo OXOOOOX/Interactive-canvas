@@ -164,10 +164,13 @@ function createContextMenu() {
         <!-- 动态生成 -->
       </div>
     </div>
-    <!-- 从组移除 -->
-    <button class="ctx-item group-action" data-action="remove-from-group" style="display:none;">
+    <!-- 退出组子菜单 -->
+    <div class="ctx-item group-action ctx-submenu-trigger" data-submenu="remove-from-group" style="display:none;">
       🚪 退出组
-    </button>
+      <div class="ctx-submenu">
+        <!-- 动态生成 -->
+      </div>
+    </div>
     <div class="ctx-divider"></div>
     <button class="ctx-item ctx-danger" data-action="delete">
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5h4V4M11 4l-.8 7.5a1 1 0 01-1 .9H4.8a1 1 0 01-1-.9L3 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -231,11 +234,11 @@ function createContextMenu() {
       return;
     }
 
-    // 从组移除
-    if (action === 'remove-from-group') {
+    // 退出组
+    if (action === 'remove-from-group-single') {
+      const groupId = item.dataset.groupId;
       hideCtxMenu();
-      if (uniqueGroupIds.size === 1 && allGroupIds.length > 0) {
-        const groupId = allGroupIds[0];
+      if (groupId) {
         removeBlocksFromGroup(appState.selectedBlockIds, groupId);
         pushHistory();
         renderBlocks();
@@ -296,9 +299,9 @@ function showCtxMenu(x, y, clickedBlock) {
     createGroupBtn.textContent = selectedCount >= 2 ? `🔗 创建组 (${selectedCount}个块)` : '🔗 创建组';
   }
 
-  // 加入组子菜单和从组移除
+  // 加入组子菜单和退出组子菜单
   const addToGroupSubmenu = $ctxMenu.querySelector('[data-submenu="add-to-group"]');
-  const removeFromGroupBtn = $ctxMenu.querySelector('[data-action="remove-from-group"]');
+  const removeFromGroupSubmenu = $ctxMenu.querySelector('[data-submenu="remove-from-group"]');
 
   // 有选中的块且存在组 → 显示加入组子菜单
   const hasGroups = appState.canvas.groups && appState.canvas.groups.length > 0;
@@ -319,10 +322,39 @@ function showCtxMenu(x, y, clickedBlock) {
     }
   }
 
-  // 选中的块都在同一个组内 → 显示从组移除
-  if (removeFromGroupBtn) {
-    const allInOneGroup = uniqueGroupIds.size === 1 && selectedCount > 0 && allGroupIds.length > 0;
-    removeFromGroupBtn.style.display = allInOneGroup ? 'block' : 'none';
+  // 退出组子菜单：显示选中的块已经加入的组（交集）
+  if (removeFromGroupSubmenu) {
+    if (selectedCount > 0 && hasGroups) {
+      // 找出所有选中块共同的组（交集）
+      const commonGroupIds = new Set(selectedBlocks[0]?.groupIds || []);
+      for (let i = 1; i < selectedBlocks.length; i++) {
+        const blockGroupIds = new Set(selectedBlocks[i].groupIds || []);
+        for (const id of commonGroupIds) {
+          if (!blockGroupIds.has(id)) {
+            commonGroupIds.delete(id);
+          }
+        }
+      }
+
+      // 只有当存在共同组时才显示退出组子菜单
+      const hasCommonGroups = commonGroupIds.size > 0;
+      removeFromGroupSubmenu.style.display = hasCommonGroups ? 'block' : 'none';
+
+      if (hasCommonGroups) {
+        const submenuContent = removeFromGroupSubmenu.querySelector('.ctx-submenu');
+        if (submenuContent) {
+          submenuContent.innerHTML = appState.canvas.groups
+            .filter(group => commonGroupIds.has(group.id))
+            .map(group => `
+              <button class="ctx-item submenu-item" data-action="remove-from-group-single" data-group-id="${group.id}">
+                ${group.name || '组'}
+              </button>
+            `).join('');
+        }
+      }
+    } else {
+      removeFromGroupSubmenu.style.display = 'none';
+    }
   }
 
   $ctxMenu.style.display = 'block';

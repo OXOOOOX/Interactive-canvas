@@ -3,7 +3,7 @@
  */
 
 import { appState, pushHistory, createGroup, deleteGroup, getGroupBlocks, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName, saveCurrentCanvas, toggleGroupFold, addBlocksToGroup, removeBlocksFromGroup, loadConfig } from './state.js';
-import { getBoundingBox } from './utils/layout.js';
+import { getBoundingBox, exportCanvasData } from './utils/layout.js';
 import { renderMarkdown } from './utils/parser.js';
 
 const BLOCK_DEFAULT_W = 200;
@@ -62,6 +62,15 @@ export function initCanvas(callbacks) {
 
   // 初始化剪刀按钮位置
   setScissorsBtnPosition();
+
+  // 注册全局导出函数（浏览器控制台可用）
+  window.exportCanvasData = () => {
+    const data = exportCanvasData(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+    console.log('📊 画布数据结构:');
+    console.log(JSON.stringify(data, null, 2));
+    return data;
+  };
+  console.log('💡 提示：在控制台输入 exportCanvasData() 可导出当前画布数据');
 }
 
 /** 创建剪刀按钮层 */

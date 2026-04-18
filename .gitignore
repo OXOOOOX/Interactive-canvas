@@ -2,5 +2,6 @@ local.config.js
 public/local.config.js
 node_modules/
 dist/
+.vite/
 .DS_Store
 *.local

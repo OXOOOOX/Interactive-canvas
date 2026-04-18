@@ -1,269 +1,732 @@
 /**
- * layout.js — 自动布局算法
+ * layout.js — 分层布局算法 (Sugiyama-style Layered Layout)
  *
- * 根据 blocks + connections 计算所有节点的 (x, y) 坐标
- * 策略：简单树形布局（根节点居中，子节点向下展开）
- * 组内块保持相对位置，组作为整体参与布局
+ * 核心思路：
+ * 1. 分层：根据拓扑关系将块分配到不同层级
+ * 2. 排序：每层内排序，最小化连线交叉
+ * 3. 定位：计算 (x, y) 坐标，避免块重叠和连线穿块
  */
 
 const BLOCK_W = 200;
 const BLOCK_H = 72;
-const H_GAP = 60;  // 水平间距
-const V_GAP = 140; // 垂直间距 (调大以防密集)
+const MIN_H_GAP = 60;     // 最小水平间距
+const MIN_V_GAP = 60;     // 最小垂直间距
+const GAP_PER_CONNECTION = 15;  // 每多一个连接增加的间距
+const MAX_H_GAP = 150;    // 最大水平间距
+const MAX_V_GAP = 200;    // 最大垂直间距
+const V_GAP_HEIGHT_RATIO = 0.5;  // 垂直间距与块高度的比例
+const LAYOUT_BREATHING = 1.25;   // 全局宽度呼吸余量（1.0 = 紧凑; 1.25 = 有25%额外空间）
 
 /**
- * 从 blocks + connections 推算出树结构
+ * 获取块的实际宽度
  */
-function buildTree(blocks, connections, groups = []) {
-  const childMap = {};  // parentId → [childId]
-  const hasParent = new Set();
+function getBlockWidth(block) {
+  return block.width || BLOCK_W;
+}
+
+/**
+ * 获取块的实际高度
+ */
+function getBlockHeight(block) {
+  return block.height || BLOCK_H;
+}
+
+/**
+ * 计算智能水平间距
+ * 根据块的连接数量动态调整
+ */
+function getSmartHGap(block, connections) {
+  // 计算这个块的出度（作为父节点的次数）
+  const outDegree = connections.filter(c => c.fromId === block.id).length;
+  const gap = MIN_H_GAP + outDegree * GAP_PER_CONNECTION;
+  return Math.min(gap, MAX_H_GAP);
+}
+
+/**
+ * 计算智能垂直间距
+ * 根据块的高度和连接复杂度动态调整
+ */
+function getSmartVGap(block, connections, nextLayerBlocks = []) {
+  // 计算这个块的入度（作为子节点的次数）
+  const inDegree = connections.filter(c => c.toId === block.id).length;
+  const blockHeight = getBlockHeight(block);
+
+  // 基础间距与块高度成正比（块越高，间距越大）
+  const heightBasedGap = blockHeight * V_GAP_HEIGHT_RATIO;
+
+  // 连接复杂度增加的间距
+  const connectionGap = (inDegree - 1) * GAP_PER_CONNECTION * 2;
+
+  const gap = MIN_V_GAP + heightBasedGap + connectionGap;
+  return Math.min(Math.max(gap, MIN_V_GAP), MAX_V_GAP);
+}
+
+/**
+ * 计算块的对齐位置
+ * 让有多个父节点的块尽量在其父节点的平均位置下方，使连线更垂直
+ */
+function calculateTargetX(blockId, parentMap, blockMap) {
+  const parents = parentMap[blockId] || [];
+  if (parents.length === 0) return null;
+
+  let sumX = 0;
+  for (const pId of parents) {
+    const parent = blockMap[pId];
+    if (parent) {
+      const pWidth = getBlockWidth(parent);
+      sumX += parent.x + pWidth / 2;
+    }
+  }
+  return sumX / parents.length;
+}
+
+/**
+ * 计算每个块的层级（距离根节点的最短距离）
+ */
+function assignLayers(blocks, connections) {
+  const blockMap = {};
+  const childrenMap = {};
+  const inDegree = {};
+  const layer = {};
+
+  for (const b of blocks) {
+    blockMap[b.id] = b;
+    childrenMap[b.id] = [];
+    inDegree[b.id] = 0;
+  }
 
   for (const conn of connections) {
-    if (!childMap[conn.fromId]) childMap[conn.fromId] = [];
-    childMap[conn.fromId].push(conn.toId);
-    hasParent.add(conn.toId);
+    childrenMap[conn.fromId].push(conn.toId);
+    inDegree[conn.toId]++;
   }
 
-  // 找根节点（没有 parent 的）
-  const roots = blocks.filter(b => !hasParent.has(b.id));
-
-  return { roots, childMap };
-}
-
-/**
- * 计算子树宽度（用于居中对齐）
- */
-function subtreeWidth(blockId, childMap, blockMap, groupMap = {}) {
-  const children = childMap[blockId] || [];
-  if (children.length === 0) return BLOCK_W;
-
-  // 如果当前块是组的代表块，计算整个组的宽度
-  const group = groupMap[blockId];
-  if (group) {
-    // 组的宽度 = 组内所有块的最大宽度
-    let maxGroupWidth = 0;
-    group.blockIds.forEach(id => {
-      const b = blockMap[id];
-      if (b) {
-        const w = b.width || BLOCK_W;
-        if (w > maxGroupWidth) maxGroupWidth = w;
-      }
-    });
-    // 组的子树宽度考虑组内所有块的子节点
-    let totalChildWidth = 0;
-    const allChildIds = [];
-    group.blockIds.forEach(id => {
-      (childMap[id] || []).forEach(cid => {
-        if (!group.blockIds.includes(cid)) {
-          allChildIds.push(cid);
-        }
-      });
-    });
-    if (allChildIds.length > 0) {
-      allChildIds.forEach(cid => {
-        totalChildWidth += subtreeWidth(cid, childMap, blockMap, groupMap) + H_GAP;
-      });
-      totalChildWidth -= H_GAP;
+  // Kahn 算法进行拓扑排序和分层
+  const queue = [];
+  for (const b of blocks) {
+    if (inDegree[b.id] === 0) {
+      layer[b.id] = 0;
+      queue.push(b.id);
     }
-    return Math.max(maxGroupWidth, totalChildWidth);
   }
 
-  let total = 0;
-  for (const cid of children) {
-    total += subtreeWidth(cid, childMap, blockMap, groupMap) + H_GAP;
+  // 如果没有根节点（有环），所有节点从 layer 0 开始
+  if (queue.length === 0) {
+    for (const b of blocks) {
+      layer[b.id] = 0;
+      queue.push(b.id);
+    }
   }
-  return total - H_GAP; // 去掉最后一个间距
+
+  let head = 0;
+  while (head < queue.length) {
+    const current = queue[head++];
+    for (const childId of childrenMap[current]) {
+      // 子的层级 = max(子的当前层级，父的层级 + 1)
+      layer[childId] = Math.max(layer[childId] || 0, layer[current] + 1);
+      inDegree[childId]--;
+      if (inDegree[childId] === 0) {
+        queue.push(childId);
+      }
+    }
+  }
+
+  return { layer, childrenMap, inDegree };
 }
 
 /**
- * 递归布局
+ * 插入跨层虚拟节点，给两层间以上的连线在中间层占位
  */
-function layoutSubtree(blockId, x, y, childMap, blockMap, groupMap = {}, positionedGroups = new Set()) {
-  const block = blockMap[blockId];
-  if (!block) return;
+function insertVirtualNodes(blocks, connections, layerMap) {
+  const newBlocks = [...blocks];
+  const newConnections = [];
+  let virtualNodeCounter = 0;
 
-  // 检查块是否在组内
-  const group = groupMap[blockId];
-  if (group && !positionedGroups.has(group.id)) {
-    // 这是组的代表块，布局整个组
-    // 组的位置就是代表块的位置
-    group.blockIds.forEach(id => {
-      const b = blockMap[id];
-      if (b && b.id !== blockId) {
-        // 其他块暂时不处理，等代表块定位后再应用相对偏移
+  for (const conn of connections) {
+    const fromLayer = layerMap[conn.fromId];
+    const toLayer = layerMap[conn.toId];
+
+    if (toLayer !== undefined && fromLayer !== undefined && toLayer - fromLayer > 1) {
+      let currentId = conn.fromId;
+      for (let l = fromLayer + 1; l < toLayer; l++) {
+        const vId = `vnode_${conn.id}_${l}_${virtualNodeCounter++}`;
+        const vBlock = { id: vId, width: 10, height: 10, isVirtual: true, text: '' };
+        newBlocks.push(vBlock);
+        layerMap[vId] = l;
+        newConnections.push({
+          id: `vconn_${currentId}_${vId}`,
+          fromId: currentId,
+          toId: vId,
+          isVirtual: true,
+          originalConnId: conn.id
+        });
+        currentId = vId;
+      }
+      newConnections.push({
+        id: `vconn_${currentId}_${conn.toId}`,
+        fromId: currentId,
+        toId: conn.toId,
+        isVirtual: true,
+        originalConnId: conn.id
+      });
+    } else {
+      newConnections.push(conn);
+    }
+  }
+
+  return { activeBlocks: newBlocks, activeConnections: newConnections };
+}
+
+/**
+ * 移除虚拟节点，供定位结束后打扫战场之用
+ */
+function removeVirtualNodes(blocks, originalConnections) {
+  const finalBlocks = blocks.filter(b => !b.isVirtual);
+  return { finalBlocks, finalConnections: originalConnections };
+}
+
+/**
+ * 双向多轮迭代 Barycenter 重心分层排序算法
+ */
+function countTotalCrossings(orderedLayers, connections) {
+  let crossings = 0;
+  const layers = Object.keys(orderedLayers).map(Number).sort((a, b) => a - b);
+
+  for (let i = 0; i < layers.length - 1; i++) {
+    const layer1 = orderedLayers[layers[i]];
+    const layer2 = orderedLayers[layers[i + 1]];
+
+    const edges = connections.filter(c => layer1.includes(c.fromId) && layer2.includes(c.toId));
+
+    for (let e1 = 0; e1 < edges.length; e1++) {
+      for (let e2 = e1 + 1; e2 < edges.length; e2++) {
+        const u1 = layer1.indexOf(edges[e1].fromId);
+        const v1 = layer2.indexOf(edges[e1].toId);
+        const u2 = layer1.indexOf(edges[e2].fromId);
+        const v2 = layer2.indexOf(edges[e2].toId);
+
+        if ((u1 < u2 && v1 > v2) || (u1 > u2 && v1 < v2)) {
+          crossings++;
+        }
+      }
+    }
+  }
+  return crossings;
+}
+
+function barycentricSort(blocks, connections, layerMap) {
+  const layers = {};
+  for (const b of blocks) {
+    const l = layerMap[b.id];
+    if (!layers[l]) layers[l] = [];
+    layers[l].push(b.id);
+  }
+
+  const parentMap = {};
+  const childrenMap = {};
+  blocks.forEach(b => { parentMap[b.id] = []; childrenMap[b.id] = []; });
+  connections.forEach(c => {
+    parentMap[c.toId].push(c.fromId);
+    childrenMap[c.fromId].push(c.toId);
+  });
+
+  const layerNumbers = Object.keys(layers).map(Number).sort((a, b) => a - b);
+
+  const subtreeSizes = {};
+  const calcSubtree = (id, visited = new Set()) => {
+    if (subtreeSizes[id] !== undefined) return subtreeSizes[id];
+    if (visited.has(id)) return 1;
+    visited.add(id);
+    let size = 1;
+    for (const childId of childrenMap[id]) {
+      size += calcSubtree(childId, visited);
+    }
+    visited.delete(id);
+    subtreeSizes[id] = size;
+    return size;
+  };
+  blocks.forEach(b => calcSubtree(b.id));
+
+  for (const l of layerNumbers) {
+    if (layers[l]) {
+      layers[l].sort((a, b) => subtreeSizes[b] - subtreeSizes[a]);
+      const newLayer = [];
+      let left = true;
+      for (const id of layers[l]) {
+        if (left) newLayer.push(id);
+        else newLayer.unshift(id);
+        left = !left;
+      }
+      layers[l] = newLayer;
+    }
+  }
+
+  let bestLayers = JSON.parse(JSON.stringify(layers));
+  let minCrossings = countTotalCrossings(bestLayers, connections);
+  if (minCrossings === 0) return bestLayers;
+
+  const MAX_ITERATIONS = 6;
+  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    const currentLayers = JSON.parse(JSON.stringify(bestLayers));
+
+    for (let i = 1; i < layerNumbers.length; i++) {
+      const l = layerNumbers[i];
+      const prevLayer = currentLayers[layerNumbers[i - 1]] || [];
+      const positions = {};
+
+      for (const id of currentLayers[l]) {
+        const parents = parentMap[id];
+        let sum = 0, count = 0;
+        for (const p of parents) {
+          const idx = prevLayer.indexOf(p);
+          if (idx !== -1) { sum += idx; count++; }
+        }
+        positions[id] = count > 0 ? sum / count : (prevLayer.length > 0 ? (prevLayer.length - 1) / 2 : 0);
+      }
+      currentLayers[l].sort((a, b) => positions[a] - positions[b]);
+    }
+
+    let downCrossings = countTotalCrossings(currentLayers, connections);
+    if (downCrossings < minCrossings) {
+      minCrossings = downCrossings;
+      bestLayers = JSON.parse(JSON.stringify(currentLayers));
+    }
+
+    for (let i = layerNumbers.length - 2; i >= 0; i--) {
+      const l = layerNumbers[i];
+      const nextLayer = currentLayers[layerNumbers[i + 1]] || [];
+      const positions = {};
+
+      for (const id of currentLayers[l]) {
+        const children = childrenMap[id];
+        let sum = 0, count = 0;
+        for (const c of children) {
+          const idx = nextLayer.indexOf(c);
+          if (idx !== -1) { sum += idx; count++; }
+        }
+        positions[id] = count > 0 ? sum / count : (nextLayer.length > 0 ? (nextLayer.length - 1) / 2 : 0);
+      }
+      currentLayers[l].sort((a, b) => positions[a] - positions[b]);
+    }
+
+    let upCrossings = countTotalCrossings(currentLayers, connections);
+    if (upCrossings < minCrossings) {
+      minCrossings = upCrossings;
+      bestLayers = JSON.parse(JSON.stringify(currentLayers));
+    } else if (upCrossings === downCrossings && upCrossings >= minCrossings) {
+      break;
+    }
+  }
+
+  return bestLayers;
+}
+
+
+/**
+ * 计算块的实际位置
+ * 策略：
+ * 1. 同属一个（或一组）父节点的兄弟节点，形成一个 Cluster。
+ * 2. Cluster 的期望中心（targetCx）为父节点的平均中心位置。
+ * 3. 按照 targetCx 分布 Cluster。如果 Cluster 之间发生重叠，则合并 Cluster 并重新分配空间。
+ * 4. Cluster 内部按照顺序排布节点，主线节点天然会落在 Cluster 中央，正对父节点（形成“爪状”）。
+ */
+function positionBlocks(blocks, connections, orderedLayers, layerMap) {
+  const blockMap = {};
+  for (const b of blocks) {
+    blockMap[b.id] = b;
+  }
+
+  const layerNumbers = Object.keys(orderedLayers).map(Number).sort((a, b) => a - b);
+  let currentY = 80;
+
+  // 构建父子映射
+  const parentMap = {};
+  blocks.forEach(b => { parentMap[b.id] = []; });
+  connections.forEach(c => {
+    if (parentMap[c.toId]) parentMap[c.toId].push(c.fromId);
+  });
+
+  // 获取期望居中位置
+  function getTargetInfo(id) {
+    const parents = parentMap[id] || [];
+    let sumCx = 0; let counted = 0;
+    for (const p of parents) {
+      if (blockMap[p] && blockMap[p].x !== undefined) {
+        sumCx += blockMap[p].x + getBlockWidth(blockMap[p]) / 2;
+        counted++;
+      }
+    }
+    return {
+      targetCx: counted > 0 ? sumCx / counted : null,
+      parentIds: new Set(parents)
+    };
+  }
+
+  for (const l of layerNumbers) {
+    const blockIds = orderedLayers[l];
+    const realBlockIds = blockIds.filter(id => blockMap[id]);
+
+    let maxHeight = 0;
+    let maxVGap = MIN_V_GAP;
+    for (const id of realBlockIds) {
+      const block = blockMap[id];
+      const bh = getBlockHeight(block);
+      const vGap = getSmartVGap(block, connections);
+      if (bh > maxHeight) maxHeight = bh;
+      if (vGap > maxVGap) maxVGap = vGap;
+    }
+
+    if (realBlockIds.length === 0) {
+      currentY += maxHeight + maxVGap;
+      continue;
+    }
+
+    // 1. 初始化每个节点为独立的 Cluster
+    let clusters = realBlockIds.map(id => {
+      const w = getBlockWidth(blockMap[id]);
+      const info = getTargetInfo(id);
+      return {
+        nodes: [id],
+        width: w,
+        targetCx: info.targetCx,
+        parentIds: info.parentIds
+      };
+    });
+
+    // 2. 对于没有父节点（targetCx 为 null）的根层分配大致距离
+    const defaultGap = 300;
+    let noTargetCount = clusters.filter(c => c.targetCx === null).length;
+    let curX = - ((noTargetCount - 1) * defaultGap) / 2;
+    clusters.forEach(c => {
+      if (c.targetCx === null) {
+        c.targetCx = curX;
+        curX += defaultGap;
       }
     });
-    positionedGroups.add(group.id);
+
+    // 3. 处理 Cluster 间的重叠，如有重叠则合并
+    let merged = true;
+    while (merged) {
+      merged = false;
+      for (let i = 0; i < clusters.length - 1; i++) {
+        const c1 = clusters[i];
+        const c2 = clusters[i + 1];
+
+        const right1 = c1.targetCx - c1.width / 2 + c1.width;
+        const left2 = c2.targetCx - c2.width / 2;
+
+        const lastNodeId = c1.nodes[c1.nodes.length - 1];
+        const firstNodeId = c2.nodes[0];
+        let gap = Math.max(getSmartHGap(blockMap[lastNodeId], connections), getSmartHGap(blockMap[firstNodeId], connections));
+
+        let sharedParent = false;
+        c1.parentIds.forEach(p => { if (c2.parentIds.has(p)) sharedParent = true; });
+        if (!sharedParent || (c1.parentIds.size === 0 && c2.parentIds.size === 0)) {
+          gap += 100; // 跨分支时增加额外呼吸余量
+        }
+
+        if (right1 + gap > left2) {
+          const totalWidth = c1.width + gap + c2.width;
+          // 重心偏移混合
+          const newTargetCx = (c1.targetCx * c1.width + c2.targetCx * c2.width) / (c1.width + c2.width);
+
+          const mergedParents = new Set([...c1.parentIds, ...c2.parentIds]);
+
+          clusters.splice(i, 2, {
+            nodes: [...c1.nodes, ...c2.nodes],
+            width: totalWidth,
+            targetCx: newTargetCx,
+            parentIds: mergedParents
+          });
+          merged = true;
+          break;
+        }
+      }
+    }
+
+    // 4. 定位并分配各个节点实际 X 坐标
+    for (const c of clusters) {
+      let startX = c.targetCx - c.width / 2;
+      for (let i = 0; i < c.nodes.length; i++) {
+        const id = c.nodes[i];
+        const block = blockMap[id];
+        if (!block.locked) {
+          block.x = startX;
+          block.y = currentY;
+        }
+        startX += getBlockWidth(block);
+        if (i < c.nodes.length - 1) {
+          const nextId = c.nodes[i + 1];
+          let gap = Math.max(getSmartHGap(block, connections), getSmartHGap(blockMap[nextId], connections));
+          let sharedParent = false;
+          const myParents = parentMap[id] || [];
+          const nextParents = parentMap[nextId] || [];
+          myParents.forEach(p => { if (nextParents.includes(p)) sharedParent = true; });
+          if (!sharedParent || (myParents.length === 0 && nextParents.length === 0)) {
+            gap += 100;
+          }
+          startX += gap;
+        }
+      }
+    }
+
+    currentY += maxHeight + maxVGap;
   }
 
-  if (!block.locked) {
-    block.x = x;
-    block.y = y;
-  } else {
-    // 固定的节点会强制影响它的子代重新基于它对齐
-    x = block.x;
-    y = block.y;
+  // 最终：确保所有节点 x >= 100
+  let minX = Infinity;
+  for (const b of blocks) {
+    if (b.x !== undefined && b.x < minX) minX = b.x;
+  }
+  if (minX < 100) {
+    const offset = 100 - minX;
+    for (const b of blocks) {
+      if (!b.locked && b.x !== undefined) {
+        b.x += offset;
+      }
+    }
+  }
+}
+
+
+/**
+ * 检测并修复连线穿块问题
+ * 策略：
+ * 1. 检测连线是否穿过其他块
+ * 2. 如果穿过，优先尝试水平移动中间的块来避让
+ * 3. 如果无法避让，将目标块往下移
+ */
+function avoidBlockCrossing(blocks, connections) {
+  const blockMap = {};
+  for (const b of blocks) {
+    blockMap[b.id] = b;
   }
 
-  const children = childMap[blockId] || [];
-  if (children.length === 0) return;
+  const yAdjustments = {};
+  const xAdjustments = {};
 
-  const totalW = subtreeWidth(blockId, childMap, blockMap, groupMap);
-  let curX = x + BLOCK_W / 2 - totalW / 2;
+  for (const conn of connections) {
+    const from = blockMap[conn.fromId];
+    const to = blockMap[conn.toId];
+    if (!from || !to) continue;
 
-  for (const cid of children) {
-    const cw = subtreeWidth(cid, childMap, blockMap, groupMap);
-    const cx = curX + cw / 2 - BLOCK_W / 2;
-    layoutSubtree(cid, cx, y + BLOCK_H + V_GAP, childMap, blockMap, groupMap, positionedGroups);
-    curX += cw + H_GAP;
+    const fromWidth = getBlockWidth(from);
+    const fromHeight = getBlockHeight(from);
+    const toWidth = getBlockWidth(to);
+    const toHeight = getBlockHeight(to);
+
+    const fromCenterX = from.x + fromWidth / 2;
+    const fromBottomY = from.y + fromHeight;
+    const toCenterX = to.x + toWidth / 2;
+    const toTopY = to.y;
+
+    // 确定连线的水平范围
+    const lineLeft = Math.min(fromCenterX, toCenterX);
+    const lineRight = Math.max(fromCenterX, toCenterX);
+
+    // 检查这条连线是否穿过其他块
+    for (const other of blocks) {
+      if (other.id === from.id || other.id === to.id) continue;
+
+      const otherWidth = getBlockWidth(other);
+      const otherHeight = getBlockHeight(other);
+      const otherLeft = other.x;
+      const otherRight = other.x + otherWidth;
+      const otherTop = other.y;
+      const otherBottom = other.y + otherHeight;
+
+      // 检测块是否在连线的垂直范围内
+      const inVerticalRange = otherTop > fromBottomY && otherBottom < toTopY;
+
+      if (!inVerticalRange) continue;
+
+      // 检测块是否与连线水平重叠
+      // 情况 1：块完全在连线水平范围内
+      const blockInsideLine = otherLeft > lineLeft && otherRight < lineRight;
+      // 情况 2：块的左边缘在连线范围内
+      const leftEdgeInside = otherLeft > lineLeft && otherLeft < lineRight;
+      // 情况 3：块的右边缘在连线范围内
+      const rightEdgeInside = otherRight > lineLeft && otherRight < lineRight;
+      // 情况 4：块跨越连线的一端
+      const blockSpansLine = (otherLeft <= lineLeft && otherRight >= lineRight);
+
+      if (blockInsideLine || leftEdgeInside || rightEdgeInside || blockSpansLine) {
+        // 尝试水平移动中间的块
+        const moveDistance = Math.min(
+          otherRight - lineLeft,
+          lineRight - otherLeft
+        ) + MIN_H_GAP;
+
+        // 决定移动方向：往空间大的一侧移动
+        const spaceLeft = otherLeft - lineLeft;
+        const spaceRight = lineRight - otherRight;
+        const moveDir = spaceLeft > spaceRight ? -1 : 1;
+
+        const targetX = other.x + moveDir * moveDistance;
+
+        // 检查目标位置是否可行（不与其他块重叠）
+        let canMove = true;
+        for (const check of blocks) {
+          if (check.id === other.id) continue;
+          const checkLeft = check.x;
+          const checkRight = check.x + getBlockWidth(check);
+          const newOtherLeft = targetX;
+          const newOtherRight = targetX + otherWidth;
+
+          if (Math.abs(check.y - other.y) < BLOCK_H) {
+            // 同一行，检查水平重叠
+            if (newOtherLeft < checkRight && newOtherRight > checkLeft) {
+              canMove = false;
+              break;
+            }
+          }
+        }
+
+        if (canMove && xAdjustments[other.id] === undefined) {
+          xAdjustments[other.id] = targetX;
+        } else {
+          // 无法水平移动，只能垂直调整目标块
+          if (!yAdjustments[to.id]) {
+            yAdjustments[to.id] = 0;
+          }
+          const smartVGap = getSmartVGap(to, connections);
+          yAdjustments[to.id] = Math.max(yAdjustments[to.id], otherBottom - toTopY + smartVGap);
+        }
+      }
+    }
+  }
+
+  // 应用垂直调整
+  for (const [id, offset] of Object.entries(yAdjustments)) {
+    const block = blockMap[id];
+    if (block && !block.locked) {
+      block.y += offset;
+    }
+  }
+
+  // 应用水平调整
+  for (const [id, targetX] of Object.entries(xAdjustments)) {
+    const block = blockMap[id];
+    if (block && !block.locked) {
+      block.x = targetX;
+    }
   }
 }
 
 /**
- * 对全部 blocks 执行自动布局
- * 会直接修改 block.x / block.y
+ * 主函数：执行完整的分层布局
  */
 export function autoLayout(blocks, connections, groups = []) {
   if (blocks.length === 0) return;
 
+  const originalConnections = connections;
   const blockMap = {};
   for (const b of blocks) blockMap[b.id] = b;
 
-  // 构建组映射：块 ID → 组对象
+  // 1. 分层
+  const { layer, childrenMap, inDegree } = assignLayers(blocks, connections);
+
+  // 2. 插入虚拟节点以撑开跨层连线空间
+  const { activeBlocks, activeConnections } = insertVirtualNodes(blocks, connections, layer);
+
+  // 3. Barycenter 迭代排平网络 (层内排序)
+  const orderedLayers = barycentricSort(activeBlocks, activeConnections, layer);
+
+  // 调试输出
+  console.log('=== Barycenter 优化布局结果 ===');
+  for (const [layerNum, blockIds] of Object.entries(orderedLayers)) {
+    console.log(`Layer ${layerNum}: [${blockIds.length} nodes]`);
+  }
+  const minCrossings = countTotalCrossings(orderedLayers, activeConnections);
+  console.log(`Barycenter 总计连线交叉: ${minCrossings}`);
+
+  // 4. 定位（不带额外打乱的强流向）
+  positionBlocks(activeBlocks, activeConnections, orderedLayers, layer);
+
+  // 5. 避免穿块
+  avoidBlockCrossing(activeBlocks, activeConnections);
+
+  // 6. 处理组的相对位置
   const groupMap = {};
   if (groups && groups.length > 0) {
     groups.forEach(group => {
-      // 每个组的第一个块作为代表块
       const representativeId = group.blockIds[0];
       groupMap[representativeId] = group;
     });
-  }
 
-  // 保存组内块的相对位置（相对于组代表块）
-  const groupInternalOffsets = {};
-  if (groups && groups.length > 0) {
     groups.forEach(group => {
       const representative = blockMap[group.blockIds[0]];
       if (representative) {
-        const repCx = representative.x + (representative.width || BLOCK_W) / 2;
+        const repWidth = getBlockWidth(representative);
+        const repCx = representative.x + repWidth / 2;
         const repCy = representative.y;
 
-        groupInternalOffsets[group.id] = group.blockIds.map(id => {
+        const baseOffsets = {};
+        group.blockIds.forEach(id => {
           const b = blockMap[id];
-          if (!b) return { id, offsetX: 0, offsetY: 0 };
-          const bCx = b.x + (b.width || BLOCK_W) / 2;
-          const bCy = b.y;
-          return {
-            id,
-            offsetX: bCx - repCx,  // 块中心相对于代表块中心的偏移
-            offsetY: bCy - repCy,   // 块顶部相对于代表块顶部的偏移
-          };
+          if (b) {
+            const bWidth = getBlockWidth(b);
+            baseOffsets[id] = {
+              offsetX: b.x + bWidth / 2 - repCx,
+              offsetY: b.y - repCy
+            };
+          }
+        });
+
+        group.blockIds.forEach(id => {
+          const b = blockMap[id];
+          const offset = baseOffsets[id];
+          if (b && offset && b.id !== group.blockIds[0] && !b.locked) {
+            const bWidth = getBlockWidth(b);
+            b.x = repCx + offset.offsetX - bWidth / 2;
+            b.y = repCy + offset.offsetY;
+          }
         });
       }
     });
   }
 
-  const { roots, childMap } = buildTree(blocks, connections, groups);
-  const positionedGroups = new Set();
-
-  // 布局每棵树
-  let startX = 100;
-  const startY = 100;
-
-  for (const root of roots) {
-    const tw = subtreeWidth(root.id, childMap, blockMap, groupMap);
-    const rx = startX + tw / 2 - BLOCK_W / 2;
-    layoutSubtree(root.id, rx, startY, childMap, blockMap, groupMap, positionedGroups);
-    startX += tw + H_GAP * 2;
-  }
-
-  // 处理没有连接的孤立节点
-  const positioned = new Set();
-  for (const root of roots) {
-    positioned.add(root.id);
-    const walk = (id) => {
-      (childMap[id] || []).forEach(cid => {
-        positioned.add(cid);
-        walk(cid);
-      });
-    };
-    walk(root.id);
-  }
-
-  let orphanX = startX + 100;
-  for (const b of blocks) {
-    if (!positioned.has(b.id)) {
-      if (!b.locked) {
-        b.x = orphanX;
-        b.y = startY;
-      }
-      orphanX += BLOCK_W + H_GAP;
-    }
-  }
-
-  // 应用组内相对位置
-  if (groups && groups.length > 0) {
-    groups.forEach(group => {
-      const offsets = groupInternalOffsets[group.id];
-      if (offsets && offsets.length > 0) {
-        // 找到代表块的新位置
-        const representativeId = group.blockIds[0];
-        const representative = blockMap[representativeId];
-        if (representative) {
-          const repCx = representative.x + (representative.width || BLOCK_W) / 2;
-          const repCy = representative.y;
-
-          // 应用偏移到组内所有块
-          offsets.forEach(offset => {
-            const b = blockMap[offset.id];
-            if (b && b.id !== representativeId && !b.locked) {
-              b.x = repCx + offset.offsetX - (b.width || BLOCK_W) / 2;
-              b.y = repCy + offset.offsetY;
-            }
-          });
-        }
-      }
-    });
-  }
+  // 7. 脱掉马甲，清理虚拟节点
+  removeVirtualNodes(activeBlocks, originalConnections);
 }
+
 
 /**
  * 为新增节点找到一个不重叠的位置
  */
 export function findFreePosition(blocks, parentId, connections) {
-  // 找父节点
   const parent = blocks.find(b => b.id === parentId);
   if (!parent) {
-    // 无父节点 → 放在右下角空白区
     const maxX = Math.max(100, ...blocks.map(b => b.x));
     const maxY = Math.max(100, ...blocks.map(b => b.y));
-    return { x: maxX + BLOCK_W + H_GAP, y: 100 };
+    const parentW = parent ? getBlockWidth(parent) : BLOCK_W;
+    return { x: maxX + parentW + MIN_H_GAP, y: 100 };
   }
 
-  // 找已有兄弟节点
+  const parentHeight = getBlockHeight(parent);
   const siblingIds = connections
     .filter(c => c.fromId === parentId)
     .map(c => c.toId);
   const siblings = blocks.filter(b => siblingIds.includes(b.id));
 
   if (siblings.length === 0) {
-    // 第一个子节点 → 正下方
-    return { x: parent.x, y: parent.y + BLOCK_H + V_GAP };
+    const vGap = getSmartVGap(parent, connections);
+    return { x: parent.x, y: parent.y + parentHeight + vGap };
   }
 
-  // 放在最右边兄弟的右侧
   const rightmost = siblings.reduce((a, b) => (a.x > b.x ? a : b));
-  return { x: rightmost.x + BLOCK_W + H_GAP, y: rightmost.y };
+  const rightmostWidth = getBlockWidth(rightmost);
+  const hGap = getSmartHGap(rightmost, connections);
+  return { x: rightmost.x + rightmostWidth + hGap, y: rightmost.y };
 }
 
 /**
- * 计算画布内容的边界框（用于 fit-to-view）
+ * 计算边界框
  */
-export function getBoundingBox(blocks, getBlockWidth) {
+export function getBoundingBox(blocks, customGetWidth) {
   if (blocks.length === 0) return { x: 0, y: 0, width: 800, height: 600 };
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const b of blocks) {
-    const bw = getBlockWidth ? getBlockWidth(b) : (b.width || BLOCK_W);
+    const bw = customGetWidth ? customGetWidth(b) : getBlockWidth(b);
     const bh = b.height || BLOCK_H;
     minX = Math.min(minX, b.x);
     minY = Math.min(minY, b.y);
@@ -271,4 +734,67 @@ export function getBoundingBox(blocks, getBlockWidth) {
     maxY = Math.max(maxY, b.y + bh);
   }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * 导出画布数据结构（用于调试和分析）
+ * 在浏览器控制台运行：copyWindow.exportCanvasData()
+ */
+export function exportCanvasData(blocks, connections, groups) {
+  const blockMap = {};
+  for (const b of blocks) {
+    blockMap[b.id] = b;
+  }
+
+  // 计算每个块的层级
+  const { layer } = assignLayers(blocks, connections);
+
+  // 计算每个块的入度和出度
+  const inDegree = {};
+  const outDegree = {};
+  for (const b of blocks) {
+    inDegree[b.id] = 0;
+    outDegree[b.id] = 0;
+  }
+  for (const conn of connections) {
+    inDegree[conn.toId] = (inDegree[conn.toId] || 0) + 1;
+    outDegree[conn.fromId] = (outDegree[conn.fromId] || 0) + 1;
+  }
+
+  const data = {
+    summary: {
+      totalBlocks: blocks.length,
+      totalConnections: connections.length,
+      totalGroups: groups.length,
+      maxLayer: Math.max(...Object.values(layer)),
+    },
+    blocks: blocks.map(b => ({
+      id: b.id,
+      text: b.text?.substring(0, 50) || '',
+      layer: layer[b.id],
+      inDegree: inDegree[b.id],
+      outDegree: outDegree[b.id],
+      width: b.width || BLOCK_W,
+      height: b.height || BLOCK_H,
+      x: b.x,
+      y: b.y,
+    })),
+    connections: connections.map(c => ({
+      id: c.id,
+      fromId: c.fromId,
+      toId: c.toId,
+    })),
+    // 按层级分组
+    layers: {},
+  };
+
+  // 按层级组织块
+  for (const [blockId, layerNum] of Object.entries(layer)) {
+    if (!data.layers[layerNum]) {
+      data.layers[layerNum] = [];
+    }
+    data.layers[layerNum].push(blockId);
+  }
+
+  return data;
 }

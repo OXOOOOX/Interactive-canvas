@@ -17,6 +17,13 @@ const MAX_V_GAP = 200;    // 最大垂直间距
 const V_GAP_HEIGHT_RATIO = 0.5;  // 垂直间距与块高度的比例
 const LAYOUT_BREATHING = 1.25;   // 全局宽度呼吸余量（1.0 = 紧凑; 1.25 = 有25%额外空间）
 
+// ====== Two-Pass Layout 网格填充参数 ======
+const GRID_H_GAP = 40;           // 叶子网格内水平间距
+const GRID_V_GAP = 30;           // 叶子网格内垂直间距
+const GRID_MAX_COLS = 3;         // 网格每行最大列数
+const GRID_PARENT_OFFSET = 40;   // 网格与父节点底部的垂直偏移
+const LEAF_CLUSTER_MIN = 3;      // 叶子聚类最小数量阈值
+
 /**
  * 获取块的实际宽度
  */
@@ -322,6 +329,102 @@ function barycentricSort(blocks, connections, layerMap) {
 
 
 /**
+ * 将叶子节点重排到每层外侧
+ * 规则：同一父节点的子节点中，无后续子节点的叶子放到远离图中心的一侧
+ * - 父节点在层中心偏左 → 叶子放兄弟组最左侧（向外扩散）
+ * - 父节点在层中心偏右 → 叶子放兄弟组最右侧（向外扩散）
+ * - 父节点在层正中 → 叶子对半分到两侧
+ */
+function reorderLeavesToOuterSide(orderedLayers, connections, blocks) {
+  // 构建虚拟节点集合
+  const virtualIds = new Set(blocks.filter(b => b.isVirtual).map(b => b.id));
+
+  // 构建出度和父节点映射
+  const outDegree = {};
+  const parentOf = {};
+  for (const ids of Object.values(orderedLayers)) {
+    for (const id of ids) {
+      outDegree[id] = 0;
+      if (!parentOf[id]) parentOf[id] = [];
+    }
+  }
+  for (const conn of connections) {
+    if (outDegree[conn.fromId] !== undefined) outDegree[conn.fromId]++;
+    if (parentOf[conn.toId]) parentOf[conn.toId].push(conn.fromId);
+  }
+
+  const layerNums = Object.keys(orderedLayers).map(Number).sort((a, b) => a - b);
+
+  for (let li = 1; li < layerNums.length; li++) {
+    const l = layerNums[li];
+    const prevL = layerNums[li - 1];
+    const prevLayer = orderedLayers[prevL] || [];
+    const layer = orderedLayers[l];
+
+    if (!layer || layer.length <= 2) continue;
+
+    // 上一层位置索引
+    const parentPosMap = {};
+    prevLayer.forEach((id, idx) => { parentPosMap[id] = idx; });
+    const prevCenter = (prevLayer.length - 1) / 2;
+
+    // 按主要父节点分组，保持层内原有相对顺序
+    const visited = new Set();
+    const groupKeys = [];
+    const groups = {};
+
+    for (const id of layer) {
+      const pids = parentOf[id] || [];
+      const key = pids.length > 0 ? pids[0] : '_orphan';
+      if (!visited.has(key)) {
+        visited.add(key);
+        groupKeys.push(key);
+        groups[key] = [];
+      }
+      groups[key].push(id);
+    }
+
+    const newLayer = [];
+    for (const key of groupKeys) {
+      const nodes = groups[key];
+      if (nodes.length <= 1) {
+        newLayer.push(...nodes);
+        continue;
+      }
+
+      // 叶子 = 出度为0 且非虚拟节点
+      const leaves = nodes.filter(id => outDegree[id] === 0 && !virtualIds.has(id));
+      const cores = nodes.filter(id => outDegree[id] > 0 || virtualIds.has(id));
+
+      if (leaves.length === 0 || cores.length === 0) {
+        newLayer.push(...nodes);
+        continue;
+      }
+
+      // 根据父节点在上层的序位判断外侧方向
+      const parentIdx = (key !== '_orphan' && parentPosMap[key] !== undefined)
+        ? parentPosMap[key]
+        : prevCenter;
+
+      if (parentIdx < prevCenter - 0.01) {
+        // 父节点偏左 → 叶子放最左侧（向外扩散）
+        newLayer.push(...leaves, ...cores);
+      } else if (parentIdx > prevCenter + 0.01) {
+        // 父节点偏右 → 叶子放最右侧（向外扩散）
+        newLayer.push(...cores, ...leaves);
+      } else {
+        // 父节点居中 → 叶子对半分到两侧
+        const half = Math.ceil(leaves.length / 2);
+        newLayer.push(...leaves.slice(0, half), ...cores, ...leaves.slice(half));
+      }
+    }
+
+    orderedLayers[l] = newLayer;
+  }
+}
+
+
+/**
  * 计算块的实际位置
  * 策略：
  * 1. 同属一个（或一组）父节点的兄弟节点，形成一个 Cluster。
@@ -613,7 +716,225 @@ function avoidBlockCrossing(blocks, connections) {
 }
 
 /**
- * 主函数：执行完整的分层布局
+ * ====== Two-Pass Layout 辅助函数 ======
+ */
+
+/**
+ * 识别纯叶子挂载组
+ * 找到所有出度为 0 的叶子节点，按单一父节点分组
+ * 仅返回满足阈值（≥ LEAF_CLUSTER_MIN）的组
+ */
+function identifyLeafClusters(blocks, connections) {
+  const outDegree = {};
+  const parentOf = {};
+  for (const b of blocks) {
+    outDegree[b.id] = 0;
+    parentOf[b.id] = [];
+  }
+  for (const conn of connections) {
+    outDegree[conn.fromId] = (outDegree[conn.fromId] || 0) + 1;
+    if (parentOf[conn.toId]) parentOf[conn.toId].push(conn.fromId);
+  }
+
+  // 按父节点分组叶子（仅单父叶子参与聚类）
+  const leafGroups = {};
+  for (const b of blocks) {
+    if (outDegree[b.id] === 0 && parentOf[b.id].length === 1) {
+      const pid = parentOf[b.id][0];
+      if (!leafGroups[pid]) leafGroups[pid] = [];
+      leafGroups[pid].push(b.id);
+    }
+  }
+
+  // 过滤：只保留 >= 阈值的组
+  const clusters = {};
+  for (const [pid, leafIds] of Object.entries(leafGroups)) {
+    if (leafIds.length >= LEAF_CLUSTER_MIN) {
+      clusters[pid] = leafIds;
+    }
+  }
+  return clusters;
+}
+
+/**
+ * 将叶子聚类编排为网格矩阵，安置在父节点下方空隙中
+ * - 无核心子线时：网格居中于父节点正下方
+ * - 有核心子线时：网格偏移至核心子树的对侧空隙
+ */
+function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
+  // 构建原始子节点映射
+  const childrenMap = {};
+  for (const b of allBlocks) childrenMap[b.id] = [];
+  for (const conn of originalConnections) {
+    if (childrenMap[conn.fromId]) childrenMap[conn.fromId].push(conn.toId);
+  }
+
+  const strippedIds = new Set();
+  for (const leafIds of Object.values(clusters)) {
+    leafIds.forEach(id => strippedIds.add(id));
+  }
+
+  // 计算骨架重心 X（用于判断外侧方向）
+  let graphCenterX = 0, skelCount = 0;
+  for (const b of allBlocks) {
+    if (!strippedIds.has(b.id) && !b.isVirtual && b.x !== undefined) {
+      graphCenterX += b.x + getBlockWidth(b) / 2;
+      skelCount++;
+    }
+  }
+  if (skelCount > 0) graphCenterX /= skelCount;
+
+  for (const [parentId, leafIds] of Object.entries(clusters)) {
+    const parent = blockMap[parentId];
+    if (!parent || parent.x === undefined) continue;
+
+    const parentW = getBlockWidth(parent);
+    const parentH = getBlockHeight(parent);
+    const parentCx = parent.x + parentW / 2;
+    const gridTop = parent.y + parentH + GRID_PARENT_OFFSET;
+
+    // 计算网格尺寸
+    const cols = Math.min(leafIds.length, GRID_MAX_COLS);
+    const maxLeafW = Math.max(...leafIds.map(id => getBlockWidth(blockMap[id])));
+    const leafH = Math.max(...leafIds.map(id => getBlockHeight(blockMap[id])));
+    const gridW = cols * maxLeafW + (cols - 1) * GRID_H_GAP;
+
+    // 核心子节点边界
+    const coreChildren = (childrenMap[parentId] || []).filter(cid => !strippedIds.has(cid));
+    let coreMinX = Infinity, coreMaxX = -Infinity;
+    for (const cid of coreChildren) {
+      const cb = blockMap[cid];
+      if (cb && cb.x !== undefined) {
+        coreMinX = Math.min(coreMinX, cb.x);
+        coreMaxX = Math.max(coreMaxX, cb.x + getBlockWidth(cb));
+      }
+    }
+
+    // 网格放置方向：始终朝图的外侧
+    let gridCx;
+    const outerOffset = gridW / 2 + 40;
+
+    if (parentCx < graphCenterX - 30) {
+      // 父节点偏左 → 网格往更左放（外侧）
+      gridCx = parentCx - outerOffset;
+      if (coreMinX !== Infinity) {
+        gridCx = Math.min(gridCx, coreMinX - gridW / 2 - 40);
+      }
+    } else if (parentCx > graphCenterX + 30) {
+      // 父节点偏右 → 网格往更右放（外侧）
+      gridCx = parentCx + outerOffset;
+      if (coreMaxX !== -Infinity) {
+        gridCx = Math.max(gridCx, coreMaxX + gridW / 2 + 40);
+      }
+    } else {
+      // 父节点居中
+      if (coreChildren.length === 0) {
+        gridCx = parentCx;
+      } else {
+        const coreCx = (coreMinX + coreMaxX) / 2;
+        if (coreCx >= parentCx) {
+          gridCx = coreMinX - gridW / 2 - 40;
+        } else {
+          gridCx = coreMaxX + gridW / 2 + 40;
+        }
+      }
+    }
+
+    // 将每个叶子放置到网格中
+    const gridLeft = gridCx - gridW / 2;
+    for (let i = 0; i < leafIds.length; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const leaf = blockMap[leafIds[i]];
+      if (leaf && !leaf.locked) {
+        leaf.x = gridLeft + col * (maxLeafW + GRID_H_GAP);
+        leaf.y = gridTop + row * (leafH + GRID_V_GAP);
+      }
+    }
+  }
+}
+
+/**
+ * 碰撞微调：检查网格叶子与骨架节点重叠
+ * 增强：水平朝外侧推开 + 不同聚类组间碰撞检测
+ */
+function resolveGridCollisions(blocks, clusters, blockMap) {
+  const strippedIds = new Set();
+  for (const leafIds of Object.values(clusters)) {
+    leafIds.forEach(id => strippedIds.add(id));
+  }
+
+  const skeletonBlocks = blocks.filter(b => !strippedIds.has(b.id) && !b.isVirtual && b.x !== undefined);
+  const COLLISION_PADDING = 25;
+
+  // 骨架重心
+  let graphCenterX = 0, skelCount = 0;
+  for (const sb of skeletonBlocks) {
+    graphCenterX += sb.x + getBlockWidth(sb) / 2;
+    skelCount++;
+  }
+  if (skelCount > 0) graphCenterX /= skelCount;
+
+  // 逐聚类检查与骨架的碰撞
+  for (const [parentId, leafIds] of Object.entries(clusters)) {
+    const parent = blockMap[parentId];
+    if (!parent || parent.x === undefined) continue;
+    const parentCx = parent.x + getBlockWidth(parent) / 2;
+    const outerDir = parentCx < graphCenterX ? -1 : 1;
+
+    for (const leafId of leafIds) {
+      const gb = blockMap[leafId];
+      if (!gb || gb.locked || gb.x === undefined) continue;
+      const gbW = getBlockWidth(gb);
+      const gbH = getBlockHeight(gb);
+
+      for (const sb of skeletonBlocks) {
+        const sbW = getBlockWidth(sb);
+        const sbH = getBlockHeight(sb);
+        const overlapX = gb.x < sb.x + sbW + COLLISION_PADDING && gb.x + gbW + COLLISION_PADDING > sb.x;
+        const overlapY = gb.y < sb.y + sbH + COLLISION_PADDING && gb.y + gbH + COLLISION_PADDING > sb.y;
+
+        if (overlapX && overlapY) {
+          // 按外侧方向水平位移（而非只是下移）
+          if (outerDir < 0) {
+            gb.x = sb.x - gbW - COLLISION_PADDING;
+          } else {
+            gb.x = sb.x + sbW + COLLISION_PADDING;
+          }
+        }
+      }
+    }
+  }
+
+  // 不同聚类组间碰撞
+  const clusterKeys = Object.keys(clusters);
+  for (let i = 0; i < clusterKeys.length; i++) {
+    for (let j = i + 1; j < clusterKeys.length; j++) {
+      for (const id1 of clusters[clusterKeys[i]]) {
+        const b1 = blockMap[id1];
+        if (!b1 || b1.x === undefined) continue;
+        for (const id2 of clusters[clusterKeys[j]]) {
+          const b2 = blockMap[id2];
+          if (!b2 || b2.x === undefined) continue;
+          const w1 = getBlockWidth(b1), h1 = getBlockHeight(b1);
+          const w2 = getBlockWidth(b2), h2 = getBlockHeight(b2);
+          const overlapX = b1.x < b2.x + w2 + COLLISION_PADDING && b1.x + w1 + COLLISION_PADDING > b2.x;
+          const overlapY = b1.y < b2.y + h2 + COLLISION_PADDING && b1.y + h1 + COLLISION_PADDING > b2.y;
+          if (overlapX && overlapY) {
+            if (b1.y > b2.y) {
+              b1.y = b2.y + h2 + COLLISION_PADDING;
+            } else {
+              b2.y = b1.y + h1 + COLLISION_PADDING;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 主函数：执行完整的分层布局（Two-Pass: 骨架优先 + 叶子网格填充）
  */
 export function autoLayout(blocks, connections, groups = []) {
   if (blocks.length === 0) return;
@@ -622,14 +943,35 @@ export function autoLayout(blocks, connections, groups = []) {
   const blockMap = {};
   for (const b of blocks) blockMap[b.id] = b;
 
-  // 1. 分层
-  const { layer, childrenMap, inDegree } = assignLayers(blocks, connections);
+  // ====== Two-Pass Layout: Pass 1 — 剥离叶子，布局骨架 ======
 
-  // 2. 插入虚拟节点以撑开跨层连线空间
-  const { activeBlocks, activeConnections } = insertVirtualNodes(blocks, connections, layer);
+  // 1. 识别叶子聚类（≥3 个纯叶子挂载在同一父节点下）
+  const leafClusters = identifyLeafClusters(blocks, connections);
+  const strippedLeafIds = new Set();
+  for (const leafIds of Object.values(leafClusters)) {
+    leafIds.forEach(id => strippedLeafIds.add(id));
+  }
 
-  // 3. Barycenter 迭代排平网络 (层内排序)
+  console.log(`=== Two-Pass Layout ===`);
+  console.log(`剥离叶子聚类: ${Object.keys(leafClusters).length} 组, 共 ${strippedLeafIds.size} 个叶子`);
+
+  // 2. 生成骨架（剥离叶子后的块和连线）
+  const skeletonBlocks = blocks.filter(b => !strippedLeafIds.has(b.id));
+  const skeletonConnections = connections.filter(
+    c => !strippedLeafIds.has(c.toId) && !strippedLeafIds.has(c.fromId)
+  );
+
+  // 3. 分层（仅骨架）
+  const { layer } = assignLayers(skeletonBlocks, skeletonConnections);
+
+  // 4. 插入虚拟节点以撑开跨层连线空间
+  const { activeBlocks, activeConnections } = insertVirtualNodes(skeletonBlocks, skeletonConnections, layer);
+
+  // 5. Barycenter 迭代排序（层内排序）
   const orderedLayers = barycentricSort(activeBlocks, activeConnections, layer);
+
+  // 5.5 叶子外移：将无后续子节点的叶子排到各层外侧
+  reorderLeavesToOuterSide(orderedLayers, activeConnections, activeBlocks);
 
   // 调试输出
   console.log('=== Barycenter 优化布局结果 ===');
@@ -639,13 +981,20 @@ export function autoLayout(blocks, connections, groups = []) {
   const minCrossings = countTotalCrossings(orderedLayers, activeConnections);
   console.log(`Barycenter 总计连线交叉: ${minCrossings}`);
 
-  // 4. 定位（不带额外打乱的强流向）
+  // 6. 定位骨架
   positionBlocks(activeBlocks, activeConnections, orderedLayers, layer);
 
-  // 5. 避免穿块
+  // 7. 避免穿块
   avoidBlockCrossing(activeBlocks, activeConnections);
 
-  // 6. 处理组的相对位置
+  // ====== Two-Pass Layout: Pass 2 — 叶子网格填充 ======
+  if (strippedLeafIds.size > 0) {
+    console.log(`=== Pass 2: 安置 ${strippedLeafIds.size} 个叶子到网格 ===`);
+    placeLeafGrids(blocks, originalConnections, leafClusters, blockMap);
+    resolveGridCollisions(blocks, leafClusters, blockMap);
+  }
+
+  // 8. 处理组的相对位置
   const groupMap = {};
   if (groups && groups.length > 0) {
     groups.forEach(group => {
@@ -685,7 +1034,7 @@ export function autoLayout(blocks, connections, groups = []) {
     });
   }
 
-  // 7. 脱掉马甲，清理虚拟节点
+  // 9. 脱掉马甲，清理虚拟节点
   removeVirtualNodes(activeBlocks, originalConnections);
 }
 

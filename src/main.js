@@ -12,7 +12,7 @@ import {
   ENDPOINT_PRESETS,
   createGroup, deleteGroup, getGroupBlocks, isBlockInGroup, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName,
 } from './state.js';
-import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar } from './canvas.js';
+import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar, syncBlockSizes } from './canvas.js';
 import { initChat, sendText } from './chat.js';
 import { initWaveform, resumeListening, isConversationActive } from './waveform.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
@@ -33,6 +33,7 @@ const dom = {
   undoBtn: $('undoBtn'),
   redoBtn: $('redoBtn'),
   downloadJson: $('downloadJson'),
+  importJson: $('importJson'),
   resetDemo: $('resetDemo'),
   settingsBtn: $('settingsBtn'),
 
@@ -1140,6 +1141,7 @@ function bindEvents() {
   dom.zoomOut.addEventListener('click', zoomOut);
   dom.fitBtn.addEventListener('click', fitToView);
   dom.autoLayoutBtn.addEventListener('click', () => {
+    syncBlockSizes();
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
     pushHistory();
     renderBlocks();
@@ -1168,6 +1170,7 @@ function bindEvents() {
         
         if (parsed.operations && parsed.operations.length > 0) {
           executeOperations(appState.canvas, parsed.operations);
+          syncBlockSizes();
           autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
           pushHistory();
           renderBlocks();
@@ -1378,6 +1381,11 @@ function bindEvents() {
     });
   }
 
+  // ── Import ──
+  dom.importJson.addEventListener('click', () => {
+    showImportMenu();
+  });
+
   // ── Export ──
   dom.downloadJson.addEventListener('click', () => {
     showExportMenu();
@@ -1485,6 +1493,226 @@ function loadDemoData() {
   renderBlocks(appState.canvas.blocks.map(b => b.id));
   setTimeout(fitToView, 500);
   saveCurrentCanvas();
+}
+
+// ── Import Menu ──
+function showImportMenu() {
+  // Create dropdown if not exists
+  let menu = document.getElementById('importMenu');
+  if (menu) { menu.remove(); return; }
+
+  menu = document.createElement('div');
+  menu.id = 'importMenu';
+  menu.className = 'import-menu';
+  menu.innerHTML = `
+    <button class="import-item" data-format="json">
+      <span class="import-icon">{ }</span>JSON 文件
+    </button>
+    <button class="import-item" data-format="markdown">
+      <span class="import-icon">📝</span>Markdown 大纲
+    </button>
+  `;
+
+  // Position below the import button
+  const btn = dom.importJson;
+  const rect = btn.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = `${rect.bottom + 6}px`;
+  menu.style.right = `${window.innerWidth - rect.right}px`;
+  document.body.appendChild(menu);
+
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-format]');
+    if (!item) return;
+    const format = item.dataset.format;
+    menu.remove();
+    openFilePicker(format);
+  });
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function closer(e) {
+      if (!menu.contains(e.target) && e.target !== btn) {
+        menu.remove();
+        document.removeEventListener('pointerdown', closer);
+      }
+    });
+  }, 10);
+}
+
+function openFilePicker(format) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = format === 'json' ? '.json,application/json' : '.md,.markdown,text/markdown';
+  input.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target.result;
+      if (format === 'json') {
+        handleImportJson(content);
+      } else {
+        handleImportMarkdown(content);
+      }
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+function handleImportJson(content) {
+  try {
+    const data = JSON.parse(content);
+
+    // 验证数据结构
+    if (!data.title || !Array.isArray(data.blocks) || !Array.isArray(data.connections)) {
+      throw new Error('JSON 格式无效，需要 title/blocks/connections 字段');
+    }
+
+    // 导入数据
+    appState.canvas = {
+      title: data.title,
+      blocks: data.blocks,
+      connections: data.connections,
+      groups: data.groups || [],
+    };
+
+    // 更新 UI
+    dom.boardTitle.textContent = appState.canvas.title;
+    pushHistory();
+    renderBlocks();
+    fitToView();
+    saveCurrentCanvas();
+  } catch (err) {
+    alert('导入失败：' + err.message);
+  }
+}
+
+function handleImportMarkdown(content) {
+  try {
+    const canvasData = parseMarkdownToCanvas(content);
+
+    appState.canvas = canvasData;
+    dom.boardTitle.textContent = canvasData.title;
+    pushHistory();
+    renderBlocks();
+    fitToView();
+    saveCurrentCanvas();
+  } catch (err) {
+    alert('导入失败：' + err.message);
+  }
+}
+
+function parseMarkdownToCanvas(markdown) {
+  const lines = markdown.split('\n');
+  const blocks = [];
+  const connections = [];
+  const blockStack = []; // 用于跟踪层级关系
+  let blockIndex = 0;
+
+  // 提取标题作为画布标题
+  let title = '导入的画布';
+  const titleMatch = markdown.match(/^#\s+(.+)/);
+  if (titleMatch) {
+    title = titleMatch[1];
+  }
+
+  // 解析每一行
+  for (const line of lines) {
+    // 跳过空行和标题行（已经处理）
+    if (!line.trim() || line.startsWith('# ')) continue;
+
+    // 计算缩进级别（通过 - 前面的空格或 # 数量）
+    const listMatch = line.match(/^(\s*)-\s*\*\*(.+?)\*\*(?:\s*—\s*(.+))?$/);
+    const headerMatch = line.match(/^(#{2,})\s*(.+?)(?:\s*—\s*(.+))?$/);
+
+    let depth = 0;
+    let label = '';
+    let content = '';
+
+    if (listMatch) {
+      // 列表格式：- **Label** — Content
+      depth = Math.floor(listMatch[1].length / 2);
+      label = listMatch[2].trim();
+      content = listMatch[3]?.trim() || '';
+    } else if (headerMatch) {
+      // 标题格式：## Label — Content
+      depth = headerMatch[1].length - 1;
+      label = headerMatch[2].trim();
+      content = headerMatch[3]?.trim() || '';
+    } else {
+      continue; // 跳过无法解析的行
+    }
+
+    // 创建新块
+    const blockId = crypto.randomUUID();
+    const block = {
+      id: blockId,
+      type: 'text',
+      label,
+      content,
+      x: 0,
+      y: 0,
+    };
+    blocks.push(block);
+    blockStack.push({ id: blockId, depth });
+
+    // 创建连接（连接到父节点）
+    if (blockStack.length > 1) {
+      // 找到最近的父节点（深度小于当前深度的最后一个）
+      for (let i = blockStack.length - 2; i >= 0; i--) {
+        if (blockStack[i].depth < depth) {
+          connections.push({
+            id: crypto.randomUUID(),
+            fromId: blockStack[i].id,
+            toId: blockId,
+          });
+          break;
+        }
+      }
+    }
+
+    blockIndex++;
+  }
+
+  // 使用自动布局计算位置
+  // 先给一个临时的 autoLayout 调用
+  // 由于 autoLayout 需要导入，我们在这里简单计算位置
+  const startX = 400;
+  const startY = 60;
+  const levelHeight = 160;
+  const siblingGap = 200;
+
+  // 按层级分配位置
+  const levelPositions = {};
+  const levelCounts = {};
+
+  for (const block of blocks) {
+    // 找到块的深度
+    const stackEntry = blockStack.find(s => s.id === block.id);
+    const depth = stackEntry ? stackEntry.depth : 0;
+
+    if (!levelCounts[depth]) levelCounts[depth] = 0;
+    if (!levelPositions[depth]) levelPositions[depth] = [];
+
+    const x = startX + levelCounts[depth] * siblingGap;
+    const y = startY + depth * levelHeight;
+
+    block.x = x;
+    block.y = y;
+
+    levelPositions[depth].push(x);
+    levelCounts[depth]++;
+  }
+
+  return {
+    title,
+    blocks,
+    connections,
+    groups: [],
+  };
 }
 
 // ── Export Menu ──

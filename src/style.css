@@ -1644,6 +1644,48 @@ select.cfg-input {
 
 
 /* ═══════════════════════════════════════════════════
+   IMPORT DROPDOWN
+   ═══════════════════════════════════════════════════ */
+.import-menu {
+  min-width: 160px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 2px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 300;
+  animation: ctxEnter 0.15s var(--ease-out);
+}
+
+.import-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid #000;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+.import-item:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+.import-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+  opacity: 0.7;
+}
+
+
+/* ═══════════════════════════════════════════════════
    MINIMAP
    ═══════════════════════════════════════════════════ */
 .canvas-minimap {

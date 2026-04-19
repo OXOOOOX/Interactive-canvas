@@ -55,6 +55,11 @@ const dom = {
   pinNode: $('pinNode'),
   refineNode: $('refineNode'),
   deleteNode: $('deleteNode'),
+  splitNode: $('splitNode'),
+  mergeNode: $('mergeNode'),
+  expandNode: $('expandNode'),
+  deriveNode: $('deriveNode'),
+  translateNode: $('translateNode'),
   refineConfirmBox: $('refineConfirmBox'),
   refineYes: $('refineYes'),
   refineNo: $('refineNo'),
@@ -282,6 +287,471 @@ function handleDeleteNode() {
   pushHistory();
   renderBlocks();
   saveCurrentCanvas();
+}
+
+/** 拆分块 - 将一个块拆成几个语义上区分的块 */
+async function handleSplitNode() {
+  if (!appState.selectedBlockId) return;
+  const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+  if (!block) return;
+
+  const btn = $('splitNode');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '拆分中...';
+  }
+
+  try {
+    const config = getConfig();
+    // 调用 LLM 进行拆分
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llmModel || 'qwen-plus',
+        messages: [{
+          role: 'user',
+          content: `Split the following content into 2-4 semantically independent blocks. Requirements:
+- Each block should have a label (concise title) and content (brief description)
+- Use concise language, remove redundancy, keep core information
+- Return ONLY a JSON array: [{"label":"Title 1","content":"Content 1"},{"label":"Title 2","content":"Content 2"}...]
+- No explanations, no extra text
+
+Original content:
+Label: ${block.label}
+Content: ${block.content || 'None'}`
+        }],
+        max_tokens: 800
+      })
+    });
+
+    const data = await response.json();
+    const splitResult = JSON.parse(data?.choices?.[0]?.message?.content || '[]');
+
+    if (splitResult.length > 0) {
+      // 删除原始块
+      const blockIndex = appState.canvas.blocks.findIndex(b => b.id === block.id);
+      appState.canvas.blocks.splice(blockIndex, 1);
+
+      // 创建拆分后的新块，排列在原始块附近
+      const baseX = block.x;
+      const baseY = block.y;
+      const verticalGap = 100;
+
+      splitResult.forEach((item, index) => {
+        const newBlock = {
+          id: crypto.randomUUID(),
+          type: 'text',
+          label: item.label || `拆分块${index + 1}`,
+          content: item.content || '',
+          x: baseX,
+          y: baseY + index * verticalGap,
+        };
+        appState.canvas.blocks.push(newBlock);
+
+        // 如果是第一个块，继承原始块的连接
+        if (index === 0) {
+          // 继承所有传入连接（fromId 指向原始块的）
+          appState.canvas.connections.forEach(conn => {
+            if (conn.toId === block.id) {
+              conn.toId = newBlock.id;
+            }
+          });
+          // 继承所有传出连接（toId 指向原始块的）
+          appState.canvas.connections.forEach(conn => {
+            if (conn.fromId === block.id) {
+              conn.fromId = newBlock.id;
+            }
+          });
+        }
+      });
+
+      // 清理组引用
+      if (appState.canvas.groups) {
+        appState.canvas.groups.forEach(group => {
+          const idx = group.blockIds.indexOf(block.id);
+          if (idx !== -1) {
+            group.blockIds.splice(idx, 1);
+          }
+        });
+      }
+
+      pushHistory();
+      renderBlocks();
+      saveCurrentCanvas();
+    } else {
+      alert('无法拆分，请尝试手动编辑');
+    }
+  } catch (err) {
+    console.error('Split error:', err);
+    alert('拆分失败：' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M3 12h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/></svg>
+        <span>拆分</span>
+      `;
+    }
+  }
+}
+
+/** 合并块 - 将选中的多个块合并成一个 */
+async function handleMergeNode() {
+  const selectedIds = appState.selectedBlockIds;
+  if (selectedIds.length < 2) {
+    alert('请选中至少 2 个块才能合并');
+    return;
+  }
+
+  const btn = $('mergeNode');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '合并中...';
+  }
+
+  try {
+    const selectedBlocks = appState.canvas.blocks.filter(b => selectedIds.includes(b.id));
+    const config = getConfig();
+
+    // 调用 LLM 进行合并
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llmModel || 'qwen-plus',
+        messages: [{
+          role: 'user',
+          content: `Merge the following content into one block. Requirements:
+- label: Create a concise title that captures the core theme
+- content: Remove duplicates, retain all key points and important details, use concise language
+- Use short sentences and structured expression, avoid verbose explanations
+- Return ONLY JSON: {"label":"New Title","content":"Merged content"}
+- No explanations, no extra text
+- IMPORTANT: Keep the output language the same as the input content language
+
+Content to merge:
+${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
+        }],
+        max_tokens: 1500
+      })
+    });
+
+    const data = await response.json();
+    const mergeResult = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
+
+    if (mergeResult.label) {
+      // 计算边界框，确定合并后块的位置
+      const minX = Math.min(...selectedBlocks.map(b => b.x));
+      const minY = Math.min(...selectedBlocks.map(b => b.y));
+
+      // 创建合并后的新块
+      const mergedBlock = {
+        id: crypto.randomUUID(),
+        type: 'text',
+        label: mergeResult.label,
+        content: mergeResult.content || '',
+        x: minX,
+        y: minY,
+        width: 240, // 合并后的块稍大一些
+      };
+      appState.canvas.blocks.push(mergedBlock);
+
+      // 继承所有连接的源和目标
+      const connFromIds = new Set();
+      const connToIds = new Set();
+      selectedBlocks.forEach(b => {
+        appState.canvas.connections.forEach(conn => {
+          if (conn.fromId === b.id) {
+            connFromIds.add(conn.toId);
+          }
+          if (conn.toId === b.id) {
+            connToIds.add(conn.fromId);
+          }
+        });
+      });
+
+      // 创建新连接
+      connFromIds.forEach(toId => {
+        if (!selectedIds.includes(toId)) { // 不连接到已删除的块
+          appState.canvas.connections.push({
+            id: crypto.randomUUID(),
+            fromId: mergedBlock.id,
+            toId,
+          });
+        }
+      });
+      connToIds.forEach(fromId => {
+        if (!selectedIds.includes(fromId)) { // 不从已删除的块连接
+          appState.canvas.connections.push({
+            id: crypto.randomUUID(),
+            fromId,
+            toId: mergedBlock.id,
+          });
+        }
+      });
+
+      // 删除原始块和连接
+      appState.canvas.blocks = appState.canvas.blocks.filter(b => !selectedIds.includes(b.id));
+      appState.canvas.connections = appState.canvas.connections.filter(
+        c => !selectedIds.includes(c.fromId) && !selectedIds.includes(c.toId)
+      );
+
+      // 清理组引用
+      if (appState.canvas.groups) {
+        appState.canvas.groups.forEach(group => {
+          group.blockIds = group.blockIds.filter(id => !selectedIds.includes(id));
+        });
+      }
+
+      // 选中新块
+      appState.selectedBlockId = mergedBlock.id;
+      appState.selectedBlockIds = [];
+
+      pushHistory();
+      renderBlocks();
+      saveCurrentCanvas();
+    } else {
+      alert('无法合并，请尝试手动编辑');
+    }
+  } catch (err) {
+    console.error('Merge error:', err);
+    alert('合并失败：' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" stroke="currentColor" stroke-width="2"/><rect x="14" y="3" width="7" height="7" stroke="currentColor" stroke-width="2"/><rect x="8" y="14" width="7" height="7" stroke="currentColor" stroke-width="2"/></svg>
+        <span>合并</span>
+      `;
+    }
+  }
+}
+
+/** 扩张块 - 在当前块内增加更多内容 */
+async function handleExpandNode() {
+  if (!appState.selectedBlockId) return;
+  const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+  if (!block) return;
+
+  const btn = $('expandNode');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '扩张中...';
+  }
+
+  try {
+    const config = getConfig();
+    // 调用 LLM 进行扩张
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llmModel || 'qwen-plus',
+        messages: [{
+          role: 'user',
+          content: `Expand the following content. Requirements:
+- label: Keep or slightly refine the original title
+- content: Add key points, examples, or relevant information to enrich the content
+- Use concise language with short sentences, avoid verbosity
+- Stay on topic, don't偏离 the core theme
+- Return ONLY JSON: {"label":"Title","content":"Expanded content"}
+- No explanations, no extra text
+- IMPORTANT: Keep the output language the same as the input content language
+
+Original content:
+Label: ${block.label}
+Content: ${block.content || 'None'}`
+        }],
+        max_tokens: 1200
+      })
+    });
+
+    const data = await response.json();
+    const expandResult = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
+
+    if (expandResult.content) {
+      block.label = expandResult.label || block.label;
+      block.content = expandResult.content;
+      pushHistory();
+      renderBlocks();
+      saveCurrentCanvas();
+    } else {
+      alert('无法扩张，请尝试手动编辑');
+    }
+  } catch (err) {
+    console.error('Expand error:', err);
+    alert('扩张失败：' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2v20M2 12h20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="5" y="5" width="14" height="14" stroke="currentColor" stroke-width="2" rx="2"/></svg>
+        <span>扩张</span>
+      `;
+    }
+  }
+}
+
+/** 派生块 - 创建更深层次的子层级块 */
+async function handleDeriveNode() {
+  if (!appState.selectedBlockId) return;
+  const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+  if (!block) return;
+
+  const btn = $('deriveNode');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '派生中...';
+  }
+
+  try {
+    const config = getConfig();
+    // 调用 LLM 生成派生子层级
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llmModel || 'qwen-plus',
+        messages: [{
+          role: 'user',
+          content: `Based on the following content, generate 2-4 deeper-level subtopics. Each subtopic should include a label (title) and brief content (description). Return ONLY a JSON array: [{"label":"Subtopic 1","content":"Description 1"},{"label":"Subtopic 2","content":"Description 2"}...]
+- IMPORTANT: Keep the output language the same as the input content language
+- No explanations, no extra text
+
+Parent content:
+Label: ${block.label}
+Content: ${block.content || 'None'}`
+        }],
+        max_tokens: 1000
+      })
+    });
+
+    const data = await response.json();
+    const deriveResult = JSON.parse(data?.choices?.[0]?.message?.content || '[]');
+
+    if (deriveResult.length > 0) {
+      const startX = block.x + 260; // 在右侧生成
+      const startY = block.y;
+      const verticalGap = 80;
+
+      deriveResult.forEach((item, index) => {
+        const newBlock = {
+          id: crypto.randomUUID(),
+          type: 'text',
+          label: item.label || `派生${index + 1}`,
+          content: item.content || '',
+          x: startX,
+          y: startY + index * verticalGap,
+        };
+        appState.canvas.blocks.push(newBlock);
+
+        // 创建从父块到新块的连接
+        appState.canvas.connections.push({
+          id: crypto.randomUUID(),
+          fromId: block.id,
+          toId: newBlock.id,
+        });
+      });
+
+      pushHistory();
+      renderBlocks();
+      saveCurrentCanvas();
+    } else {
+      alert('无法派生，请尝试手动添加子块');
+    }
+  } catch (err) {
+    console.error('Derive error:', err);
+    alert('派生失败：' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3v8m0 0l-3-3m3 3l3-3M4 21h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>派生</span>
+      `;
+    }
+  }
+}
+
+/** 翻译块 - 中英互译 */
+async function handleTranslateNode() {
+  if (!appState.selectedBlockId) return;
+  const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+  if (!block) return;
+
+  const btn = $('translateNode');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '翻译中...';
+  }
+
+  try {
+    const config = getConfig();
+    // 调用 LLM 进行翻译
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llmModel || 'qwen-plus',
+        messages: [{
+          role: 'user',
+          content: `Translate the following content between Chinese and English. Requirements:
+- If the content is mainly in Chinese, translate to English
+- If the content is mainly in English, translate to Chinese
+- If only individual words are in the other language, keep the original and add translation in brackets
+- Translate both label and content
+- Keep formatting clean and concise
+- Return ONLY JSON: {"label":"Translated Label","content":"Translated Content"}
+- No explanations, no extra text
+
+Original content:
+Label: ${block.label}
+Content: ${block.content || 'None'}`
+        }],
+        max_tokens: 1000
+      })
+    });
+
+    const data = await response.json();
+    const translateResult = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
+
+    if (translateResult.label || translateResult.content) {
+      block.label = translateResult.label || block.label;
+      block.content = translateResult.content || block.content;
+      pushHistory();
+      renderBlocks();
+      saveCurrentCanvas();
+    } else {
+      alert('无法翻译，请尝试手动编辑');
+    }
+  } catch (err) {
+    console.error('Translate error:', err);
+    alert('翻译失败：' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 5h16M4 12h16M4 19h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>翻译</span>
+      `;
+    }
+  }
 }
 
 // ── Create new block at position ──
@@ -720,7 +1190,9 @@ function bindEvents() {
 // ── Node actions ──
   dom.addChild.addEventListener('click', handleAddChild);
   dom.addSibling.addEventListener('click', handleAddSibling);
-  dom.deleteNode.addEventListener('click', handleDeleteNode);
+  if (dom.deleteNode) {
+    dom.deleteNode.addEventListener('click', handleDeleteNode);
+  }
   if (dom.pinNode) {
     dom.pinNode.addEventListener('click', () => {
       const b = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -731,6 +1203,32 @@ function bindEvents() {
         saveCurrentCanvas();
       }
     });
+  }
+  // 新增功能按钮
+  if (dom.splitNode) {
+    dom.splitNode.addEventListener('click', handleSplitNode);
+  } else {
+    console.warn('splitNode button not found in DOM');
+  }
+  if (dom.mergeNode) {
+    dom.mergeNode.addEventListener('click', handleMergeNode);
+  } else {
+    console.warn('mergeNode button not found in DOM');
+  }
+  if (dom.expandNode) {
+    dom.expandNode.addEventListener('click', handleExpandNode);
+  } else {
+    console.warn('expandNode button not found in DOM');
+  }
+  if (dom.deriveNode) {
+    dom.deriveNode.addEventListener('click', handleDeriveNode);
+  } else {
+    console.warn('deriveNode button not found in DOM');
+  }
+  if (dom.translateNode) {
+    dom.translateNode.addEventListener('click', handleTranslateNode);
+  } else {
+    console.warn('translateNode button not found in DOM');
   }
 
   // ── Refine Node Logic ──

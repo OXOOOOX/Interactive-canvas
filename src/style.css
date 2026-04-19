@@ -644,6 +644,83 @@ html, body {
   transform: translateX(0);
 }
 
+/* Matrix layout toolbar */
+.node-toolbar-matrix {
+  padding: 6px;
+}
+
+.ntb-matrix-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ntb-matrix-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+}
+
+/* AI 功能区 */
+.ntb-matrix-row--ai {
+  background: transparent;
+}
+
+/* 结构操作区 - 白色背景 */
+.ntb-matrix-row--structure {
+  background: transparent;
+}
+
+.ntb-matrix-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 8px;
+  min-width: 56px;
+  min-height: 52px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 2px solid var(--glass-border);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--font-body);
+  box-shadow: 1px 1px 0px rgba(0,0,0,0.08);
+}
+
+.ntb-matrix-btn:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+  box-shadow: 2px 2px 0px rgba(0,0,0,0.15);
+  transform: translateY(-1px);
+}
+
+.ntb-matrix-btn:active {
+  transform: translateY(0);
+  box-shadow: 1px 1px 0px rgba(0,0,0,0.08);
+}
+
+.ntb-matrix-btn--danger {
+  color: var(--accent-red);
+}
+
+.ntb-matrix-btn--danger:hover {
+  background: rgba(239,68,68,0.15);
+  color: var(--accent-red);
+  border-color: var(--accent-red);
+}
+
+.ntb-matrix-btn svg {
+  flex-shrink: 0;
+}
+
+/* Legacy vertical toolbar styles (kept for compatibility) */
 .ntb-btn {
   padding: 6px 10px;
   border-radius: var(--radius-sm);

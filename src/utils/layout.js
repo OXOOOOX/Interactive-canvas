@@ -592,11 +592,12 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
 
 
 /**
- * 检测并修复连线穿块问题
+ * 检测并修复连线穿块问题（增强版）
  * 策略：
- * 1. 检测连线是否穿过其他块
- * 2. 如果穿过，优先尝试水平移动中间的块来避让
- * 3. 如果无法避让，将目标块往下移
+ * 1. 对每条连线，计算实际渲染路径（含贝塞尔曲线弯曲范围）
+ * 2. 检测该路径是否穿过其他块（含外扩 padding）
+ * 3. 优先水平推开被穿越的块，推不动则垂直下移目标块
+ * 4. 迭代多轮以处理级联碰撞
  */
 function avoidBlockCrossing(blocks, connections) {
   const blockMap = {};
@@ -604,65 +605,91 @@ function avoidBlockCrossing(blocks, connections) {
     blockMap[b.id] = b;
   }
 
-  const yAdjustments = {};
-  const xAdjustments = {};
+  // 构建父节点多子映射，用于计算汇聚点
+  const childrenMap = {};
+  for (const b of blocks) childrenMap[b.id] = [];
+  for (const c of connections) {
+    if (childrenMap[c.fromId]) childrenMap[c.fromId].push(c.toId);
+  }
 
-  for (const conn of connections) {
-    const from = blockMap[conn.fromId];
-    const to = blockMap[conn.toId];
-    if (!from || !to) continue;
+  const LINE_PADDING = 30; // 连线到块的最小安全距离
 
-    const fromWidth = getBlockWidth(from);
-    const fromHeight = getBlockHeight(from);
-    const toWidth = getBlockWidth(to);
-    const toHeight = getBlockHeight(to);
+  // 迭代多轮
+  for (let iter = 0; iter < 3; iter++) {
+    const yAdjustments = {};
+    const xAdjustments = {};
+    let hasCollision = false;
 
-    const fromCenterX = from.x + fromWidth / 2;
-    const fromBottomY = from.y + fromHeight;
-    const toCenterX = to.x + toWidth / 2;
-    const toTopY = to.y;
+    for (const conn of connections) {
+      const from = blockMap[conn.fromId];
+      const to = blockMap[conn.toId];
+      if (!from || !to) continue;
+      if (from.isVirtual || to.isVirtual) continue;
 
-    // 确定连线的水平范围
-    const lineLeft = Math.min(fromCenterX, toCenterX);
-    const lineRight = Math.max(fromCenterX, toCenterX);
+      const fromWidth = getBlockWidth(from);
+      const fromHeight = getBlockHeight(from);
+      const toWidth = getBlockWidth(to);
 
-    // 检查这条连线是否穿过其他块
-    for (const other of blocks) {
-      if (other.id === from.id || other.id === to.id) continue;
+      const fromCenterX = from.x + fromWidth / 2;
+      const fromBottomY = from.y + fromHeight;
+      const toCenterX = to.x + toWidth / 2;
+      const toTopY = to.y;
 
-      const otherWidth = getBlockWidth(other);
-      const otherHeight = getBlockHeight(other);
-      const otherLeft = other.x;
-      const otherRight = other.x + otherWidth;
-      const otherTop = other.y;
-      const otherBottom = other.y + otherHeight;
+      // 跳过同层或反向连线
+      if (toTopY <= fromBottomY) continue;
 
-      // 检测块是否在连线的垂直范围内
-      const inVerticalRange = otherTop > fromBottomY && otherBottom < toTopY;
+      // 计算实际渲染曲线的水平扫掠范围
+      // 贝塞尔曲线 M(fromCx, fromBottom) C(fromCx, midY, toCx, midY, toCx, toTop)
+      // 曲线的水平范围在 fromCx 和 toCx 之间，还会略微超出
+      const curveLeft = Math.min(fromCenterX, toCenterX) - LINE_PADDING;
+      const curveRight = Math.max(fromCenterX, toCenterX) + LINE_PADDING;
 
-      if (!inVerticalRange) continue;
+      // 对曲线采样，得到更精确的扫掠范围
+      const midY = (fromBottomY + toTopY) / 2;
+      let sweepLeft = Math.min(fromCenterX, toCenterX);
+      let sweepRight = Math.max(fromCenterX, toCenterX);
+      for (let t = 0; t <= 1.0; t += 0.1) {
+        const mt = 1 - t;
+        // 三次贝塞尔 x: P0=fromCx, P1=fromCx, P2=toCx, P3=toCx
+        const bx = mt * mt * mt * fromCenterX + 3 * mt * mt * t * fromCenterX +
+                    3 * mt * t * t * toCenterX + t * t * t * toCenterX;
+        sweepLeft = Math.min(sweepLeft, bx);
+        sweepRight = Math.max(sweepRight, bx);
+      }
+      const lineLeft = sweepLeft - LINE_PADDING;
+      const lineRight = sweepRight + LINE_PADDING;
 
-      // 检测块是否与连线水平重叠
-      // 情况 1：块完全在连线水平范围内
-      const blockInsideLine = otherLeft > lineLeft && otherRight < lineRight;
-      // 情况 2：块的左边缘在连线范围内
-      const leftEdgeInside = otherLeft > lineLeft && otherLeft < lineRight;
-      // 情况 3：块的右边缘在连线范围内
-      const rightEdgeInside = otherRight > lineLeft && otherRight < lineRight;
-      // 情况 4：块跨越连线的一端
-      const blockSpansLine = (otherLeft <= lineLeft && otherRight >= lineRight);
+      // 检查这条连线是否穿过其他块
+      for (const other of blocks) {
+        if (other.id === from.id || other.id === to.id) continue;
+        if (other.isVirtual) continue;
 
-      if (blockInsideLine || leftEdgeInside || rightEdgeInside || blockSpansLine) {
+        const otherWidth = getBlockWidth(other);
+        const otherHeight = getBlockHeight(other);
+        const otherLeft = other.x;
+        const otherRight = other.x + otherWidth;
+        const otherTop = other.y;
+        const otherBottom = other.y + otherHeight;
+
+        // 检测块是否在连线的垂直范围内（含 padding）
+        const inVerticalRange = otherTop > (fromBottomY - 5) && otherBottom < (toTopY + 5);
+        if (!inVerticalRange) continue;
+
+        // 检测块是否与连线水平扫掠范围重叠
+        const overlapH = otherLeft < lineRight && otherRight > lineLeft;
+        if (!overlapH) continue;
+
+        hasCollision = true;
+
         // 尝试水平移动中间的块
-        const moveDistance = Math.min(
-          otherRight - lineLeft,
-          lineRight - otherLeft
-        ) + MIN_H_GAP;
+        // 计算最小移动距离：将块推到扫掠范围外
+        const pushLeft = lineLeft - otherRight;     // 推到左侧需要的距离（负值=往左）
+        const pushRight = lineRight - otherLeft;    // 推到右侧需要的距离（正值=往右）
 
-        // 决定移动方向：往空间大的一侧移动
-        const spaceLeft = otherLeft - lineLeft;
-        const spaceRight = lineRight - otherRight;
-        const moveDir = spaceLeft > spaceRight ? -1 : 1;
+        const distToLeft = Math.abs(pushLeft);
+        const distToRight = Math.abs(pushRight);
+        const moveDir = distToLeft < distToRight ? -1 : 1;
+        const moveDistance = (moveDir < 0 ? distToLeft : distToRight) + MIN_H_GAP;
 
         const targetX = other.x + moveDir * moveDistance;
 
@@ -670,14 +697,18 @@ function avoidBlockCrossing(blocks, connections) {
         let canMove = true;
         for (const check of blocks) {
           if (check.id === other.id) continue;
+          if (check.isVirtual) continue;
           const checkLeft = check.x;
           const checkRight = check.x + getBlockWidth(check);
+          const checkTop = check.y;
+          const checkBottom = check.y + getBlockHeight(check);
           const newOtherLeft = targetX;
           const newOtherRight = targetX + otherWidth;
 
-          if (Math.abs(check.y - other.y) < BLOCK_H) {
-            // 同一行，检查水平重叠
-            if (newOtherLeft < checkRight && newOtherRight > checkLeft) {
+          // 同行检测（y 方向有重叠）
+          if (otherTop < checkBottom && otherBottom > checkTop) {
+            if (newOtherLeft < checkRight + MIN_H_GAP / 2 &&
+                newOtherRight > checkLeft - MIN_H_GAP / 2) {
               canMove = false;
               break;
             }
@@ -687,31 +718,35 @@ function avoidBlockCrossing(blocks, connections) {
         if (canMove && xAdjustments[other.id] === undefined) {
           xAdjustments[other.id] = targetX;
         } else {
-          // 无法水平移动，只能垂直调整目标块
+          // 无法水平移动，垂直调整目标块
           if (!yAdjustments[to.id]) {
             yAdjustments[to.id] = 0;
           }
           const smartVGap = getSmartVGap(to, connections);
-          yAdjustments[to.id] = Math.max(yAdjustments[to.id], otherBottom - toTopY + smartVGap);
+          yAdjustments[to.id] = Math.max(yAdjustments[to.id],
+            otherBottom - toTopY + smartVGap);
         }
       }
     }
-  }
 
-  // 应用垂直调整
-  for (const [id, offset] of Object.entries(yAdjustments)) {
-    const block = blockMap[id];
-    if (block && !block.locked) {
-      block.y += offset;
+    // 应用垂直调整
+    for (const [id, offset] of Object.entries(yAdjustments)) {
+      const block = blockMap[id];
+      if (block && !block.locked) {
+        block.y += offset;
+      }
     }
-  }
 
-  // 应用水平调整
-  for (const [id, targetX] of Object.entries(xAdjustments)) {
-    const block = blockMap[id];
-    if (block && !block.locked) {
-      block.x = targetX;
+    // 应用水平调整
+    for (const [id, targetX] of Object.entries(xAdjustments)) {
+      const block = blockMap[id];
+      if (block && !block.locked) {
+        block.x = targetX;
+      }
     }
+
+    // 如果本轮没有碰撞，提前退出
+    if (!hasCollision) break;
   }
 }
 

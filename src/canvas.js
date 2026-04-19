@@ -894,6 +894,289 @@ function renderLinks() {
   const blockMap = {};
   for (const b of appState.canvas.blocks) blockMap[b.id] = b;
 
+  // ====== 构建碰撞检测用的块矩形列表 ======
+  const OBSTACLE_PADDING = 15;
+  const blockRects = [];
+  for (const b of appState.canvas.blocks) {
+    const el = $blockCanvas.querySelector(`[data-id="${b.id}"]`);
+    const w = getBlockWidth(b);
+    const h = el ? el.offsetHeight : BLOCK_MIN_H;
+    blockRects.push({
+      id: b.id,
+      left: b.x - OBSTACLE_PADDING,
+      top: b.y - OBSTACLE_PADDING,
+      right: b.x + w + OBSTACLE_PADDING,
+      bottom: b.y + h + OBSTACLE_PADDING,
+      cx: b.x + w / 2,
+      cy: b.y + h / 2,
+      origLeft: b.x,
+      origTop: b.y,
+      origRight: b.x + w,
+      origBottom: b.y + h,
+    });
+  }
+
+  /**
+   * 检测线段 (x1,y1)→(x2,y2) 是否穿过矩形 rect
+   * 使用 Cohen-Sutherland 裁剪思路的简化版
+   */
+  function lineIntersectsRect(x1, y1, x2, y2, rect) {
+    // 线段完全在矩形外
+    if (Math.max(x1, x2) < rect.left || Math.min(x1, x2) > rect.right) return false;
+    if (Math.max(y1, y2) < rect.top || Math.min(y1, y2) > rect.bottom) return false;
+
+    // 检测线段与矩形四条边是否相交
+    const edges = [
+      [rect.left, rect.top, rect.right, rect.top],       // top
+      [rect.left, rect.bottom, rect.right, rect.bottom], // bottom
+      [rect.left, rect.top, rect.left, rect.bottom],     // left
+      [rect.right, rect.top, rect.right, rect.bottom],   // right
+    ];
+    for (const [ex1, ey1, ex2, ey2] of edges) {
+      if (segmentsIntersect(x1, y1, x2, y2, ex1, ey1, ex2, ey2)) return true;
+    }
+
+    // 线段可能整条在矩形内
+    if (x1 >= rect.left && x1 <= rect.right && y1 >= rect.top && y1 <= rect.bottom) return true;
+
+    return false;
+  }
+
+  /** 两线段相交检测 */
+  function segmentsIntersect(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) {
+    const d1 = cross(bx1, by1, bx2, by2, ax1, ay1);
+    const d2 = cross(bx1, by1, bx2, by2, ax2, ay2);
+    const d3 = cross(ax1, ay1, ax2, ay2, bx1, by1);
+    const d4 = cross(ax1, ay1, ax2, ay2, bx2, by2);
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+    if (d1 === 0 && onSegment(bx1, by1, bx2, by2, ax1, ay1)) return true;
+    if (d2 === 0 && onSegment(bx1, by1, bx2, by2, ax2, ay2)) return true;
+    if (d3 === 0 && onSegment(ax1, ay1, ax2, ay2, bx1, by1)) return true;
+    if (d4 === 0 && onSegment(ax1, ay1, ax2, ay2, bx2, by2)) return true;
+    return false;
+  }
+
+  function cross(ox, oy, ax, ay, bx, by) {
+    return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
+  }
+
+  function onSegment(px, py, qx, qy, rx, ry) {
+    return rx >= Math.min(px, qx) && rx <= Math.max(px, qx) &&
+           ry >= Math.min(py, qy) && ry <= Math.max(py, qy);
+  }
+
+  /**
+   * 在贝塞尔曲线上均匀采样，检测是否穿过障碍物
+   * 返回碰撞的障碍物列表
+   */
+  function findObstacles(sx, sy, ex, ey, fromId, toId) {
+    const hitIds = new Set();
+    // 对直线 sx,sy → ex,ey 检测（贝塞尔曲线的凸包近似）
+    // 同时在多段采样检测
+    const SAMPLES = 12;
+    for (const rect of blockRects) {
+      if (rect.id === fromId || rect.id === toId) continue;
+
+      // 快速检测：直线段碰撞
+      if (lineIntersectsRect(sx, sy, ex, ey, rect)) {
+        hitIds.add(rect.id);
+        continue;
+      }
+
+      // 采样检测贝塞尔曲线
+      const midY = (sy + ey) / 2;
+      for (let i = 0; i < SAMPLES; i++) {
+        const t1 = i / SAMPLES;
+        const t2 = (i + 1) / SAMPLES;
+        // 三次贝塞尔 M sx sy C sx midY, ex midY, ex ey
+        const p1x = bezierCubicX(t1, sx, sx, ex, ex);
+        const p1y = bezierCubicY(t1, sy, midY, midY, ey);
+        const p2x = bezierCubicX(t2, sx, sx, ex, ex);
+        const p2y = bezierCubicY(t2, sy, midY, midY, ey);
+        if (lineIntersectsRect(p1x, p1y, p2x, p2y, rect)) {
+          hitIds.add(rect.id);
+          break;
+        }
+      }
+    }
+    return [...hitIds].map(id => blockRects.find(r => r.id === id)).filter(Boolean);
+  }
+
+  function bezierCubicX(t, p0, p1, p2, p3) {
+    const mt = 1 - t;
+    return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;
+  }
+
+  function bezierCubicY(t, p0, p1, p2, p3) {
+    const mt = 1 - t;
+    return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;
+  }
+
+  /**
+   * 生成避障路径（正交绕行）
+   * sx,sy → ex,ey 的路径，绕开 obstacles
+   */
+  function buildDetourPath(sx, sy, ex, ey, obstacles) {
+    if (obstacles.length === 0) {
+      // 无碰撞，普通贝塞尔
+      const midY = (sy + ey) / 2;
+      return `M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`;
+    }
+
+    // 将障碍物按 Y 坐标排序（从上到下）
+    obstacles.sort((a, b) => a.top - b.top);
+
+    // 收集所有障碍物的外边界
+    let totalLeft = Infinity, totalRight = -Infinity;
+    for (const obs of obstacles) {
+      totalLeft = Math.min(totalLeft, obs.left);
+      totalRight = Math.max(totalRight, obs.right);
+    }
+
+    // 决定绕行方向：从两侧选择距离较短的
+    const goLeft = Math.abs(sx - totalLeft) + Math.abs(ex - totalLeft) <
+                   Math.abs(sx - totalRight) + Math.abs(ex - totalRight);
+    const detourX = goLeft ? totalLeft - 20 : totalRight + 20;
+
+    // 构建 L 形绕行路径
+    // 方案：sx,sy → sx,entryY → detourX,entryY → detourX,exitY → ex,exitY → ex,ey
+    const firstObs = obstacles[0];
+    const lastObs = obstacles[obstacles.length - 1];
+
+    // 进入绕行的 Y：第一个障碍物上方
+    const entryY = Math.min(sy + 15, firstObs.top - 5);
+    // 退出绕行的 Y：最后一个障碍物下方
+    const exitY = Math.max(ey - 15, lastObs.bottom + 5);
+
+    // 用圆弧拐角让路径更平滑
+    const R = 15; // 拐角半径
+
+    // 简化版：贝塞尔绕行
+    // 从起点出发 → 下降到 entryY → 水平到 detourX → 垂直绕过 → 水平到终端 → 下降到终点
+    return `M ${sx} ${sy} ` +
+           `L ${sx} ${entryY} ` +
+           `Q ${sx} ${entryY + R}, ${sx + (detourX - sx > 0 ? R : -R)} ${entryY + R} ` +
+           `L ${detourX + (detourX > sx ? -R : R)} ${entryY + R} ` +
+           `Q ${detourX} ${entryY + R}, ${detourX} ${entryY + 2 * R} ` +
+           `L ${detourX} ${exitY - R} ` +
+           `Q ${detourX} ${exitY}, ${detourX + (ex - detourX > 0 ? R : -R)} ${exitY} ` +
+           `L ${ex + (detourX > ex ? R : -R)} ${exitY} ` +
+           `Q ${ex} ${exitY}, ${ex} ${exitY + R} ` +
+           `L ${ex} ${ey}`;
+  }
+
+  // ====== Edge Bundling 预处理：按父节点分组 ======
+  const connsByFrom = {};
+  const connsByTo = {};
+  for (const conn of appState.canvas.connections) {
+    if (!blockMap[conn.fromId] || !blockMap[conn.toId]) continue;
+    if (!connsByFrom[conn.fromId]) connsByFrom[conn.fromId] = [];
+    connsByFrom[conn.fromId].push(conn);
+    if (!connsByTo[conn.toId]) connsByTo[conn.toId] = [];
+    connsByTo[conn.toId].push(conn);
+  }
+
+  // ====== 源端汇聚（父 → 多子）======
+  const junctionYMap = {};
+  const bundledFromSet = new Set();
+
+  for (const [fromId, conns] of Object.entries(connsByFrom)) {
+    if (conns.length < 2) continue;
+    const from = blockMap[fromId];
+    const fromEl = $blockCanvas.querySelector(`[data-id="${from.id}"]`);
+    const fromH = fromEl ? fromEl.offsetHeight : BLOCK_MIN_H;
+    const parentCx = from.x + getBlockWidth(from) / 2;
+    const parentBottom = from.y + fromH;
+
+    let minChildY = Infinity;
+    for (const c of conns) {
+      const child = blockMap[c.toId];
+      if (child) minChildY = Math.min(minChildY, child.y);
+    }
+
+    const junctionY = parentBottom + (minChildY - parentBottom) * 0.35;
+    junctionYMap[fromId] = junctionY;
+    bundledFromSet.add(fromId);
+
+    const childCxList = [];
+    for (const c of conns) {
+      const child = blockMap[c.toId];
+      if (child) childCxList.push(child.x + getBlockWidth(child) / 2);
+    }
+    childCxList.sort((a, b) => a - b);
+
+    const leftmost = childCxList[0];
+    const rightmost = childCxList[childCxList.length - 1];
+    const spread = rightmost - leftmost;
+
+    if (conns.length >= 4 && spread > 200) {
+      // 梳状布线
+      const trunk = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      trunk.setAttribute('d', `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`);
+      trunk.setAttribute('stroke', from.color || '#000');
+      trunk.setAttribute('stroke-width', '3');
+      trunk.setAttribute('fill', 'none');
+      $linkLayer.appendChild(trunk);
+
+      const rail = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      rail.setAttribute('d', `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`);
+      rail.setAttribute('stroke', from.color || '#000');
+      rail.setAttribute('stroke-width', '3');
+      rail.setAttribute('fill', 'none');
+      $linkLayer.appendChild(rail);
+
+      if (parentCx < leftmost || parentCx > rightmost) {
+        const railEnd = parentCx < leftmost ? leftmost : rightmost;
+        const elbow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        elbow.setAttribute('d', `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`);
+        elbow.setAttribute('stroke', from.color || '#000');
+        elbow.setAttribute('stroke-width', '3');
+        elbow.setAttribute('fill', 'none');
+        $linkLayer.appendChild(elbow);
+      }
+    } else {
+      const trunk = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      trunk.setAttribute('d', `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`);
+      trunk.setAttribute('stroke', from.color || '#000');
+      trunk.setAttribute('stroke-width', '3');
+      trunk.setAttribute('fill', 'none');
+      $linkLayer.appendChild(trunk);
+    }
+  }
+
+  // ====== 目标端汇聚（多源 → 同一目标）======
+  const gatherYMap = {};
+  const gatherXMap = {};
+
+  for (const [toId, conns] of Object.entries(connsByTo)) {
+    if (conns.length < 2) continue;
+    const to = blockMap[toId];
+    const toCx = to.x + getBlockWidth(to) / 2;
+
+    let maxFromBottom = -Infinity;
+    for (const c of conns) {
+      const from = blockMap[c.fromId];
+      if (from) {
+        const fromEl = $blockCanvas.querySelector(`[data-id="${from.id}"]`);
+        const fromH = fromEl ? fromEl.offsetHeight : BLOCK_MIN_H;
+        maxFromBottom = Math.max(maxFromBottom, from.y + fromH);
+      }
+    }
+
+    const gatherY = to.y - (to.y - maxFromBottom) * 0.35;
+    gatherYMap[toId] = gatherY;
+    gatherXMap[toId] = toCx;
+
+    const trunk = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    trunk.setAttribute('d', `M ${toCx} ${gatherY} L ${toCx} ${to.y}`);
+    trunk.setAttribute('stroke', to.color || '#000');
+    trunk.setAttribute('stroke-width', '3');
+    trunk.setAttribute('fill', 'none');
+    $linkLayer.appendChild(trunk);
+  }
+
+  // ====== 逐条绘制连线 ======
   const validConnIds = new Set();
 
   for (const conn of appState.canvas.connections) {
@@ -905,29 +1188,97 @@ function renderLinks() {
 
     const fromW = getBlockWidth(from);
     const toW = getBlockWidth(to);
-    const x1 = from.x + fromW / 2;
-    // Use actual rendered height if available, fallback to min height
+    const parentCx = from.x + fromW / 2;
     const fromEl = $blockCanvas.querySelector(`[data-id="${from.id}"]`);
     const fromH = fromEl ? fromEl.offsetHeight : BLOCK_MIN_H;
     const y1 = from.y + fromH;
-    const x2 = to.x + toW / 2;
+    const childCx = to.x + toW / 2;
     const y2 = to.y;
-    const midX = (x1 + x2) / 2;
-    const midY = (y1 + y2) / 2;
 
-    const pathD = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+    // 判断是否参与源端梳状布线
+    const jY = junctionYMap[conn.fromId];
+    const fromConns = connsByFrom[conn.fromId] || [];
+    const isCombRouting = jY !== undefined && fromConns.length >= 4;
+    let spread = 0;
+    if (isCombRouting) {
+      const cxs = fromConns.map(c => {
+        const child = blockMap[c.toId];
+        return child ? child.x + getBlockWidth(child) / 2 : 0;
+      });
+      spread = Math.max(...cxs) - Math.min(...cxs);
+    }
+    const useComb = isCombRouting && spread > 200;
+
+    // 判断是否参与目标端汇聚
+    const gY = gatherYMap[conn.toId];
+    const gX = gatherXMap[conn.toId];
+
+    // 计算起点
+    let startX, startY;
+    if (jY !== undefined) {
+      if (useComb) {
+        startX = childCx;
+        startY = jY;
+      } else {
+        startX = parentCx;
+        startY = jY;
+      }
+    } else {
+      startX = parentCx;
+      startY = y1;
+    }
+
+    // 计算终点
+    let endX, endY;
+    if (gY !== undefined) {
+      endX = gX;
+      endY = gY;
+    } else {
+      endX = childCx;
+      endY = y2;
+    }
+
+    // ====== 障碍物检测与避让路径 ======
+    const obstacles = findObstacles(startX, startY, endX, endY, conn.fromId, conn.toId);
+
+    let pathD;
+    if (obstacles.length > 0) {
+      // 有碰撞，生成避障路径
+      pathD = buildDetourPath(startX, startY, endX, endY, obstacles);
+    } else if (useComb) {
+      if (gY !== undefined) {
+        const midY = jY + (gY - jY) * 0.5;
+        pathD = `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
+      } else {
+        const dropEnd = jY + (y2 - jY) * 0.15;
+        pathD = `M ${startX} ${startY} L ${startX} ${dropEnd} C ${startX} ${dropEnd + (y2 - dropEnd) * 0.5}, ${childCx} ${dropEnd + (y2 - dropEnd) * 0.5}, ${childCx} ${y2}`;
+      }
+    } else if (jY !== undefined) {
+      if (gY !== undefined) {
+        const midY = jY + (gY - jY) * 0.5;
+        pathD = `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
+      } else {
+        const branchCtrlY = jY + (y2 - jY) * 0.4;
+        pathD = `M ${startX} ${startY} C ${startX} ${branchCtrlY}, ${childCx} ${branchCtrlY}, ${childCx} ${y2}`;
+      }
+    } else if (gY !== undefined) {
+      const midY = y1 + (gY - y1) * 0.5;
+      pathD = `M ${parentCx} ${y1} C ${parentCx} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
+    } else {
+      const midY = (y1 + y2) / 2;
+      pathD = `M ${parentCx} ${y1} C ${parentCx} ${midY}, ${childCx} ${midY}, ${childCx} ${y2}`;
+    }
 
     let path = $linkLayer.querySelector(`path[data-conn-id="${conn.id}"]`);
     if (!path) {
       path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('data-conn-id', conn.id);
-      path.setAttribute('stroke-width', '3');
+      path.setAttribute('stroke-width', '2.5');
       path.setAttribute('fill', 'none');
-      path.style.pointerEvents = 'stroke';  // 只响应描边区域的点击
+      path.style.pointerEvents = 'stroke';
       path.style.cursor = 'default';
       $linkLayer.appendChild(path);
 
-      // 为连线添加鼠标事件监听器（用于 Ctrl+ 点击删除）
       path.addEventListener('mouseenter', handleLinkMouseEnter);
       path.addEventListener('mouseleave', handleLinkMouseLeave);
       path.addEventListener('click', handleLinkClick);
@@ -943,6 +1294,10 @@ function renderLinks() {
       path.setAttribute('stroke', '#000');
       path.setAttribute('opacity', '1');
     }
+
+    // 计算连线中点（用于剪刀按钮定位）
+    const midX = (startX + endX) / 2;
+    const midY_btn = (startY + endY) / 2;
 
     // 为每条连线添加剪刀按钮（触屏模式）
     let scissorsBtn = $scissorsLayer.querySelector(`.link-scissors-btn[data-conn-id="${conn.id}"]`);
@@ -968,11 +1323,8 @@ function renderLinks() {
       console.log('[剪刀按钮] 创建新按钮，连线 ID:', conn.id);
     }
 
-    // 更新剪刀按钮位置（连线中点）
-    // 注意：不需要手动乘以 zoom 或加上 panX/Y，因为 scissorsLayer 是 $transform 的子元素
-    // transform 会自动应用这些变换
-    const btnLeft = midX - 14;  // 14 是按钮宽度的一半 (28/2)
-    const btnTop = midY - 14;   // 14 是按钮高度的一半 (28/2)
+    const btnLeft = midX - 14;
+    const btnTop = midY_btn - 14;
 
     if (scissorsMode) {
       scissorsBtn.classList.add('visible');

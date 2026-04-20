@@ -193,6 +193,22 @@ function convertFullMapToOps(map) {
   return ops;
 }
 
+/** 清理重复连接线，保留每组 fromId -> toId 的第一条 */
+export function dedupeConnections(canvas) {
+  if (!canvas?.connections) return false;
+  const seen = new Set();
+  const originalLength = canvas.connections.length;
+
+  canvas.connections = canvas.connections.filter(conn => {
+    const key = `${conn.fromId}->${conn.toId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return canvas.connections.length !== originalLength;
+}
+
 /**
  * 在画布状态上执行一组 operations
  * @param {Object} canvas - { blocks[], connections[] }
@@ -201,6 +217,19 @@ function convertFullMapToOps(map) {
  */
 export function executeOperations(canvas, operations) {
   const result = { addedIds: [], updatedIds: [], removedIds: [] };
+
+  const hasConnection = (fromId, toId) => canvas.connections.some(
+    c => c.fromId === fromId && c.toId === toId
+  );
+
+  const addConnectionIfMissing = (fromId, toId) => {
+    if (!fromId || !toId || hasConnection(fromId, toId)) return;
+    canvas.connections.push({
+      id: crypto.randomUUID(),
+      fromId,
+      toId,
+    });
+  };
 
   for (const op of operations) {
     switch (op.op) {
@@ -213,11 +242,7 @@ export function executeOperations(canvas, operations) {
         if (op.parentId) {
           const parentExists = canvas.blocks.some(b => b.id === op.parentId);
           if (parentExists) {
-            canvas.connections.push({
-              id: crypto.randomUUID(),
-              fromId: op.parentId,
-              toId: op.block.id,
-            });
+            addConnectionIfMissing(op.parentId, op.block.id);
           }
         }
         break;
@@ -257,11 +282,7 @@ export function executeOperations(canvas, operations) {
       }
       case 'addConnection': {
         if (op.fromId && op.toId) {
-          canvas.connections.push({
-            id: crypto.randomUUID(),
-            fromId: op.fromId,
-            toId: op.toId,
-          });
+          addConnectionIfMissing(op.fromId, op.toId);
         }
         break;
       }

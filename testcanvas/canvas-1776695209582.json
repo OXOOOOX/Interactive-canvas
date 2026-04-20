@@ -1,0 +1,220 @@
+{
+  "id": "44f7a27a-788c-4fc1-a3a2-c9675fb69376",
+  "title": "钢结构详设精化物料订单处理",
+  "blocks": [
+    {
+      "id": "steel_structure",
+      "type": "text",
+      "label": "钢结构设计与细化",
+      "content": "**Steel Structure**: 设计用于自动化立体仓库货架的钢结构。\n**Detailed Design**: 对立体仓库货架的钢结构设计进行细化。\nRefined Structure: Detailed dimensions and specifications for each component of the立体仓库货架.\nMaterial Breakdown: List of materials required, including steel types, sizes, and quantities for production.",
+      "children": [],
+      "x": 100,
+      "y": 80,
+      "width": 210.41661537215654,
+      "height": 289
+    },
+    {
+      "id": "order_processing",
+      "type": "text",
+      "label": "Order Processing",
+      "content": "Steps to place orders with suppliers based on the material breakdown.",
+      "children": [],
+      "x": 255.20830768607829,
+      "y": 409,
+      "width": 200,
+      "height": 122
+    },
+    {
+      "id": "bolt_calculation",
+      "type": "text",
+      "label": "螺栓计算与管理",
+      "content": "Bolt Calculation: Column bolts rely on base and connection plates. Check tensile and shear strength. Beam bolts follow beam design parameters. Distinguish between friction and bearing connections. Diagonal braces and washers follow a fixed ratio. Formula: (Brace×2 + Washer×1)/2. Result equals one brace per half washer set. Example: Ten braces need five washer sets.\nVBA Automation: VBA scripts handle automatic counting. Format tables and export BOM lists instantly. Cut manual workload and prevent counting errors.\nRule Table: Links material names to calculation logic. Uses ID prefixes for automatic matching. Supports wildcard queries. Example: ID starting with \"B-\" applies beam bolt standards.\nBolt Surplus: Surplus calculation lacks fixed rules. Recommend adding a standard loss factor of 3% to 5%. Clarify spare parts for on-site adjustments. Standardize parameters before automation.",
+      "children": [],
+      "x": 1035.2083076860783,
+      "y": 409,
+      "width": 200,
+      "height": 754
+    },
+    {
+      "id": "misc_blocks",
+      "type": "text",
+      "label": "其他相关块",
+      "content": "",
+      "children": [],
+      "x": 515.2083076860783,
+      "y": 409,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "cb1ee086-9a7c-4728-9de4-2446fd05b8af",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 775.2083076860783,
+      "y": 409,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "0dfd15ab-245e-46f0-bfe1-1a56d62c0c59",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 255.20830768607829,
+      "y": 1193,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "9cfddbac-913a-49c1-9500-18c47f4ceb0f",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 515.2083076860783,
+      "y": 1193,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "ad09a3e3-841c-4643-a860-ef4ac93c206b",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 775.2083076860783,
+      "y": 1193,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "45271f29-2f87-4675-8e02-45c377674090",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 255.20830768607829,
+      "y": 1977,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "dc55993a-a0a6-4d24-93bf-365ed1162f38",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 515.2083076860783,
+      "y": 1977,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "c8c82307-748d-4071-944f-f2ebb988c05e",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 775.2083076860783,
+      "y": 1977,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "6c175634-d3dd-4bfc-a2f5-2090056cd0a5",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 255.20830768607829,
+      "y": 2761,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "18e06740-0f8e-4b03-a8d6-d2e2b9722bc2",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 515.2083076860783,
+      "y": 2761,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "3309b032-4dee-4f02-805f-e5524ffc27ff",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 775.2083076860783,
+      "y": 2761,
+      "width": 200,
+      "height": 85
+    }
+  ],
+  "connections": [
+    {
+      "id": "b5b4ffe4-17e9-4a0b-82a4-f6b3d9d98ddf",
+      "fromId": "steel_structure",
+      "toId": "bolt_calculation"
+    },
+    {
+      "id": "046cb28b-7581-4ffb-b502-0baabdd0437a",
+      "fromId": "steel_structure",
+      "toId": "misc_blocks"
+    },
+    {
+      "id": "1e2ed431-e5d9-4fe1-b7f7-8c8b8bb19ceb",
+      "fromId": "steel_structure",
+      "toId": "order_processing"
+    },
+    {
+      "id": "91affb88-89c3-418d-a70e-1f5a5755f190",
+      "fromId": "steel_structure",
+      "toId": "cb1ee086-9a7c-4728-9de4-2446fd05b8af"
+    },
+    {
+      "id": "f728495c-096e-4c59-80e2-6b85712808ee",
+      "fromId": "steel_structure",
+      "toId": "0dfd15ab-245e-46f0-bfe1-1a56d62c0c59"
+    },
+    {
+      "id": "f5a849fb-3954-406b-a7a2-ba69a83f2a1c",
+      "fromId": "steel_structure",
+      "toId": "9cfddbac-913a-49c1-9500-18c47f4ceb0f"
+    },
+    {
+      "id": "62417b78-044f-4636-a798-3f136e688832",
+      "fromId": "steel_structure",
+      "toId": "ad09a3e3-841c-4643-a860-ef4ac93c206b"
+    },
+    {
+      "id": "b6109219-eaaa-4d86-8aae-4b04765fee42",
+      "fromId": "steel_structure",
+      "toId": "45271f29-2f87-4675-8e02-45c377674090"
+    },
+    {
+      "id": "ebc2cafa-41c6-4f4d-8817-4fe1d19049e2",
+      "fromId": "steel_structure",
+      "toId": "dc55993a-a0a6-4d24-93bf-365ed1162f38"
+    },
+    {
+      "id": "61cde8c0-f2a8-41b3-bccc-f55fca7490e6",
+      "fromId": "steel_structure",
+      "toId": "c8c82307-748d-4071-944f-f2ebb988c05e"
+    },
+    {
+      "id": "597aa8e3-fad9-4240-a73b-0f269d36698e",
+      "fromId": "steel_structure",
+      "toId": "6c175634-d3dd-4bfc-a2f5-2090056cd0a5"
+    },
+    {
+      "id": "5acc55b7-4819-4534-9949-705ee33bf535",
+      "fromId": "steel_structure",
+      "toId": "18e06740-0f8e-4b03-a8d6-d2e2b9722bc2"
+    },
+    {
+      "id": "4cc4cac0-d56a-471e-996f-615ca1240515",
+      "fromId": "steel_structure",
+      "toId": "3309b032-4dee-4f02-805f-e5524ffc27ff"
+    }
+  ],
+  "createdAt": 1776666518592,
+  "updatedAt": 1776666518592,
+  "groups": []
+}

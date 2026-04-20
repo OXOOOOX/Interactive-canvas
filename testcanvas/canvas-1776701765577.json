@@ -1,0 +1,222 @@
+{
+  "id": "44f7a27a-788c-4fc1-a3a2-c9675fb69376",
+  "title": "钢结构详设精化物料订单处理",
+  "blocks": [
+    {
+      "id": "steel_structure",
+      "type": "text",
+      "label": "钢结构设计与细化",
+      "content": "**Steel Structure**: 设计用于自动化立体仓库货架的钢结构。\n**Detailed Design**: 对立体仓库货架的钢结构设计进行细化。\nRefined Structure: Detailed dimensions and specifications for each component of the立体仓库货架.\nMaterial Breakdown: List of materials required, including steel types, sizes, and quantities for production.",
+      "children": [],
+      "x": 1614.7916923139217,
+      "y": 80,
+      "width": 210.41661537215654,
+      "height": 289,
+      "color": null
+    },
+    {
+      "id": "order_processing",
+      "type": "text",
+      "label": "Order Processing",
+      "content": "Steps to place orders with suppliers based on the material breakdown.",
+      "children": [],
+      "x": 860,
+      "y": 989,
+      "width": 200,
+      "height": 122
+    },
+    {
+      "id": "bolt_calculation",
+      "type": "text",
+      "label": "螺栓计算与管理",
+      "content": "Bolt Calculation: Column bolts rely on base and connection plates. Check tensile and shear strength. Beam bolts follow beam design parameters. Distinguish between friction and bearing connections. Diagonal braces and washers follow a fixed ratio. Formula: (Brace×2 + Washer×1)/2. Result equals one brace per half washer set. Example: Ten braces need five washer sets.\nVBA Automation: VBA scripts handle automatic counting. Format tables and export BOM lists instantly. Cut manual workload and prevent counting errors.\nRule Table: Links material names to calculation logic. Uses ID prefixes for automatic matching. Supports wildcard queries. Example: ID starting with \"B-\" applies beam bolt standards.\nBolt Surplus: Surplus calculation lacks fixed rules. Recommend adding a standard loss factor of 3% to 5%. Clarify spare parts for on-site adjustments. Standardize parameters before automation.",
+      "children": [],
+      "x": 460,
+      "y": 80,
+      "width": 200,
+      "height": 754,
+      "color": "#00E676"
+    },
+    {
+      "id": "misc_blocks",
+      "type": "text",
+      "label": "其他相关块",
+      "content": "",
+      "children": [],
+      "x": 1099.9999999999998,
+      "y": 989,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "cb1ee086-9a7c-4728-9de4-2446fd05b8af",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1339.9999999999998,
+      "y": 989,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "0dfd15ab-245e-46f0-bfe1-1a56d62c0c59",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 860,
+      "y": 1141,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "9cfddbac-913a-49c1-9500-18c47f4ceb0f",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 100,
+      "y": 80,
+      "width": 200,
+      "height": 85,
+      "color": "#FF9100"
+    },
+    {
+      "id": "ad09a3e3-841c-4643-a860-ef4ac93c206b",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 2075.208307686078,
+      "y": 543.5,
+      "width": 200,
+      "height": 91
+    },
+    {
+      "id": "45271f29-2f87-4675-8e02-45c377674090",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1099.9999999999998,
+      "y": 1141,
+      "width": 200,
+      "height": 86,
+      "color": "#2979FF"
+    },
+    {
+      "id": "dc55993a-a0a6-4d24-93bf-365ed1162f38",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1339.9999999999998,
+      "y": 1141,
+      "width": 200,
+      "height": 86,
+      "color": "#FFD600"
+    },
+    {
+      "id": "c8c82307-748d-4071-944f-f2ebb988c05e",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 2075.208307686078,
+      "y": 80,
+      "width": 200,
+      "height": 86,
+      "color": "#FF4081"
+    },
+    {
+      "id": "6c175634-d3dd-4bfc-a2f5-2090056cd0a5",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 860,
+      "y": 1293,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "18e06740-0f8e-4b03-a8d6-d2e2b9722bc2",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1099.9999999999998,
+      "y": 1293,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "3309b032-4dee-4f02-805f-e5524ffc27ff",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1339.9999999999998,
+      "y": 1293,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "ai_breakthroughs",
+      "type": "text",
+      "label": "AI大模型最新突破与应用",
+      "content": "### AI大模型的最新突破与应用方向\n1. **通用大模型**\n   - **代码生成专用模型**: 第五代代码生成模型编程速度提升25%，支持8种语言，代码通过率提升18%。\n   - **超长上下文处理**: 单次可处理100万token，动态注意力机制准确率达92%，配套11款插件。\n2. **垂直行业模型**\n   - **海洋科学领域**: 海气耦合模拟系统将台风路径预测误差缩小至38公里以内。\n   - **智能制造领域**: 空间视觉理解模型实现毫米级工业零件检测，焊接缺陷识别准确率达99.7%。\n3. **机器人系统**\n   - **双足机器人**: 全电动人形机器人具备56个自由度，轻量化商用机器人整机重量仅35公斤。\n   - **智能体普及**: 智能体推动企业向“人智协作”模式转型。\n4. **多模态与推理能力**\n   - **多模态实用化**: 国产大模型如DeepSeek支持多源数据处理。\n   - **推理与规划能力**: “世界模型”推动AI从感知智能向决策智能迈进。\n5. **银行业与客服领域**\n   - **银行业**: 超过53.5%的银行已落地大模型应用。\n   - **智能外呼**: 数字员工派产品表现出色，显著提升客户体验。\n6. **政策与生态支持**\n   - **政策导向**: 监管机构明确核心导向，完善合规监管框架。\n   - **产业生态**: 到2027年推出1000个高水平工业智能体。",
+      "children": [],
+      "x": 820,
+      "y": 80,
+      "width": 200,
+      "height": 884
+    }
+  ],
+  "connections": [
+    {
+      "id": "046cb28b-7581-4ffb-b502-0baabdd0437a",
+      "fromId": "steel_structure",
+      "toId": "misc_blocks"
+    },
+    {
+      "id": "1e2ed431-e5d9-4fe1-b7f7-8c8b8bb19ceb",
+      "fromId": "steel_structure",
+      "toId": "order_processing"
+    },
+    {
+      "id": "91affb88-89c3-418d-a70e-1f5a5755f190",
+      "fromId": "steel_structure",
+      "toId": "cb1ee086-9a7c-4728-9de4-2446fd05b8af"
+    },
+    {
+      "id": "f728495c-096e-4c59-80e2-6b85712808ee",
+      "fromId": "steel_structure",
+      "toId": "0dfd15ab-245e-46f0-bfe1-1a56d62c0c59"
+    },
+    {
+      "id": "b6109219-eaaa-4d86-8aae-4b04765fee42",
+      "fromId": "steel_structure",
+      "toId": "45271f29-2f87-4675-8e02-45c377674090"
+    },
+    {
+      "id": "ebc2cafa-41c6-4f4d-8817-4fe1d19049e2",
+      "fromId": "steel_structure",
+      "toId": "dc55993a-a0a6-4d24-93bf-365ed1162f38"
+    },
+    {
+      "id": "597aa8e3-fad9-4240-a73b-0f269d36698e",
+      "fromId": "steel_structure",
+      "toId": "6c175634-d3dd-4bfc-a2f5-2090056cd0a5"
+    },
+    {
+      "id": "5acc55b7-4819-4534-9949-705ee33bf535",
+      "fromId": "steel_structure",
+      "toId": "18e06740-0f8e-4b03-a8d6-d2e2b9722bc2"
+    },
+    {
+      "id": "4cc4cac0-d56a-471e-996f-615ca1240515",
+      "fromId": "steel_structure",
+      "toId": "3309b032-4dee-4f02-805f-e5524ffc27ff"
+    },
+    {
+      "id": "d6e4103c-3d3c-41a5-97a1-f9b4a02b4a94",
+      "fromId": "c8c82307-748d-4071-944f-f2ebb988c05e",
+      "toId": "ad09a3e3-841c-4643-a860-ef4ac93c206b"
+    }
+  ],
+  "createdAt": 1776666518592,
+  "updatedAt": 1776666518592,
+  "groups": []
+}

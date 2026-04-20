@@ -20,7 +20,7 @@ import { transcribe } from './services/stt.js';
 import { speak } from './services/tts.js';
 import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
 import { callOrganizeLlm, callRefineLlm, callNamingLlm } from './services/llm.js';
-import { parseAiResponse, executeOperations } from './utils/parser.js';
+import { parseAiResponse, executeOperations, dedupeConnections } from './utils/parser.js';
 
 // ── DOM References ──
 const $ = (id) => document.getElementById(id);
@@ -1199,6 +1199,7 @@ function bindEvents() {
         
         if (parsed.operations && parsed.operations.length > 0) {
           const result = executeOperations(appState.canvas, parsed.operations);
+          dedupeConnections(appState.canvas);
           relayoutAfterContentChange({
             pushHistoryEntry: true,
             fitView: true,

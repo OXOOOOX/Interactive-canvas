@@ -1022,6 +1022,20 @@ function renderLinks() {
     return [...hitIds].map(id => blockRects.find(r => r.id === id)).filter(Boolean);
   }
 
+  function createBundleBgPath(d, stroke, role) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('stroke', stroke || '#000');
+    path.setAttribute('stroke-width', '8');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('data-link-role', `bundle-bg-${role}`);
+    path.style.pointerEvents = 'none';
+    path.style.opacity = '0.8';
+    $linkLayer.appendChild(path);
+    return path;
+  }
+
   function createStructuralPath(d, stroke, role) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
@@ -1158,31 +1172,54 @@ function renderLinks() {
     const spread = rightmost - leftmost;
 
     if (conns.length >= 4 && spread > 200) {
-      // 梳状布线
-      createStructuralPath(
+      // 梳状布线 — 先画粗背景，再画细结构线
+      const bundleColor = from.color || '#000';
+      createBundleBgPath(
         `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
-        from.color || '#000',
+        bundleColor,
         'bundle-trunk'
       );
-
-      createStructuralPath(
+      createBundleBgPath(
         `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`,
-        from.color || '#000',
+        bundleColor,
         'bundle-rail'
       );
-
+      if (parentCx < leftmost || parentCx > rightmost) {
+        const railEnd = parentCx < leftmost ? leftmost : rightmost;
+        createBundleBgPath(
+          `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`,
+          bundleColor,
+          'bundle-elbow'
+        );
+      }
+      createStructuralPath(
+        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        bundleColor,
+        'bundle-trunk'
+      );
+      createStructuralPath(
+        `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`,
+        bundleColor,
+        'bundle-rail'
+      );
       if (parentCx < leftmost || parentCx > rightmost) {
         const railEnd = parentCx < leftmost ? leftmost : rightmost;
         createStructuralPath(
           `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`,
-          from.color || '#000',
+          bundleColor,
           'bundle-elbow'
         );
       }
     } else {
+      const bundleColor = from.color || '#000';
+      createBundleBgPath(
+        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        bundleColor,
+        'bundle-trunk'
+      );
       createStructuralPath(
         `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
-        from.color || '#000',
+        bundleColor,
         'bundle-trunk'
       );
     }
@@ -1211,9 +1248,15 @@ function renderLinks() {
     gatherYMap[toId] = gatherY;
     gatherXMap[toId] = toCx;
 
+    const gatherColor = to.color || '#000';
+    createBundleBgPath(
+      `M ${toCx} ${gatherY} L ${toCx} ${to.y}`,
+      gatherColor,
+      'gather-trunk'
+    );
     createStructuralPath(
       `M ${toCx} ${gatherY} L ${toCx} ${to.y}`,
-      to.color || '#000',
+      gatherColor,
       'gather-trunk'
     );
   }

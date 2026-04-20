@@ -2067,6 +2067,13 @@ select.cfg-input {
   opacity: 0.5;
 }
 
+/* 汇聚背景粗线 — 实线无虚化 */
+.link-layer path[data-link-role^="bundle-bg-"] {
+  stroke-dasharray: none !important;
+  animation: none !important;
+  stroke-linecap: round;
+}
+
 .link-layer path.link-conn[data-dash-role="flow"] {
   stroke-dasharray: 8 4;
   animation: flowDash 20s linear infinite;
@@ -2391,6 +2398,13 @@ select.cfg-input {
   stroke-dasharray: none;
   animation: none;
   opacity: 0.5;
+}
+
+/* 汇聚背景粗线 — 实线无虚化 */
+.link-layer path[data-link-role^="bundle-bg-"] {
+  stroke-dasharray: none !important;
+  animation: none !important;
+  stroke-linecap: round;
 }
 
 .link-layer path.link-conn[data-dash-role="flow"] {

@@ -1,0 +1,248 @@
+{
+  "id": "88a9c379-1c2f-4430-bb25-6c7bcde43cda",
+  "title": "智能织物开发关键步骤",
+  "blocks": [
+    {
+      "id": "main",
+      "type": "text",
+      "label": "智能织物开发关键步骤",
+      "content": "以下是实现智能织物的核心流程。",
+      "children": [],
+      "x": 537.7854251012146,
+      "y": 80,
+      "width": 120
+    },
+    {
+      "id": "step1",
+      "type": "text",
+      "label": "材料选择与设计",
+      "content": "- 确定基础纺织材料（如棉、涤纶等）\n- 引入功能性材料（如导电纤维、纳米材料）",
+      "children": [],
+      "x": 1443.0716793546794,
+      "y": 212,
+      "width": 120
+    },
+    {
+      "id": "step2",
+      "type": "text",
+      "label": "传感器与芯片集成",
+      "content": "- 开发柔性传感器或纤维芯片\n- 将电子元件嵌入织物结构中",
+      "children": [],
+      "x": 1477.7851199254426,
+      "y": 344,
+      "width": 120
+    },
+    {
+      "id": "step3",
+      "type": "text",
+      "label": "信号处理与通信",
+      "content": "- 实现数据采集与传输\n- 设计低功耗通信协议",
+      "children": [],
+      "x": 1657.7851199254426,
+      "y": 344,
+      "width": 120
+    },
+    {
+      "id": "step4",
+      "type": "text",
+      "label": "功能测试与优化",
+      "content": "- 测试感知、计算和通信性能\n- 根据反馈调整设计参数",
+      "children": [],
+      "x": 1837.7851199254426,
+      "y": 344,
+      "width": 120
+    },
+    {
+      "id": "step5",
+      "type": "text",
+      "label": "应用场景适配",
+      "content": "- 针对健康监测、运动装备等领域定制功能\n- 确保耐用性与舒适性",
+      "children": [],
+      "x": 2017.7851199254428,
+      "y": 344,
+      "width": 120
+    },
+    {
+      "id": "step1",
+      "type": "text",
+      "label": "关键步骤",
+      "content": "以下是智能织物开发与应用的关键步骤：",
+      "children": [],
+      "x": 1263.0716793546794,
+      "y": 218,
+      "width": 120
+    },
+    {
+      "id": "step2",
+      "type": "text",
+      "label": "材料选择",
+      "content": "选择适合的基材（如纤维、聚合物）和功能性材料（如导电纳米材料）。",
+      "children": [],
+      "x": 1117.7851199254426,
+      "y": 416,
+      "width": 120
+    },
+    {
+      "id": "step3",
+      "type": "text",
+      "label": "技术集成",
+      "content": "将传感器、芯片或其他电子元件嵌入或编织到织物中。",
+      "children": [],
+      "x": 757.7851199254426,
+      "y": 416,
+      "width": 120
+    },
+    {
+      "id": "step4",
+      "type": "text",
+      "label": "功能测试",
+      "content": "验证织物的感知能力、计算能力和通信性能是否达标。",
+      "children": [],
+      "x": 1297.7851199254426,
+      "y": 416,
+      "width": 120
+    },
+    {
+      "id": "step5",
+      "type": "text",
+      "label": "应用场景设计",
+      "content": "根据目标领域（如健康监测、运动装备）优化织物设计。",
+      "children": [],
+      "x": 577.7851199254426,
+      "y": 416,
+      "width": 120
+    },
+    {
+      "id": "step6",
+      "type": "text",
+      "label": "量产与商业化",
+      "content": "解决生产成本和技术瓶颈，推动产品进入市场。",
+      "children": [],
+      "x": 937.7851199254426,
+      "y": 416,
+      "width": 120
+    },
+    {
+      "id": "72abc9da-6cbb-4365-80f7-df9c1991d55e",
+      "type": "text",
+      "label": "工艺放大与良率控制",
+      "content": "突破实验室技术向规模化生产转化的瓶颈，建立标准化制造流程以保障产品一致性与高良品率。",
+      "x": 100,
+      "y": 528,
+      "width": 120
+    },
+    {
+      "id": "aba1eb0c-3590-4d64-bfa7-22f679007ef8",
+      "type": "text",
+      "label": "供应链优化与成本管控",
+      "content": "整合上下游产业资源，通过材料替代与精益生产管理降低制造成本，提升规模经济效益。",
+      "x": 260,
+      "y": 528,
+      "width": 120
+    },
+    {
+      "id": "b4d56bb6-31b0-4f50-a047-e5b40131a3ff",
+      "type": "text",
+      "label": "市场准入与商业化路径",
+      "content": "完成行业资质认证与合规审批，构建精准营销渠道与多元化应用场景，加速产品市场渗透与盈利。",
+      "x": 420,
+      "y": 528,
+      "width": 120
+    }
+  ],
+  "connections": [
+    {
+      "id": "b65bed21-86ab-4cfe-b4eb-7b3e480989a5",
+      "fromId": "main",
+      "toId": "step1"
+    },
+    {
+      "id": "0399fbee-a58e-4093-bb41-6408979125c0",
+      "fromId": "main",
+      "toId": "step2"
+    },
+    {
+      "id": "421b9b50-929e-48b6-a158-e986bfd2c261",
+      "fromId": "main",
+      "toId": "step3"
+    },
+    {
+      "id": "4b510e3d-e592-4815-ac08-44f065266fdd",
+      "fromId": "main",
+      "toId": "step4"
+    },
+    {
+      "id": "70050113-d5a3-4214-b6de-97d824483d9f",
+      "fromId": "main",
+      "toId": "step5"
+    },
+    {
+      "id": "612948d7-41dd-4288-bdb4-56361c268865",
+      "fromId": "main",
+      "toId": "step1"
+    },
+    {
+      "id": "98d87857-1a19-446c-8e7b-faa1aa20f678",
+      "fromId": "main",
+      "toId": "step2"
+    },
+    {
+      "id": "ceed7738-c119-4fbc-bfd2-5df2f052c06e",
+      "fromId": "main",
+      "toId": "step3"
+    },
+    {
+      "id": "2d2c9468-33a9-41f5-aae8-a2a68eb571c2",
+      "fromId": "main",
+      "toId": "step4"
+    },
+    {
+      "id": "5636a2cd-1ac4-4163-8611-a5fc92bb1b05",
+      "fromId": "main",
+      "toId": "step5"
+    },
+    {
+      "id": "7bcf7fdd-9655-4a1c-8431-f63bc89f7849",
+      "fromId": "step1",
+      "toId": "step2"
+    },
+    {
+      "id": "6038cdf1-c8af-449b-8677-ed4f7ab100eb",
+      "fromId": "step1",
+      "toId": "step3"
+    },
+    {
+      "id": "1d14fa12-6636-4f46-ac4f-7f57c6536943",
+      "fromId": "step1",
+      "toId": "step4"
+    },
+    {
+      "id": "5d20d97b-a142-42b2-b374-27e41f21a255",
+      "fromId": "step1",
+      "toId": "step5"
+    },
+    {
+      "id": "57abe54a-e576-4ffa-901f-f7188831c030",
+      "fromId": "step1",
+      "toId": "step6"
+    },
+    {
+      "id": "fd9710fc-a48e-482b-b620-2d7e3e176e01",
+      "fromId": "step6",
+      "toId": "72abc9da-6cbb-4365-80f7-df9c1991d55e"
+    },
+    {
+      "id": "3a27d313-21df-4ae7-81c4-a32c5b2a876b",
+      "fromId": "step6",
+      "toId": "aba1eb0c-3590-4d64-bfa7-22f679007ef8"
+    },
+    {
+      "id": "4e84a145-1a7d-468c-9188-11ba6960df98",
+      "fromId": "step6",
+      "toId": "b4d56bb6-31b0-4f50-a047-e5b40131a3ff"
+    }
+  ],
+  "createdAt": 1776603200439,
+  "updatedAt": 1776603200439,
+  "groups": []
+}

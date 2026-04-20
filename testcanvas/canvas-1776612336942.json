@@ -1,0 +1,338 @@
+{
+  "title": "创业计划",
+  "blocks": [
+    {
+      "id": "5189b6ec-308e-4fc0-a152-573c9129a8bf",
+      "type": "text",
+      "label": "创业计划",
+      "content": "核心主题",
+      "x": 997.740297054926,
+      "y": 80,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "4fd6caf7-6bcd-4136-9ba2-7e822d897f22",
+      "type": "text",
+      "label": "产品",
+      "content": "产品规划方向",
+      "x": 1345.240297054926,
+      "y": 237.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "0417527d-cff6-4b14-9d82-f9dac21ec1b2",
+      "type": "text",
+      "label": "市场",
+      "content": "市场分析策略",
+      "x": 940.240297054926,
+      "y": 237.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "2b9f7d84-aecb-4814-951a-6fd560687b5a",
+      "type": "text",
+      "label": "MVP",
+      "content": "最小可行产品",
+      "x": 2125.363247863248,
+      "y": 425,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "c8a1ac7f-2339-4b75-95db-9389065f2c0f",
+      "type": "text",
+      "label": "迭代路线",
+      "content": "版本规划",
+      "x": 1345.363247863248,
+      "y": 425,
+      "width": 705,
+      "height": 499
+    },
+    {
+      "id": "636a5416-85d2-43d0-8589-a2fdfeddaf5a",
+      "type": "text",
+      "label": "用户画像",
+      "content": "目标用户分析",
+      "x": 510.36324786324803,
+      "y": 425,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "75b51bb9-b0b9-46fd-92ba-56d1a668be8b",
+      "type": "text",
+      "label": "竞品分析",
+      "content": "竞争对手调研",
+      "x": -484.63675213675197,
+      "y": 362.5,
+      "height": 437,
+      "width": 200
+    },
+    {
+      "id": "9f9310d5-8d58-4ed4-865f-1a92516bad7b",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 475.0000000000001,
+      "y": 1124,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "c61aa1fe-e49f-4dd0-8638-df801151beb4",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 615.0000000000001,
+      "y": 1311.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "18b95a99-c1b9-4d6f-9883-234f83ab675d",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 615.0000000000001,
+      "y": 1529,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "7385f747-a359-4c08-a190-5f7f46d3a652",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 1597.863247863248,
+      "y": 1124,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "719f2533-5b29-4d99-b99e-c561685c62af",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 1597.863247863248,
+      "y": 1311.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "d730269c-da35-42c8-86e6-96e13cc52c28",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 1070.363247863248,
+      "y": 425,
+      "height": 79,
+      "width": 200
+    },
+    {
+      "id": "33aed43a-62ca-48e7-aafd-25727485c2d3",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 1070.363247863248,
+      "y": 1124,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "7da70675-8f21-4a1a-b928-2f9d2d4e3960",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 235.36324786324803,
+      "y": 425,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "21a57a17-3f90-4da6-a14f-b1c2a3b03972",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 100.00000000000011,
+      "y": 1124,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "8b3ab792-47d4-4227-a633-cd14d9d6411b",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 100.00000000000011,
+      "y": 1311.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "1b827b6e-9d0a-4969-941d-1e71d75c9f6e",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 2125.363247863248,
+      "y": 1124,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "8b27fef2-c597-4e21-bbba-15b49db86501",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 2125.363247863248,
+      "y": 1311.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "7dda0e16-64ed-4029-9f56-d6f42780e9a2",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": 650.240297054926,
+      "y": 237.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "7c1ee7cd-c696-46e7-b0f7-1c621410c157",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": -244.63675213675197,
+      "y": 362.5,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "43afcc81-6177-4b7a-8dcf-c14df40a46b2",
+      "type": "text",
+      "label": "新子块",
+      "content": "",
+      "x": -4.636752136751966,
+      "y": 362.5,
+      "width": 200,
+      "height": 85
+    }
+  ],
+  "connections": [
+    {
+      "id": "81fd034a-2936-4666-85b4-d0f67e3746fe",
+      "fromId": "5189b6ec-308e-4fc0-a152-573c9129a8bf",
+      "toId": "4fd6caf7-6bcd-4136-9ba2-7e822d897f22"
+    },
+    {
+      "id": "157c6dc1-4634-431c-bdaa-ef0b2f6f3916",
+      "fromId": "5189b6ec-308e-4fc0-a152-573c9129a8bf",
+      "toId": "0417527d-cff6-4b14-9d82-f9dac21ec1b2"
+    },
+    {
+      "id": "2754726e-3adf-4f77-a0d0-84d6093ce794",
+      "fromId": "4fd6caf7-6bcd-4136-9ba2-7e822d897f22",
+      "toId": "2b9f7d84-aecb-4814-951a-6fd560687b5a"
+    },
+    {
+      "id": "d82e33e1-a4f1-4ee0-85b3-540f97628a33",
+      "fromId": "4fd6caf7-6bcd-4136-9ba2-7e822d897f22",
+      "toId": "c8a1ac7f-2339-4b75-95db-9389065f2c0f"
+    },
+    {
+      "id": "c70d474f-0858-4d21-a1fb-5ac16214b27b",
+      "fromId": "0417527d-cff6-4b14-9d82-f9dac21ec1b2",
+      "toId": "636a5416-85d2-43d0-8589-a2fdfeddaf5a"
+    },
+    {
+      "id": "266f97f1-b9fc-446a-be0a-41dcce3eab1f",
+      "fromId": "0417527d-cff6-4b14-9d82-f9dac21ec1b2",
+      "toId": "75b51bb9-b0b9-46fd-92ba-56d1a668be8b"
+    },
+    {
+      "id": "becdd589-7f78-4cbe-8ac1-1836f199c65e",
+      "fromId": "636a5416-85d2-43d0-8589-a2fdfeddaf5a",
+      "toId": "9f9310d5-8d58-4ed4-865f-1a92516bad7b"
+    },
+    {
+      "id": "a43bc253-b9b5-4e7f-92b8-d073356b77b0",
+      "fromId": "9f9310d5-8d58-4ed4-865f-1a92516bad7b",
+      "toId": "c61aa1fe-e49f-4dd0-8638-df801151beb4"
+    },
+    {
+      "id": "98659a58-c708-4a6c-bf2b-6a80c2500a82",
+      "fromId": "c61aa1fe-e49f-4dd0-8638-df801151beb4",
+      "toId": "18b95a99-c1b9-4d6f-9883-234f83ab675d"
+    },
+    {
+      "id": "055a6b7c-046a-487b-a10c-43d90cff9a12",
+      "fromId": "c8a1ac7f-2339-4b75-95db-9389065f2c0f",
+      "toId": "7385f747-a359-4c08-a190-5f7f46d3a652"
+    },
+    {
+      "id": "8d9706e4-e76e-4bdc-b0c1-eecac083093e",
+      "fromId": "7385f747-a359-4c08-a190-5f7f46d3a652",
+      "toId": "719f2533-5b29-4d99-b99e-c561685c62af"
+    },
+    {
+      "id": "2f3a5cca-7882-430e-8dd1-513f564e332e",
+      "fromId": "4fd6caf7-6bcd-4136-9ba2-7e822d897f22",
+      "toId": "d730269c-da35-42c8-86e6-96e13cc52c28"
+    },
+    {
+      "id": "f7f7da92-d2ee-4203-8595-35f7607e5287",
+      "fromId": "d730269c-da35-42c8-86e6-96e13cc52c28",
+      "toId": "33aed43a-62ca-48e7-aafd-25727485c2d3"
+    },
+    {
+      "id": "8b1aec52-28c9-4d65-9117-ccf3c7a63597",
+      "fromId": "0417527d-cff6-4b14-9d82-f9dac21ec1b2",
+      "toId": "7da70675-8f21-4a1a-b928-2f9d2d4e3960"
+    },
+    {
+      "id": "d76cd6f9-6727-4910-9701-df153acf6067",
+      "fromId": "7da70675-8f21-4a1a-b928-2f9d2d4e3960",
+      "toId": "21a57a17-3f90-4da6-a14f-b1c2a3b03972"
+    },
+    {
+      "id": "d8ce9832-3e38-4b22-af20-13b9aec4ad1c",
+      "fromId": "21a57a17-3f90-4da6-a14f-b1c2a3b03972",
+      "toId": "8b3ab792-47d4-4227-a633-cd14d9d6411b"
+    },
+    {
+      "id": "1b30e0ab-5487-4edc-ad7e-3a6a59dc5a7b",
+      "fromId": "2b9f7d84-aecb-4814-951a-6fd560687b5a",
+      "toId": "1b827b6e-9d0a-4969-941d-1e71d75c9f6e"
+    },
+    {
+      "id": "5a66afa3-f883-4379-92b4-a610e4708329",
+      "fromId": "1b827b6e-9d0a-4969-941d-1e71d75c9f6e",
+      "toId": "8b27fef2-c597-4e21-bbba-15b49db86501"
+    },
+    {
+      "id": "0606de92-ba05-4b6c-a384-2e7ce1d3d560",
+      "fromId": "5189b6ec-308e-4fc0-a152-573c9129a8bf",
+      "toId": "7dda0e16-64ed-4029-9f56-d6f42780e9a2"
+    },
+    {
+      "id": "40bbfa06-ca60-4df6-9516-3a96b148a521",
+      "fromId": "5189b6ec-308e-4fc0-a152-573c9129a8bf",
+      "toId": "c61aa1fe-e49f-4dd0-8638-df801151beb4"
+    },
+    {
+      "id": "aa349d63-8e0e-4f81-ab47-96b2170b2af2",
+      "fromId": "0417527d-cff6-4b14-9d82-f9dac21ec1b2",
+      "toId": "7c1ee7cd-c696-46e7-b0f7-1c621410c157"
+    },
+    {
+      "id": "5a92050d-decd-4df2-b01f-1e9b980cfd83",
+      "fromId": "0417527d-cff6-4b14-9d82-f9dac21ec1b2",
+      "toId": "43afcc81-6177-4b7a-8dcf-c14df40a46b2"
+    }
+  ],
+  "groups": []
+}

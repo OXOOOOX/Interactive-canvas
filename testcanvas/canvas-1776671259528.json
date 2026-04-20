@@ -1,0 +1,153 @@
+{
+  "title": "钢结构详设精化物料订单处理",
+  "blocks": [
+    {
+      "id": "steel_structure",
+      "type": "text",
+      "label": "钢结构设计",
+      "content": "Steel Structure: Design of steel structure for automated立体仓库货架.\nDetailed Design: Refinement of the steel structure design for立体仓库货架.",
+      "children": [],
+      "x": 1378.9583076860783,
+      "y": 80,
+      "width": 210.41661537215654,
+      "height": 176
+    },
+    {
+      "id": "refined_structure",
+      "type": "text",
+      "label": "结构细化与物料分解",
+      "content": "Refined Structure: Detailed dimensions and specifications for each component of the立体仓库货架.\nMaterial Breakdown: List of materials required, including steel types, sizes, and quantities for production.",
+      "children": [],
+      "x": 1088.6979230784805,
+      "y": 588,
+      "width": 210.41661537215654,
+      "height": 250,
+      "color": "#2979FF"
+    },
+    {
+      "id": "order_processing",
+      "type": "text",
+      "label": "Order Processing",
+      "content": "Steps to place orders with suppliers based on the material breakdown.",
+      "children": [],
+      "x": 1093.9062307645586,
+      "y": 636,
+      "width": 200,
+      "height": 122
+    },
+    {
+      "id": "bolt_related",
+      "type": "text",
+      "label": "螺栓计算与自动化",
+      "content": "Bolt Calculation: **Column Bolts**: Calculated via base plate and connection plates.\n**Beam Bolts**: Calculated via beam design.\n**Diagonal Braces & Washers**: (Diagonal × 2 + Washer × 1) / 2 → Diagonal × 1 + Washer × 0.5.\nVBA Automation: Automated bolt counting and table formatting using VBA.\n- **Rule Table**: Matches material names or ID prefixes to apply specific rules.\n- **Bolt Surplus**: Current surplus calculation is not rule-based; needs clarification.",
+      "children": [],
+      "x": 943.9583076860783,
+      "y": 80,
+      "width": 200,
+      "height": 438
+    },
+    {
+      "id": "3dfd496f-3697-4f65-aa76-8f1b5eea0934",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 100,
+      "y": 296,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "7556cebc-b1f8-4d2d-a1d0-ed796a6e0317",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 340,
+      "y": 296,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "8224a44c-8244-49e3-9ead-ba180d33aadf",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 580,
+      "y": 296,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "9680684e-2d0f-4e2d-bacd-62a070617d95",
+      "type": "text",
+      "label": "新同级块1",
+      "content": "",
+      "x": 1374.114538450637,
+      "y": 316,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "60c95daf-ec6d-4b84-b23c-c7f5984dc507",
+      "type": "text",
+      "label": "新子块1",
+      "content": "",
+      "x": 1374.114538450637,
+      "y": 461,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "e00df46e-2beb-4cda-b1b0-28a5aa83ac88",
+      "type": "text",
+      "label": "新子块2",
+      "content": "",
+      "x": 1374.114538450637,
+      "y": 606,
+      "width": 200,
+      "height": 85
+    }
+  ],
+  "connections": [
+    {
+      "id": "4b2db4fb-35a4-4eb1-a4ed-40fae2162b31",
+      "fromId": "steel_structure",
+      "toId": "refined_structure"
+    },
+    {
+      "id": "375c4d1d-92fa-451a-9efa-2736c01be8dc",
+      "fromId": "refined_structure",
+      "toId": "order_processing"
+    },
+    {
+      "id": "54e1381d-b167-41f5-9d5a-f8b6dd83c951",
+      "fromId": "steel_structure",
+      "toId": "3dfd496f-3697-4f65-aa76-8f1b5eea0934"
+    },
+    {
+      "id": "54d0bae4-70cd-458e-b173-c27070f423b3",
+      "fromId": "steel_structure",
+      "toId": "7556cebc-b1f8-4d2d-a1d0-ed796a6e0317"
+    },
+    {
+      "id": "731ce485-0c86-4721-9d5d-b614f0c26312",
+      "fromId": "steel_structure",
+      "toId": "8224a44c-8244-49e3-9ead-ba180d33aadf"
+    },
+    {
+      "id": "95752d30-61ae-4acf-91cb-44aecc8bac46",
+      "fromId": "steel_structure",
+      "toId": "9680684e-2d0f-4e2d-bacd-62a070617d95"
+    },
+    {
+      "id": "fa17f991-32a4-4145-8331-5281e490f07e",
+      "fromId": "9680684e-2d0f-4e2d-bacd-62a070617d95",
+      "toId": "60c95daf-ec6d-4b84-b23c-c7f5984dc507"
+    },
+    {
+      "id": "ce2527b7-baa6-4df3-97c9-bb5d5a9cd710",
+      "fromId": "60c95daf-ec6d-4b84-b23c-c7f5984dc507",
+      "toId": "e00df46e-2beb-4cda-b1b0-28a5aa83ac88"
+    }
+  ],
+  "groups": []
+}

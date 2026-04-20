@@ -2057,10 +2057,30 @@ select.cfg-input {
    CONNECTION LINE ANIMATION
    ═══════════════════════════════════════════════════ */
 .link-layer path {
+  cursor: default;
+  transition: stroke-width var(--duration-fast), stroke var(--duration-fast), opacity var(--duration-fast);
+}
+
+.link-layer path.link-structure {
+  stroke-dasharray: none;
+  animation: none;
+  opacity: 0.5;
+}
+
+.link-layer path.link-conn[data-dash-role="flow"] {
   stroke-dasharray: 8 4;
   animation: flowDash 20s linear infinite;
-  cursor: default;
-  transition: stroke-width var(--duration-fast), stroke var(--duration-fast);
+}
+
+.link-layer path.link-conn[data-dash-role="structured"] {
+  stroke-dasharray: 6 5;
+  animation: none;
+  opacity: 0.9;
+}
+
+.link-layer path.link-conn[data-dash-role="detour"] {
+  stroke-dasharray: 5 5;
+  animation: flowDash 28s linear infinite;
 }
 
 /* Ctrl 键按下时的连线交互状态 */
@@ -2363,10 +2383,30 @@ select.cfg-input {
    CONNECTION LINE ANIMATION
    ═══════════════════════════════════════════════════ */
 .link-layer path {
+  cursor: default;
+  transition: stroke-width var(--duration-fast), stroke var(--duration-fast), opacity var(--duration-fast);
+}
+
+.link-layer path.link-structure {
+  stroke-dasharray: none;
+  animation: none;
+  opacity: 0.5;
+}
+
+.link-layer path.link-conn[data-dash-role="flow"] {
   stroke-dasharray: 8 4;
   animation: flowDash 20s linear infinite;
-  cursor: default;
-  transition: stroke-width var(--duration-fast), stroke var(--duration-fast);
+}
+
+.link-layer path.link-conn[data-dash-role="structured"] {
+  stroke-dasharray: 6 5;
+  animation: none;
+  opacity: 0.9;
+}
+
+.link-layer path.link-conn[data-dash-role="detour"] {
+  stroke-dasharray: 5 5;
+  animation: flowDash 28s linear infinite;
 }
 
 /* Ctrl 键按下时的连线交互状态 */
@@ -2399,6 +2439,7 @@ select.cfg-input {
   width: 14px;
   height: 14px;
 }
+/* ═══════════════════════════════════════════════════
    SNAP GRID INDICATOR
    ═══════════════════════════════════════════════════ */
 .mm-block.dragging {

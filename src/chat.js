@@ -5,8 +5,8 @@
 import { appState, pushHistory, saveCanvas } from './state.js';
 import { callChatLlm, callCanvasLlm, callSuggestLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, renderMarkdown } from './utils/parser.js';
-import { findFreePosition } from './utils/layout.js';
-import { renderBlocks } from './canvas.js';
+import { autoLayout, findFreePosition } from './utils/layout.js';
+import { renderBlocks, syncBlockSizes } from './canvas.js';
 
 let $messages, $input, $sendBtn;
 let getConfig = () => ({});
@@ -121,7 +121,19 @@ async function sendMessage() {
       const result = executeOperations(appState.canvas, parsed.operations);
       pushHistory();
 
-      // 重新渲染画布（带入场动画）
+      const changedIds = [...result.addedIds, ...result.updatedIds];
+      if (changedIds.length > 0) {
+        for (const block of appState.canvas.blocks) {
+          if (!changedIds.includes(block.id)) continue;
+          delete block.height;
+        }
+      }
+
+      renderBlocks(result.addedIds);
+      syncBlockSizes();
+      autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+      renderBlocks(result.addedIds);
+      syncBlockSizes();
       renderBlocks(result.addedIds);
 
       // 构建操作摘要

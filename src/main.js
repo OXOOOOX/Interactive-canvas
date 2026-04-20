@@ -15,7 +15,7 @@ import {
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar, syncBlockSizes } from './canvas.js';
 import { initChat, sendText } from './chat.js';
 import { initWaveform, resumeListening, isConversationActive } from './waveform.js';
-import { autoLayout, findFreePosition } from './utils/layout.js';
+import { autoLayout, findFreePosition, getBoundingBox } from './utils/layout.js';
 import { transcribe } from './services/stt.js';
 import { speak } from './services/tts.js';
 import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
@@ -181,7 +181,34 @@ export async function checkAutoNaming() {
 }
 
 // ── Canvas change handler ──
-function onCanvasChange() {
+function onCanvasChange(options = {}) {
+  if (options.relayout) {
+    relayoutAfterContentChange({
+      pushHistoryEntry: options.pushHistoryEntry,
+      changedBlockIds: options.changedBlockIds,
+    });
+    return;
+  }
+  saveCurrentCanvas();
+}
+
+function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false, changedBlockIds = [] } = {}) {
+  const changedIds = new Set(changedBlockIds || []);
+  if (changedIds.size > 0) {
+    for (const block of appState.canvas.blocks) {
+      if (!changedIds.has(block.id)) continue;
+      delete block.height;
+    }
+  }
+
+  renderBlocks();
+  syncBlockSizes();
+  autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+  renderBlocks();
+  syncBlockSizes();
+  if (pushHistoryEntry) pushHistory();
+  renderBlocks();
+  if (fitView) fitToView();
   saveCurrentCanvas();
 }
 
@@ -234,8 +261,10 @@ function handleAddSibling() {
     });
   }
   appState.selectedBlockId = newBlock.id;
+  syncBlockSizes();
+  autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
   pushHistory();
-  renderBlocks([newBlock.id]);
+  renderBlocks();
   saveCurrentCanvas();
   checkAutoNaming();
 }
@@ -583,9 +612,7 @@ Content: ${block.content || 'None'}`
     if (expandResult.content) {
       block.label = expandResult.label || block.label;
       block.content = expandResult.content;
-      pushHistory();
-      renderBlocks();
-      saveCurrentCanvas();
+      relayoutAfterContentChange({ pushHistoryEntry: true, changedBlockIds: [block.id] });
     } else {
       alert('无法扩张，请尝试手动编辑');
     }
@@ -735,9 +762,7 @@ Content: ${block.content || 'None'}`
     if (translateResult.label || translateResult.content) {
       block.label = translateResult.label || block.label;
       block.content = translateResult.content || block.content;
-      pushHistory();
-      renderBlocks();
-      saveCurrentCanvas();
+      relayoutAfterContentChange({ pushHistoryEntry: true, changedBlockIds: [block.id] });
     } else {
       alert('无法翻译，请尝试手动编辑');
     }
@@ -860,6 +885,9 @@ function init() {
   // 4. Render canvas
   renderBlocks();
   if (appState.canvas.blocks.length > 0) fitToView();
+
+  registerLayoutDebugTools();
+  applyFixtureFromQuery();
 
   // 5. Bind events
   bindEvents();
@@ -1141,6 +1169,7 @@ function bindEvents() {
   dom.zoomOut.addEventListener('click', zoomOut);
   dom.fitBtn.addEventListener('click', fitToView);
   dom.autoLayoutBtn.addEventListener('click', () => {
+    renderBlocks();
     syncBlockSizes();
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
     pushHistory();
@@ -1169,13 +1198,12 @@ function bindEvents() {
         const parsed = parseAiResponse(rawText);
         
         if (parsed.operations && parsed.operations.length > 0) {
-          executeOperations(appState.canvas, parsed.operations);
-          syncBlockSizes();
-          autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
-          pushHistory();
-          renderBlocks();
-          fitToView();
-          saveCurrentCanvas();
+          const result = executeOperations(appState.canvas, parsed.operations);
+          relayoutAfterContentChange({
+            pushHistoryEntry: true,
+            fitView: true,
+            changedBlockIds: [...result.addedIds, ...result.updatedIds],
+          });
         } else {
           alert('AI 认为目前无需整理');
         }
@@ -1252,7 +1280,7 @@ function bindEvents() {
         
         b.label = refined.label || b.label;
         b.content = refined.content || b.content;
-        renderBlocks(); // temporary preview WYSIWYG
+        relayoutAfterContentChange({ changedBlockIds: [b.id] });
         
         tempRefineState = { b, originalLabel, originalContent };
         
@@ -1285,7 +1313,7 @@ function bindEvents() {
       if (tempRefineState) {
         tempRefineState.b.label = tempRefineState.originalLabel;
         tempRefineState.b.content = tempRefineState.originalContent;
-        renderBlocks();
+        relayoutAfterContentChange({ changedBlockIds: [tempRefineState.b.id] });
         tempRefineState = null;
       }
     });
@@ -1458,7 +1486,19 @@ function bindEvents() {
   }
 }
 
-function loadDemoData() {
+function applyCanvasFixture(canvas, fitDelay = 500) {
+  appState.canvas = {
+    ...canvas,
+    groups: canvas.groups || [],
+  };
+  dom.boardTitle.textContent = appState.canvas.title;
+  initHistory();
+  renderBlocks(appState.canvas.blocks.map(b => b.id));
+  setTimeout(fitToView, fitDelay);
+  saveCurrentCanvas();
+}
+
+function createDefaultDemoCanvas() {
   const rootId = crypto.randomUUID();
   const prodId = crypto.randomUUID();
   const mktId = crypto.randomUUID();
@@ -1467,7 +1507,7 @@ function loadDemoData() {
   const userId = crypto.randomUUID();
   const compId = crypto.randomUUID();
 
-  appState.canvas = {
+  return {
     title: '创业计划',
     blocks: [
       { id: rootId, type: 'text', label: '创业计划', content: '核心主题', x: 400, y: 60 },
@@ -1486,13 +1526,153 @@ function loadDemoData() {
       { id: crypto.randomUUID(), fromId: mktId, toId: userId },
       { id: crypto.randomUUID(), fromId: mktId, toId: compId },
     ],
+    groups: [],
   };
+}
 
-  dom.boardTitle.textContent = '创业计划';
-  initHistory();
-  renderBlocks(appState.canvas.blocks.map(b => b.id));
-  setTimeout(fitToView, 500);
+function createSyncSizeFixture() {
+  const rootId = crypto.randomUUID();
+  const longId = crypto.randomUUID();
+  const mediumId = crypto.randomUUID();
+  const shortId = crypto.randomUUID();
+  const detailAId = crypto.randomUUID();
+  const detailBId = crypto.randomUUID();
+
+  return {
+    title: '测试：尺寸同步',
+    blocks: [
+      { id: rootId, type: 'text', label: '尺寸同步测试', content: '用于验证缩放下不会错误缩窄块宽度', x: 420, y: 60, width: 260 },
+      { id: longId, type: 'text', label: '长内容块', content: '这是一段很长的内容，用于测试在缩放和自动排布之前同步尺寸时，不会把块的宽度错误缩小，同时要让内容保持在块内正常换行显示。\n\n- 第一条很长的说明\n- 第二条也比较长\n- 第三条继续补充细节', x: 160, y: 220, width: 300 },
+      { id: mediumId, type: 'text', label: '中等内容块', content: '中等长度内容，带有一些换行。\n第二行说明。\n第三行说明。', x: 520, y: 220, width: 220 },
+      { id: shortId, type: 'text', label: '短块', content: '短内容', x: 820, y: 220, width: 180 },
+      { id: detailAId, type: 'text', label: '附加说明 A', content: '用于观察层级布局。', x: 300, y: 420, width: 210 },
+      { id: detailBId, type: 'text', label: '附加说明 B', content: '用于观察自动排布前后的宽度是否稳定。', x: 640, y: 420, width: 240 },
+    ],
+    connections: [
+      { id: crypto.randomUUID(), fromId: rootId, toId: longId },
+      { id: crypto.randomUUID(), fromId: rootId, toId: mediumId },
+      { id: crypto.randomUUID(), fromId: rootId, toId: shortId },
+      { id: crypto.randomUUID(), fromId: longId, toId: detailAId },
+      { id: crypto.randomUUID(), fromId: mediumId, toId: detailBId },
+    ],
+    groups: [],
+  };
+}
+
+function createLayoutDriftFixture() {
+  const rootId = crypto.randomUUID();
+  const strategyId = crypto.randomUUID();
+  const productId = crypto.randomUUID();
+  const operationsId = crypto.randomUUID();
+  const signalId = crypto.randomUUID();
+  const leafA1 = crypto.randomUUID();
+  const leafA2 = crypto.randomUUID();
+  const leafA3 = crypto.randomUUID();
+  const leafA4 = crypto.randomUUID();
+  const leafB1 = crypto.randomUUID();
+  const leafB2 = crypto.randomUUID();
+  const leafB3 = crypto.randomUUID();
+  const crossId = crypto.randomUUID();
+
+  return {
+    title: '测试：布局发散',
+    blocks: [
+      { id: rootId, type: 'text', label: '布局发散测试', content: '重复执行自动排布后不应不断外扩。', x: 520, y: 60, width: 260 },
+      { id: strategyId, type: 'text', label: '战略层', content: '包含较长内容，用于制造较高的节点。\n- 方向一\n- 方向二\n- 方向三', x: 180, y: 220, width: 260 },
+      { id: productId, type: 'text', label: '产品层', content: '用于连接多个叶子节点，触发叶子网格布局。', x: 520, y: 220, width: 250 },
+      { id: operationsId, type: 'text', label: '运营层', content: '作为另一侧主干，包含多叶子和跨层连接。', x: 860, y: 220, width: 250 },
+      { id: signalId, type: 'text', label: '锁定观察点', content: '这个块保持锁定，用于放大挤压与绕行问题。', x: 560, y: 420, width: 240, locked: true },
+      { id: leafA1, type: 'text', label: '产品叶子 1', content: '叶子内容 A1', x: 360, y: 440, width: 200 },
+      { id: leafA2, type: 'text', label: '产品叶子 2', content: '叶子内容 A2，稍微长一点，确保高度差异。', x: 520, y: 500, width: 210 },
+      { id: leafA3, type: 'text', label: '产品叶子 3', content: '叶子内容 A3', x: 700, y: 440, width: 190 },
+      { id: leafA4, type: 'text', label: '产品叶子 4', content: '叶子内容 A4，继续增加同父叶子数量。', x: 860, y: 500, width: 220 },
+      { id: leafB1, type: 'text', label: '运营叶子 1', content: '叶子内容 B1', x: 940, y: 440, width: 200 },
+      { id: leafB2, type: 'text', label: '运营叶子 2', content: '叶子内容 B2', x: 1080, y: 500, width: 210 },
+      { id: leafB3, type: 'text', label: '运营叶子 3', content: '叶子内容 B3，用于触发网格阈值。', x: 1220, y: 440, width: 215 },
+      { id: crossId, type: 'text', label: '跨层节点', content: '与左右主干同时相关，容易触发穿块和二次外推。', x: 260, y: 620, width: 260 },
+    ],
+    connections: [
+      { id: crypto.randomUUID(), fromId: rootId, toId: strategyId },
+      { id: crypto.randomUUID(), fromId: rootId, toId: productId },
+      { id: crypto.randomUUID(), fromId: rootId, toId: operationsId },
+      { id: crypto.randomUUID(), fromId: strategyId, toId: crossId },
+      { id: crypto.randomUUID(), fromId: productId, toId: signalId },
+      { id: crypto.randomUUID(), fromId: productId, toId: leafA1 },
+      { id: crypto.randomUUID(), fromId: productId, toId: leafA2 },
+      { id: crypto.randomUUID(), fromId: productId, toId: leafA3 },
+      { id: crypto.randomUUID(), fromId: productId, toId: leafA4 },
+      { id: crypto.randomUUID(), fromId: operationsId, toId: leafB1 },
+      { id: crypto.randomUUID(), fromId: operationsId, toId: leafB2 },
+      { id: crypto.randomUUID(), fromId: operationsId, toId: leafB3 },
+      { id: crypto.randomUUID(), fromId: strategyId, toId: leafA2 },
+      { id: crypto.randomUUID(), fromId: crossId, toId: leafB2 },
+    ],
+    groups: [],
+  };
+}
+
+function loadTestFixture(name) {
+  if (name === 'size-sync') {
+    applyCanvasFixture(createSyncSizeFixture());
+    return true;
+  }
+  if (name === 'layout-drift') {
+    applyCanvasFixture(createLayoutDriftFixture());
+    return true;
+  }
+  return false;
+}
+
+function runAutoLayoutBenchmark(iterations = 5) {
+  const rounds = Math.max(1, Number(iterations) || 1);
+  const results = [];
+
+  for (let i = 0; i < rounds; i++) {
+    syncBlockSizes();
+    autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+    renderBlocks();
+    const box = getBoundingBox(appState.canvas.blocks, b => b.width || 200);
+    results.push({
+      iteration: i + 1,
+      minX: Math.round(box.x),
+      minY: Math.round(box.y),
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+    });
+  }
+
+  console.table(results);
+  fitToView();
   saveCurrentCanvas();
+  return results;
+}
+
+function loadDemoData() {
+  applyCanvasFixture(createDefaultDemoCanvas());
+}
+
+function applyFixtureFromQuery() {
+  const params = new URLSearchParams(window.location.search);
+  const fixture = params.get('fixture');
+  const autorun = Number(params.get('autorun') || 0);
+
+  if (fixture) {
+    const loaded = loadTestFixture(fixture);
+    if (loaded && autorun > 0) {
+      setTimeout(() => runAutoLayoutBenchmark(autorun), 700);
+    }
+  }
+}
+
+function registerLayoutDebugTools() {
+  window.loadTestFixture = (name) => {
+    const loaded = loadTestFixture(name);
+    if (!loaded) {
+      console.warn(`Unknown fixture: ${name}`);
+    }
+    return loaded;
+  };
+  window.runAutoLayoutBenchmark = runAutoLayoutBenchmark;
 }
 
 // ── Import Menu ──

@@ -1,0 +1,152 @@
+{
+  "id": "44f7a27a-788c-4fc1-a3a2-c9675fb69376",
+  "title": "钢结构详设精化物料订单处理",
+  "blocks": [
+    {
+      "id": "steel_structure",
+      "type": "text",
+      "label": "钢结构设计",
+      "content": "**Steel Structure**: 设计用于自动化立体仓库货架的钢结构。\n**Detailed Design**: 对立体仓库货架的钢结构设计进行细化。",
+      "children": [],
+      "x": 905.4166153721566,
+      "y": 80,
+      "width": 210.41661537215654,
+      "height": 141
+    },
+    {
+      "id": "refined_structure",
+      "type": "text",
+      "label": "结构细化与物料分解",
+      "content": "Refined Structure: Detailed dimensions and specifications for each component of the立体仓库货架.\nMaterial Breakdown: List of materials required, including steel types, sizes, and quantities for production.",
+      "children": [],
+      "x": 475,
+      "y": 80,
+      "width": 210.41661537215654,
+      "height": 250,
+      "color": "#2979FF"
+    },
+    {
+      "id": "order_processing",
+      "type": "text",
+      "label": "Order Processing",
+      "content": "Steps to place orders with suppliers based on the material breakdown.",
+      "children": [],
+      "x": 345.2083076860783,
+      "y": 390,
+      "width": 200,
+      "height": 122
+    },
+    {
+      "id": "bolt_related",
+      "type": "text",
+      "label": "螺栓计算与自动化",
+      "content": "Bolt Calculation: Column bolts rely on base and connection plates. Check tensile and shear strength. Beam bolts follow beam design parameters. Distinguish between friction and bearing connections. Diagonal braces and washers follow a fixed ratio. Formula: (Brace×2 + Washer×1)/2. Result equals one brace per half washer set. Example: Ten braces need five washer sets.\nVBA Automation: VBA scripts handle automatic counting. Format tables and export BOM lists instantly. Cut manual workload and prevent counting errors.\nRule Table: Links material names to calculation logic. Uses ID prefixes for automatic matching. Supports wildcard queries. Example: ID starting with \"B-\" applies beam bolt standards.\nBolt Surplus: Surplus calculation lacks fixed rules. Recommend adding a standard loss factor of 3% to 5%. Clarify spare parts for on-site adjustments. Standardize parameters before automation.",
+      "children": [],
+      "x": 100,
+      "y": 80,
+      "width": 200,
+      "height": 754
+    },
+    {
+      "id": "3dfd496f-3697-4f65-aa76-8f1b5eea0934",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 948.1249230582348,
+      "y": 261,
+      "width": 200,
+      "height": 86,
+      "color": "#FF4081"
+    },
+    {
+      "id": "7556cebc-b1f8-4d2d-a1d0-ed796a6e0317",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1208.1249230582348,
+      "y": 261,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "8224a44c-8244-49e3-9ead-ba180d33aadf",
+      "type": "text",
+      "label": "新同级块",
+      "content": "",
+      "x": 1468.1249230582348,
+      "y": 261,
+      "width": 200,
+      "height": 86
+    },
+    {
+      "id": "9680684e-2d0f-4e2d-bacd-62a070617d95",
+      "type": "text",
+      "label": "新同级块1",
+      "content": "",
+      "x": 673.1249230582348,
+      "y": 390,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "60c95daf-ec6d-4b84-b23c-c7f5984dc507",
+      "type": "text",
+      "label": "新子块1",
+      "content": "",
+      "x": 948.1249230582348,
+      "y": 426,
+      "width": 200,
+      "height": 85
+    },
+    {
+      "id": "e00df46e-2beb-4cda-b1b0-28a5aa83ac88",
+      "type": "text",
+      "label": "新子块2",
+      "content": "",
+      "x": 673.1249230582348,
+      "y": 571,
+      "width": 200,
+      "height": 85
+    }
+  ],
+  "connections": [
+    {
+      "id": "375c4d1d-92fa-451a-9efa-2736c01be8dc",
+      "fromId": "refined_structure",
+      "toId": "order_processing"
+    },
+    {
+      "id": "54e1381d-b167-41f5-9d5a-f8b6dd83c951",
+      "fromId": "steel_structure",
+      "toId": "3dfd496f-3697-4f65-aa76-8f1b5eea0934"
+    },
+    {
+      "id": "54d0bae4-70cd-458e-b173-c27070f423b3",
+      "fromId": "steel_structure",
+      "toId": "7556cebc-b1f8-4d2d-a1d0-ed796a6e0317"
+    },
+    {
+      "id": "731ce485-0c86-4721-9d5d-b614f0c26312",
+      "fromId": "steel_structure",
+      "toId": "8224a44c-8244-49e3-9ead-ba180d33aadf"
+    },
+    {
+      "id": "95752d30-61ae-4acf-91cb-44aecc8bac46",
+      "fromId": "steel_structure",
+      "toId": "9680684e-2d0f-4e2d-bacd-62a070617d95"
+    },
+    {
+      "id": "fa17f991-32a4-4145-8331-5281e490f07e",
+      "fromId": "9680684e-2d0f-4e2d-bacd-62a070617d95",
+      "toId": "60c95daf-ec6d-4b84-b23c-c7f5984dc507"
+    },
+    {
+      "id": "ce2527b7-baa6-4df3-97c9-bb5d5a9cd710",
+      "fromId": "60c95daf-ec6d-4b84-b23c-c7f5984dc507",
+      "toId": "e00df46e-2beb-4cda-b1b0-28a5aa83ac88"
+    }
+  ],
+  "createdAt": 1776666518592,
+  "updatedAt": 1776666518592,
+  "groups": []
+}

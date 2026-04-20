@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>布局测试</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    .block {
+      border: 1px solid #333;
+      background: #f0f0f0;
+      padding: 5px;
+      margin: 2px;
+      position: absolute;
+      font-size: 12px;
+    }
+    .tall { background: #ffcccc; }
+    .pushed { background: #ccffcc; }
+    #output { margin-top: 400px; white-space: pre; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>布局模拟测试</h1>
+  <div id="canvas" style="position: relative; height: 3000px; border: 1px solid #ccc;"></div>
+  <div id="output"></div>
+
+  <script type="module">
+    const data = {
+      "id": "16b90f6e-1d2e-4e66-936c-a04d5479f639",
+      "title": "AI 创意应用领域",
+      "blocks": [
+        {
+          "id": "root",
+          "type": "text",
+          "label": "AI 创新产品点子",
+          "content": "",
+          "children": [],
+          "x": 597.5,
+          "y": 80,
+          "width": 200,
+          "height": 85
+        },
+        {
+          "id": "ai_education",
+          "type": "text",
+          "label": "教育",
+          "content": "长内容...",
+          "children": [],
+          "x": 1095,
+          "y": 237.5,
+          "width": 200,
+          "height": 1567
+        },
+        {
+          "id": "ai_healthcare",
+          "type": "text",
+          "label": "医疗",
+          "content": "短内容",
+          "children": [],
+          "x": 100,
+          "y": 237.5,
+          "width": 200,
+          "height": 345
+        },
+        {
+          "id": "ai_entertainment",
+          "type": "text",
+          "label": "娱乐",
+          "content": "- AI 生成音乐/电影\n- 智能推荐系统\n- 虚拟现实互动体验",
+          "children": [],
+          "x": 735,
+          "y": 237.5,
+          "locked": false,
+          "width": 200,
+          "height": 122
+        },
+        {
+          "id": "ai_business",
+          "type": "text",
+          "label": "商业",
+          "content": "- 智能客服机器人\n- 数据分析与预测平台\n- 自动化营销工具",
+          "children": [],
+          "x": 597.5,
+          "y": 2004.5,
+          "width": 200,
+          "height": 122
+        },
+        {
+          "id": "d200be4c-c34d-4626-81c1-10275854a6d3",
+          "type": "text",
+          "label": "智能家居",
+          "content": "- **AI 驱动的能源管理系统**\n- **智能家电控制中心**\n- **家庭安全监控系统**",
+          "x": 460,
+          "y": 237.5,
+          "width": 200,
+          "height": 122
+        },
+        {
+          "id": "c3e4da63-0cbc-427f-a701-a064ff11d21b",
+          "type": "text",
+          "label": "交通出行",
+          "content": "- 自动驾驶技术\n- 智能交通信号优化\n- 共享出行平台",
+          "x": -620,
+          "y": 205,
+          "width": 200,
+          "height": 122
+        },
+        {
+          "id": "00c37bf5-e6d5-4886-9bf9-c7e517f2a1cb",
+          "type": "text",
+          "label": "环境保护",
+          "content": "- AI 气候预测模型\n- 智能垃圾分类系统\n- 资源消耗优化工具",
+          "x": -380,
+          "y": 205,
+          "width": 200,
+          "height": 122
+        },
+        {
+          "id": "f28cd041-3fe8-419d-8d21-3568930b1f16",
+          "type": "text",
+          "label": "超个性化 AI 生活协作者",
+          "content": "突破传统被动响应模式...",
+          "x": -140,
+          "y": 205,
+          "width": 200,
+          "height": 178
+        },
+        {
+          "id": "47693ee2-2c57-45aa-a7e9-9d029ff1cd68",
+          "type": "text",
+          "label": "垂直领域 AI 原生教育平台",
+          "content": "融合动态知识图谱...",
+          "x": -620,
+          "y": 357,
+          "width": 200,
+          "height": 196
+        },
+        {
+          "id": "331c3a8e-30d5-474b-b9dc-fca371ff673a",
+          "type": "text",
+          "label": "多模态创意增强工作流工具",
+          "content": "面向设计、影视、游戏与内容创作者...",
+          "x": -380,
+          "y": 357,
+          "width": 200,
+          "height": 216
+        },
+        {
+          "id": "9fdde830-57fe-4839-82f9-1fae4db6569f",
+          "type": "text",
+          "label": "隐私优先的端侧轻量化 AI 产品",
+          "content": "依托边缘计算...",
+          "x": -140,
+          "y": 357,
+          "width": 200,
+          "height": 216
+        }
+      ],
+      "connections": [
+        { "id": "1", "fromId": "root", "toId": "ai_education" },
+        { "id": "2", "fromId": "root", "toId": "ai_healthcare" },
+        { "id": "3", "fromId": "root", "toId": "ai_entertainment" },
+        { "id": "4", "fromId": "root", "toId": "ai_business" },
+        { "id": "5", "fromId": "root", "toId": "d200be4c-c34d-4626-81c1-10275854a6d3" },
+        { "id": "6", "fromId": "root", "toId": "c3e4da63-0cbc-427f-a701-a064ff11d21b" },
+        { "id": "7", "fromId": "root", "toId": "00c37bf5-e6d5-4886-9bf9-c7e517f2a1cb" },
+        { "id": "8", "fromId": "root", "toId": "f28cd041-3fe8-419d-8d21-3568930b1f16" },
+        { "id": "9", "fromId": "root", "toId": "47693ee2-2c57-45aa-a7e9-9d029ff1cd68" },
+        { "id": "10", "fromId": "root", "toId": "331c3a8e-30d5-474b-b9dc-fca371ff673a" },
+        { "id": "11", "fromId": "root", "toId": "9fdde830-57fe-4839-82f9-1fae4db6569f" }
+      ],
+      "groups": []
+    };
+
+    const BLOCK_W = 200;
+    const BLOCK_H = 72;
+    const GRID_H_GAP = 40;
+    const GRID_V_GAP = 30;
+    const GRID_MAX_COLS = 3;
+    const GRID_PARENT_OFFSET = 40;
+
+    function getBlockWidth(block) { return block.width || BLOCK_W; }
+    function getBlockHeight(block) { return block.height || BLOCK_H; }
+
+    // 构建块映射
+    const blockMap = {};
+    for (const b of data.blocks) {
+      blockMap[b.id] = b;
+      b.locked = b.locked || false;
+    }
+
+    // 构建子节点映射
+    const childrenMap = {};
+    for (const b of data.blocks) {
+      childrenMap[b.id] = [];
+    }
+    for (const conn of data.connections) {
+      if (childrenMap[conn.fromId]) {
+        childrenMap[conn.fromId].push(conn.toId);
+      }
+    }
+
+    console.log('=== 子节点映射 ===');
+    for (const [id, children] of Object.entries(childrenMap)) {
+      if (children.length > 0) {
+        console.log(`${blockMap[id]?.label || id}: ${children.length} 个子节点`);
+        for (const cid of children) {
+          console.log(`  - ${blockMap[cid]?.label || cid} (高${getBlockHeight(blockMap[cid])}px)`);
+        }
+      }
+    }
+
+    // 识别叶子聚类（>=3 个纯叶子挂载在同一父节点下）
+    const outDegree = {};
+    const parentOf = {};
+    for (const b of data.blocks) {
+      outDegree[b.id] = 0;
+      parentOf[b.id] = [];
+    }
+    for (const conn of data.connections) {
+      outDegree[conn.fromId] = (outDegree[conn.fromId] || 0) + 1;
+      if (parentOf[conn.toId]) parentOf[conn.toId].push(conn.fromId);
+    }
+
+    const leafGroups = {};
+    for (const b of data.blocks) {
+      if (outDegree[b.id] === 0 && parentOf[b.id].length === 1) {
+        const pid = parentOf[b.id][0];
+        if (!leafGroups[pid]) leafGroups[pid] = [];
+        leafGroups[pid].push(b.id);
+      }
+    }
+
+    const leafClusters = {};
+    for (const [pid, leafIds] of Object.entries(leafGroups)) {
+      if (leafIds.length >= 3) {
+        leafClusters[pid] = leafIds;
+      }
+    }
+
+    console.log('\n=== 叶子聚类 ===');
+    for (const [pid, leafIds] of Object.entries(leafClusters)) {
+      console.log(`${blockMap[pid]?.label || pid}: ${leafIds.length} 个叶子`);
+      for (const id of leafIds) {
+        const h = getBlockHeight(blockMap[id]);
+        console.log(`  - ${blockMap[id]?.label} (高${h}px)`);
+      }
+    }
+
+    // 模拟矩阵排布
+    const rootChildren = childrenMap['root'] || [];
+    console.log('\n=== root 的子节点 ===');
+    rootChildren.forEach(id => {
+      const b = blockMap[id];
+      console.log(`${b.label}: x=${b.x}, y=${b.y}, w=${b.width}, h=${b.height}`);
+    });
+
+    // 检查"教育"和"商业"的 X 范围
+    const education = blockMap['ai_education'];
+    const business = blockMap['ai_business'];
+
+    console.log('\n=== X 范围分析 ===');
+    console.log(`教育：x=${education.x}, right=${education.x + education.width}`);
+    console.log(`商业：x=${business.x}, right=${business.x + business.width}`);
+
+    const X_GAP = 10;
+    const xOverlap = education.x < business.right + X_GAP && education.x + education.width + X_GAP > business.x;
+    console.log(`X 重叠：${xOverlap}`);
+
+    console.log('\n=== Y 范围分析 ===');
+    console.log(`教育：y=${education.y}, bottom=${education.y + education.height}`);
+    console.log(`商业：y=${business.y}, top=${business.y}`);
+    console.log(`教育底部到商业顶部的间隙：${business.y - (education.y + education.height)}`);
+
+    // 渲染块
+    const canvas = document.getElementById('canvas');
+    for (const b of data.blocks) {
+      const el = document.createElement('div');
+      el.className = 'block';
+      el.style.left = `${b.x + 1000}px`;
+      el.style.top = `${b.y}px`;
+      el.style.width = `${b.width}px`;
+      el.style.height = `${Math.min(b.height, 200)}px`;
+      el.textContent = b.label;
+      if (b.height > 500) el.classList.add('tall');
+      if (b.id === 'ai_business') el.classList.add('pushed');
+      canvas.appendChild(el);
+    }
+
+    document.getElementById('output').textContent = `
+结论:
+1. 教育块 X 范围：[${education.x}, ${education.x + education.width}]
+2. 商业块 X 范围：[${business.x}, ${business.x + business.width}]
+3. X 重叠判断：${xOverlap ? '有重叠' : '无重叠'}
+4. 教育块底部 Y=${education.y + education.height}
+5. 商业块顶部 Y=${business.y}
+6. 间隙 = ${business.y - (education.y + education.height)}px
+
+${xOverlap ? '→ 教育块会推开商业块' : '→ 教育块不会推开商业块'}
+    `;
+  </script>
+</body>
+</html>

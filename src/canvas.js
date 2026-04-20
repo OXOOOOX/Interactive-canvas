@@ -35,6 +35,16 @@ let onCreateBlock = () => {};
 
 /** 剪刀模式状态 */
 let scissorsMode = false;
+let resetPanInteraction = () => {};
+let $linkDeleteHint = null;
+let isCtrlPressed = false;
+
+function refreshAfterConnectionDelete() {
+  resetPanInteraction();
+  hideLinkDeleteHint();
+  renderBlocks();
+  onCanvasChange();
+}
 
 /** 初始化画布 */
 export function initCanvas(callbacks) {
@@ -478,9 +488,6 @@ function hideCtxMenu() {
 //  CONNECTION LINE DELETE (Ctrl + Click)
 // ═══════════════════════════════════════
 
-let isCtrlPressed = false;
-let $linkDeleteHint = null;
-
 function handleLinkMouseEnter(e) {
   if (isCtrlPressed) {
     e.target.classList.add('ctrl-hover');
@@ -502,10 +509,7 @@ function handleLinkClick(e) {
     if (connIndex !== -1) {
       appState.canvas.connections.splice(connIndex, 1);
       pushHistory();
-      renderLinks();
-      updateMinimap();
-      onCanvasChange();
-      hideLinkDeleteHint();
+      refreshAfterConnectionDelete();
     }
   }
 }
@@ -558,9 +562,7 @@ function deleteConnection(connId) {
   if (connIndex !== -1) {
     appState.canvas.connections.splice(connIndex, 1);
     pushHistory();
-    renderLinks();
-    updateMinimap();
-    onCanvasChange();
+    refreshAfterConnectionDelete();
   }
 }
 
@@ -617,16 +619,16 @@ function makeEditable(el, block, field) {
     el.contentEditable = 'false';
     el.classList.remove('editing');
     const newText = el.textContent.trim();
-    if (newText !== (block[field] || '')) {
+    const changed = newText !== (block[field] || '');
+    if (changed) {
       block[field] = newText;
-      // Auto-adjust: clear explicit height so block fits content
       delete block.height;
       const blockEl = el.closest('.mm-block');
       if (blockEl) blockEl.style.height = '';
       pushHistory();
-      onCanvasChange();
+      onCanvasChange({ relayout: field === 'content' || field === 'label', pushHistoryEntry: false, changedBlockIds: [block.id] });
+      if (field === 'content' || field === 'label') return;
     }
-    // If content is empty, restore placeholder
     if (field === 'content' && !block.content) {
       el.textContent = '点击添加内容…';
       el.classList.add('mm-content-placeholder');
@@ -635,7 +637,6 @@ function makeEditable(el, block, field) {
     } else if (field === 'label') {
       el.textContent = block.label;
     }
-    // Re-render links since node height may have changed
     renderLinks();
   };
 
@@ -675,6 +676,17 @@ function applyTransform() {
 function setupPanZoom() {
   let isPanning = false;
   let startX, startY;
+  let spaceDown = false;
+
+  function endPanInteraction({ clearSpace = false } = {}) {
+    isPanning = false;
+    if (clearSpace) spaceDown = false;
+    if (!spaceDown) $view.classList.remove('grabbing');
+  }
+
+  resetPanInteraction = () => {
+    endPanInteraction({ clearSpace: false });
+  };
 
   // 鼠标滚轮缩放
   $view.addEventListener('wheel', (e) => {
@@ -695,7 +707,6 @@ function setupPanZoom() {
   }, { passive: false });
 
   // 中键 / 空格+左键 拖拽
-  let spaceDown = false;
   document.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.repeat && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'INPUT' && !e.target.isContentEditable) {
       spaceDown = true;
@@ -729,10 +740,13 @@ function setupPanZoom() {
   });
 
   $view.addEventListener('pointerup', () => {
-    if (isPanning) {
-      isPanning = false;
-      if (!spaceDown) $view.classList.remove('grabbing');
-    }
+    if (isPanning) endPanInteraction();
+  });
+  $view.addEventListener('pointercancel', () => {
+    if (isPanning) endPanInteraction();
+  });
+  $view.addEventListener('lostpointercapture', () => {
+    if (isPanning) endPanInteraction();
   });
 }
 
@@ -970,37 +984,64 @@ function renderLinks() {
    * 在贝塞尔曲线上均匀采样，检测是否穿过障碍物
    * 返回碰撞的障碍物列表
    */
-  function findObstacles(sx, sy, ex, ey, fromId, toId) {
+  function findObstacles(sx, sy, ex, ey, fromId, toId, { strict = false } = {}) {
     const hitIds = new Set();
-    // 对直线 sx,sy → ex,ey 检测（贝塞尔曲线的凸包近似）
-    // 同时在多段采样检测
     const SAMPLES = 12;
     for (const rect of blockRects) {
       if (rect.id === fromId || rect.id === toId) continue;
 
-      // 快速检测：直线段碰撞
-      if (lineIntersectsRect(sx, sy, ex, ey, rect)) {
+      const targetRect = strict
+        ? {
+            ...rect,
+            left: rect.origLeft,
+            top: rect.origTop,
+            right: rect.origRight,
+            bottom: rect.origBottom,
+          }
+        : rect;
+
+      if (lineIntersectsRect(sx, sy, ex, ey, targetRect)) {
         hitIds.add(rect.id);
         continue;
       }
 
-      // 采样检测贝塞尔曲线
       const midY = (sy + ey) / 2;
       for (let i = 0; i < SAMPLES; i++) {
         const t1 = i / SAMPLES;
         const t2 = (i + 1) / SAMPLES;
-        // 三次贝塞尔 M sx sy C sx midY, ex midY, ex ey
         const p1x = bezierCubicX(t1, sx, sx, ex, ex);
         const p1y = bezierCubicY(t1, sy, midY, midY, ey);
         const p2x = bezierCubicX(t2, sx, sx, ex, ex);
         const p2y = bezierCubicY(t2, sy, midY, midY, ey);
-        if (lineIntersectsRect(p1x, p1y, p2x, p2y, rect)) {
+        if (lineIntersectsRect(p1x, p1y, p2x, p2y, targetRect)) {
           hitIds.add(rect.id);
           break;
         }
       }
     }
     return [...hitIds].map(id => blockRects.find(r => r.id === id)).filter(Boolean);
+  }
+
+  function createStructuralPath(d, stroke, role) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('stroke', stroke || '#000');
+    path.setAttribute('stroke-width', '3');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('data-link-role', role);
+    path.classList.add('link-structure');
+    path.style.pointerEvents = 'none';
+    $linkLayer.appendChild(path);
+    return path;
+  }
+
+  function isNearlyVerticalPath(sx, sy, ex, ey) {
+    return Math.abs(sx - ex) <= 24 && ey > sy;
+  }
+
+  function canUseStraightVerticalPath(sx, sy, ex, ey, fromId, toId) {
+    if (!isNearlyVerticalPath(sx, sy, ex, ey)) return false;
+    return findObstacles(sx, sy, ex, ey, fromId, toId, { strict: true }).length === 0;
   }
 
   function bezierCubicX(t, p0, p1, p2, p3) {
@@ -1019,50 +1060,56 @@ function renderLinks() {
    */
   function buildDetourPath(sx, sy, ex, ey, obstacles) {
     if (obstacles.length === 0) {
-      // 无碰撞，普通贝塞尔
       const midY = (sy + ey) / 2;
       return `M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`;
     }
 
-    // 将障碍物按 Y 坐标排序（从上到下）
-    obstacles.sort((a, b) => a.top - b.top);
+    const sorted = [...obstacles].sort((a, b) => a.top - b.top);
+    const corridorLeft = Math.min(sx, ex);
+    const corridorRight = Math.max(sx, ex);
+    const sidePadding = 24;
+    const verticalInset = 16;
 
-    // 收集所有障碍物的外边界
-    let totalLeft = Infinity, totalRight = -Infinity;
-    for (const obs of obstacles) {
-      totalLeft = Math.min(totalLeft, obs.left);
-      totalRight = Math.max(totalRight, obs.right);
-    }
+    const blocking = sorted.filter(obs => obs.right > corridorLeft && obs.left < corridorRight);
+    const relevant = blocking.length > 0 ? blocking : sorted;
 
-    // 决定绕行方向：从两侧选择距离较短的
-    const goLeft = Math.abs(sx - totalLeft) + Math.abs(ex - totalLeft) <
-                   Math.abs(sx - totalRight) + Math.abs(ex - totalRight);
-    const detourX = goLeft ? totalLeft - 20 : totalRight + 20;
+    const firstObs = relevant[0];
+    const lastObs = relevant[relevant.length - 1];
 
-    // 构建 L 形绕行路径
-    // 方案：sx,sy → sx,entryY → detourX,entryY → detourX,exitY → ex,exitY → ex,ey
-    const firstObs = obstacles[0];
-    const lastObs = obstacles[obstacles.length - 1];
+    const nearestLeft = Math.max(...relevant.map(obs => obs.left));
+    const nearestRight = Math.min(...relevant.map(obs => obs.right));
+    const leftLane = nearestLeft - sidePadding;
+    const rightLane = nearestRight + sidePadding;
 
-    // 进入绕行的 Y：第一个障碍物上方
-    const entryY = Math.min(sy + 15, firstObs.top - 5);
-    // 退出绕行的 Y：最后一个障碍物下方
-    const exitY = Math.max(ey - 15, lastObs.bottom + 5);
+    const leftCost = Math.abs(sx - leftLane) + Math.abs(ex - leftLane);
+    const rightCost = Math.abs(sx - rightLane) + Math.abs(ex - rightLane);
+    const detourX = leftCost <= rightCost ? leftLane : rightLane;
 
-    // 用圆弧拐角让路径更平滑
-    const R = 15; // 拐角半径
+    const entryBase = Math.min(firstObs.top - verticalInset, sy + 36);
+    const exitBase = Math.max(lastObs.bottom + verticalInset, ey - 36);
+    const entryY = Math.max(sy + 8, Math.min(entryBase, ey - 24));
+    const exitY = Math.min(ey - 8, Math.max(exitBase, sy + 24));
+    const effectiveEntryY = Math.min(entryY, exitY - 16);
+    const effectiveExitY = Math.max(exitY, effectiveEntryY + 16);
 
-    // 简化版：贝塞尔绕行
-    // 从起点出发 → 下降到 entryY → 水平到 detourX → 垂直绕过 → 水平到终端 → 下降到终点
+    const availableCorner = Math.min(
+      14,
+      Math.max(6, Math.abs(detourX - sx) / 3),
+      Math.max(6, Math.abs(ex - detourX) / 3),
+      Math.max(6, (effectiveExitY - effectiveEntryY) / 4)
+    );
+    const dirFromStart = detourX >= sx ? 1 : -1;
+    const dirToEnd = ex >= detourX ? 1 : -1;
+
     return `M ${sx} ${sy} ` +
-           `L ${sx} ${entryY} ` +
-           `Q ${sx} ${entryY + R}, ${sx + (detourX - sx > 0 ? R : -R)} ${entryY + R} ` +
-           `L ${detourX + (detourX > sx ? -R : R)} ${entryY + R} ` +
-           `Q ${detourX} ${entryY + R}, ${detourX} ${entryY + 2 * R} ` +
-           `L ${detourX} ${exitY - R} ` +
-           `Q ${detourX} ${exitY}, ${detourX + (ex - detourX > 0 ? R : -R)} ${exitY} ` +
-           `L ${ex + (detourX > ex ? R : -R)} ${exitY} ` +
-           `Q ${ex} ${exitY}, ${ex} ${exitY + R} ` +
+           `L ${sx} ${effectiveEntryY} ` +
+           `Q ${sx} ${effectiveEntryY + availableCorner}, ${sx + dirFromStart * availableCorner} ${effectiveEntryY + availableCorner} ` +
+           `L ${detourX - dirFromStart * availableCorner} ${effectiveEntryY + availableCorner} ` +
+           `Q ${detourX} ${effectiveEntryY + availableCorner}, ${detourX} ${effectiveEntryY + 2 * availableCorner} ` +
+           `L ${detourX} ${effectiveExitY - availableCorner} ` +
+           `Q ${detourX} ${effectiveExitY}, ${detourX + dirToEnd * availableCorner} ${effectiveExitY} ` +
+           `L ${ex - dirToEnd * availableCorner} ${effectiveExitY} ` +
+           `Q ${ex} ${effectiveExitY}, ${ex} ${effectiveExitY + availableCorner} ` +
            `L ${ex} ${ey}`;
   }
 
@@ -1112,36 +1159,32 @@ function renderLinks() {
 
     if (conns.length >= 4 && spread > 200) {
       // 梳状布线
-      const trunk = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      trunk.setAttribute('d', `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`);
-      trunk.setAttribute('stroke', from.color || '#000');
-      trunk.setAttribute('stroke-width', '3');
-      trunk.setAttribute('fill', 'none');
-      $linkLayer.appendChild(trunk);
+      createStructuralPath(
+        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        from.color || '#000',
+        'bundle-trunk'
+      );
 
-      const rail = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      rail.setAttribute('d', `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`);
-      rail.setAttribute('stroke', from.color || '#000');
-      rail.setAttribute('stroke-width', '3');
-      rail.setAttribute('fill', 'none');
-      $linkLayer.appendChild(rail);
+      createStructuralPath(
+        `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`,
+        from.color || '#000',
+        'bundle-rail'
+      );
 
       if (parentCx < leftmost || parentCx > rightmost) {
         const railEnd = parentCx < leftmost ? leftmost : rightmost;
-        const elbow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        elbow.setAttribute('d', `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`);
-        elbow.setAttribute('stroke', from.color || '#000');
-        elbow.setAttribute('stroke-width', '3');
-        elbow.setAttribute('fill', 'none');
-        $linkLayer.appendChild(elbow);
+        createStructuralPath(
+          `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`,
+          from.color || '#000',
+          'bundle-elbow'
+        );
       }
     } else {
-      const trunk = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      trunk.setAttribute('d', `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`);
-      trunk.setAttribute('stroke', from.color || '#000');
-      trunk.setAttribute('stroke-width', '3');
-      trunk.setAttribute('fill', 'none');
-      $linkLayer.appendChild(trunk);
+      createStructuralPath(
+        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        from.color || '#000',
+        'bundle-trunk'
+      );
     }
   }
 
@@ -1168,12 +1211,11 @@ function renderLinks() {
     gatherYMap[toId] = gatherY;
     gatherXMap[toId] = toCx;
 
-    const trunk = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    trunk.setAttribute('d', `M ${toCx} ${gatherY} L ${toCx} ${to.y}`);
-    trunk.setAttribute('stroke', to.color || '#000');
-    trunk.setAttribute('stroke-width', '3');
-    trunk.setAttribute('fill', 'none');
-    $linkLayer.appendChild(trunk);
+    createStructuralPath(
+      `M ${toCx} ${gatherY} L ${toCx} ${to.y}`,
+      to.color || '#000',
+      'gather-trunk'
+    );
   }
 
   // ====== 逐条绘制连线 ======
@@ -1213,9 +1255,11 @@ function renderLinks() {
     const gY = gatherYMap[conn.toId];
     const gX = gatherXMap[conn.toId];
 
+    const alignedWithParent = Math.abs(childCx - parentCx) <= 24;
+
     // 计算起点
     let startX, startY;
-    if (jY !== undefined) {
+    if (jY !== undefined && !alignedWithParent) {
       if (useComb) {
         startX = childCx;
         startY = jY;
@@ -1239,13 +1283,21 @@ function renderLinks() {
     }
 
     // ====== 障碍物检测与避让路径 ======
-    const obstacles = findObstacles(startX, startY, endX, endY, conn.fromId, conn.toId);
+    const canGoStraightDown = canUseStraightVerticalPath(startX, startY, endX, endY, conn.fromId, conn.toId);
+    const obstacles = canGoStraightDown
+      ? []
+      : findObstacles(startX, startY, endX, endY, conn.fromId, conn.toId);
 
     let pathD;
-    if (obstacles.length > 0) {
-      // 有碰撞，生成避障路径
+    let routeType;
+    if (canGoStraightDown) {
+      routeType = 'direct';
+      pathD = `M ${startX} ${startY} L ${endX} ${endY}`;
+    } else if (obstacles.length > 0) {
+      routeType = 'detour';
       pathD = buildDetourPath(startX, startY, endX, endY, obstacles);
     } else if (useComb) {
+      routeType = gY !== undefined ? 'comb-gather' : 'comb';
       if (gY !== undefined) {
         const midY = jY + (gY - jY) * 0.5;
         pathD = `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
@@ -1254,6 +1306,7 @@ function renderLinks() {
         pathD = `M ${startX} ${startY} L ${startX} ${dropEnd} C ${startX} ${dropEnd + (y2 - dropEnd) * 0.5}, ${childCx} ${dropEnd + (y2 - dropEnd) * 0.5}, ${childCx} ${y2}`;
       }
     } else if (jY !== undefined) {
+      routeType = gY !== undefined ? 'bundle-gather' : 'bundle';
       if (gY !== undefined) {
         const midY = jY + (gY - jY) * 0.5;
         pathD = `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
@@ -1262,12 +1315,17 @@ function renderLinks() {
         pathD = `M ${startX} ${startY} C ${startX} ${branchCtrlY}, ${childCx} ${branchCtrlY}, ${childCx} ${y2}`;
       }
     } else if (gY !== undefined) {
+      routeType = 'gather';
       const midY = y1 + (gY - y1) * 0.5;
       pathD = `M ${parentCx} ${y1} C ${parentCx} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
     } else {
+      routeType = 'curve';
       const midY = (y1 + y2) / 2;
       pathD = `M ${parentCx} ${y1} C ${parentCx} ${midY}, ${childCx} ${midY}, ${childCx} ${y2}`;
     }
+
+    const isStructuredRoute = routeType === 'bundle' || routeType === 'bundle-gather' || routeType === 'comb' || routeType === 'comb-gather' || routeType === 'gather';
+    const dashRole = routeType === 'detour' ? 'detour' : (isStructuredRoute ? 'structured' : 'flow');
 
     let path = $linkLayer.querySelector(`path[data-conn-id="${conn.id}"]`);
     if (!path) {
@@ -1284,6 +1342,13 @@ function renderLinks() {
       path.addEventListener('click', handleLinkClick);
     }
 
+    path.classList.add('link-conn');
+    path.classList.toggle('link-structured', isStructuredRoute);
+    path.classList.toggle('link-detour', routeType === 'detour');
+    path.setAttribute('data-link-role', 'connection');
+    path.setAttribute('data-route-type', routeType);
+    path.setAttribute('data-dash-role', dashRole);
+
     path.setAttribute('d', pathD);
 
     // 连线颜色跟随父节点颜色
@@ -1295,9 +1360,16 @@ function renderLinks() {
       path.setAttribute('opacity', '1');
     }
 
-    // 计算连线中点（用于剪刀按钮定位）
-    const midX = (startX + endX) / 2;
-    const midY_btn = (startY + endY) / 2;
+    let scissorsPoint = { x: (startX + endX) / 2, y: (startY + endY) / 2 };
+    try {
+      const totalLength = path.getTotalLength();
+      if (Number.isFinite(totalLength) && totalLength > 0) {
+        const midpoint = path.getPointAtLength(totalLength / 2);
+        scissorsPoint = { x: midpoint.x, y: midpoint.y };
+      }
+    } catch (_) {
+      // keep fallback midpoint
+    }
 
     // 为每条连线添加剪刀按钮（触屏模式）
     let scissorsBtn = $scissorsLayer.querySelector(`.link-scissors-btn[data-conn-id="${conn.id}"]`);
@@ -1323,8 +1395,8 @@ function renderLinks() {
       console.log('[剪刀按钮] 创建新按钮，连线 ID:', conn.id);
     }
 
-    const btnLeft = midX - 14;
-    const btnTop = midY_btn - 14;
+    const btnLeft = scissorsPoint.x - 14;
+    const btnTop = scissorsPoint.y - 14;
 
     if (scissorsMode) {
       scissorsBtn.classList.add('visible');
@@ -1912,6 +1984,30 @@ function showNodeToolbar(block) {
 export function hideNodeToolbar() {
   $nodeToolbar.classList.remove('visible');
   $nodeToolbar.setAttribute('aria-hidden', 'true');
+}
+
+/**
+ * 同步 DOM 中块的尺寸到数据对象
+ * 在自动布局前调用，确保使用最新的块尺寸
+ */
+export function syncBlockSizes() {
+  for (const block of appState.canvas.blocks) {
+    const el = $blockCanvas.querySelector(`[data-id="${block.id}"]`);
+    if (!el) continue;
+
+    const computedWidth = parseFloat(getComputedStyle(el).width) || 0;
+    const measuredWidth = computedWidth || el.offsetWidth || 0;
+    const measuredHeight = el.offsetHeight || 0;
+
+    if (measuredWidth > 0) {
+      const currentWidth = block.width || BLOCK_DEFAULT_W;
+      block.width = Math.max(BLOCK_MIN_W, currentWidth, Math.round(measuredWidth));
+    }
+
+    if (measuredHeight > 0) {
+      block.height = Math.max(BLOCK_MIN_H, Math.round(measuredHeight));
+    }
+  }
 }
 
 // ═══════════════════════════════════════

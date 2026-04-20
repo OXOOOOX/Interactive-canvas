@@ -23,6 +23,8 @@ const GRID_V_GAP = 30;           // 叶子网格内垂直间距
 const GRID_MAX_COLS = 3;         // 网格每行最大列数
 const GRID_PARENT_OFFSET = 40;   // 网格与父节点底部的垂直偏移
 const LEAF_CLUSTER_MIN = 3;      // 叶子聚类最小数量阈值
+const TALL_LEAF_HEIGHT_THRESHOLD = 500;
+const TALL_LEAF_OFFSET = 60;
 
 /**
  * 获取块的实际宽度
@@ -36,6 +38,309 @@ function getBlockWidth(block) {
  */
 function getBlockHeight(block) {
   return block.height || BLOCK_H;
+}
+
+function findDuplicateBlockIds(blocks) {
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const block of blocks) {
+    if (seen.has(block.id)) duplicates.add(block.id);
+    else seen.add(block.id);
+  }
+  return [...duplicates];
+}
+
+function hasDuplicateBlockIds(blocks) {
+  return findDuplicateBlockIds(blocks).length > 0;
+}
+
+function getClusterAnchorX(cluster, blockMap) {
+  const parent = blockMap[cluster.parentId];
+  if (!parent) return null;
+  const parentCenter = parent.x + getBlockWidth(parent) / 2;
+  const distance = Math.max(260, Math.min(520, cluster.leafIds.length * 70));
+  return parentCenter + getClusterOuterDir(cluster) * distance;
+}
+
+function enforceClusterOuterSide(cluster, blockMap) {
+  if (!cluster?.bbox) return;
+  const anchorX = getClusterAnchorX(cluster, blockMap);
+  if (anchorX === null) return;
+
+  const clusterCenter = (cluster.bbox.minX + cluster.bbox.maxX) / 2;
+  if (getClusterOuterDir(cluster) < 0 && clusterCenter > anchorX) {
+    moveCluster(cluster, anchorX - clusterCenter, 0, blockMap);
+  } else if (getClusterOuterDir(cluster) > 0 && clusterCenter < anchorX) {
+    moveCluster(cluster, anchorX - clusterCenter, 0, blockMap);
+  }
+}
+
+function preserveClusterOuterSide(cluster, blockMap, prevCenterX) {
+  if (prevCenterX === null || prevCenterX === undefined || !cluster?.bbox) return;
+  const clusterCenter = (cluster.bbox.minX + cluster.bbox.maxX) / 2;
+
+  if (getClusterOuterDir(cluster) < 0 && clusterCenter > prevCenterX) {
+    moveCluster(cluster, prevCenterX - clusterCenter, 0, blockMap);
+  } else if (getClusterOuterDir(cluster) > 0 && clusterCenter < prevCenterX) {
+    moveCluster(cluster, prevCenterX - clusterCenter, 0, blockMap);
+  }
+}
+
+function refreshClusterOuterConstraint(cluster, blockMap) {
+  updateClusterBoundingBox(cluster, blockMap);
+  enforceClusterOuterSide(cluster, blockMap);
+  updateClusterBoundingBox(cluster, blockMap);
+}
+
+function getClusterCenterX(cluster) {
+  if (!cluster?.bbox) return null;
+  return (cluster.bbox.minX + cluster.bbox.maxX) / 2;
+}
+
+function moveClusterVertically(cluster, dy, blockMap) {
+  moveCluster(cluster, 0, dy, blockMap);
+}
+
+function pushClusterFurtherOut(cluster, dx, blockMap) {
+  const outwardDx = getClusterOuterDir(cluster) < 0 ? Math.min(dx, 0) : Math.max(dx, 0);
+  moveCluster(cluster, outwardDx, 0, blockMap);
+}
+
+function getOuterPreservingShift(cluster, block, padding) {
+  const bounds = cluster.bbox;
+  const blockBounds = {
+    minX: block.x,
+    minY: block.y,
+    maxX: block.x + getBlockWidth(block),
+    maxY: block.y + getBlockHeight(block),
+  };
+  if (!bounds || !overlapsBox(getClusterBoundsWithPadding(cluster, padding), blockBounds)) {
+    return { dx: 0, dy: 0 };
+  }
+
+  const horizontalDx = getClusterOuterDir(cluster) < 0
+    ? blockBounds.minX - padding - bounds.maxX
+    : blockBounds.maxX + padding - bounds.minX;
+  const verticalDy = blockBounds.maxY + padding - bounds.minY;
+  return { dx: horizontalDx, dy: verticalDy };
+}
+
+function getClusterCenterDistanceFromParent(cluster, blockMap) {
+  const parent = blockMap[cluster.parentId];
+  if (!parent || !cluster?.bbox) return 0;
+  const parentCenter = parent.x + getBlockWidth(parent) / 2;
+  const clusterCenter = (cluster.bbox.minX + cluster.bbox.maxX) / 2;
+  return clusterCenter - parentCenter;
+}
+
+function chooseClusterShift(cluster, block, padding) {
+  const shift = getOuterPreservingShift(cluster, block, padding);
+  if (!shift.dx && !shift.dy) return shift;
+  const horizontalClear = Math.abs(shift.dx) + padding;
+  const verticalClear = Math.abs(shift.dy);
+  if (horizontalClear <= verticalClear + 80) return { dx: shift.dx, dy: 0 };
+  return { dx: 0, dy: shift.dy };
+}
+
+function getClusterPairSeparation(a, b, padding) {
+  if (!a.bbox || !b.bbox) return { dx: 0, dy: 0 };
+  if (!hasOverlapWithCluster(a, b, padding)) return { dx: 0, dy: 0 };
+  const dy = getClusterVerticalSeparation(a, b, padding);
+  return { dx: 0, dy };
+}
+
+function keepClusterOutsideParent(cluster, blockMap) {
+  refreshClusterOuterConstraint(cluster, blockMap);
+}
+
+function keepClustersOutsideParents(clusters, blockMap) {
+  for (const cluster of Object.values(clusters)) {
+    keepClusterOutsideParent(cluster, blockMap);
+  }
+}
+
+function getClusterHorizontalDirection(cluster) {
+  return getClusterOuterDir(cluster) < 0 ? -1 : 1;
+}
+
+function getOutwardTargetX(cluster, block, padding) {
+  const blockBounds = {
+    minX: block.x,
+    maxX: block.x + getBlockWidth(block),
+  };
+  if (getClusterOuterDir(cluster) < 0) {
+    return blockBounds.minX - padding - (cluster.bbox.maxX - cluster.bbox.minX);
+  }
+  return blockBounds.maxX + padding;
+}
+
+function moveClusterOutwardFromBlock(cluster, block, padding, blockMap) {
+  const targetX = getOutwardTargetX(cluster, block, padding);
+  const currentLeft = cluster.bbox.minX;
+  const currentRight = cluster.bbox.maxX;
+  const dx = getClusterOuterDir(cluster) < 0
+    ? targetX - currentLeft
+    : targetX - currentLeft;
+  pushClusterFurtherOut(cluster, dx, blockMap);
+  updateClusterBoundingBox(cluster, blockMap);
+}
+
+function tryResolveClusterAgainstBlock(cluster, block, padding, blockMap) {
+  const previousCenter = getClusterCenterX(cluster);
+  const shift = chooseClusterShift(cluster, block, padding);
+  if (!shift.dx && !shift.dy) return false;
+
+  if (shift.dx) pushClusterFurtherOut(cluster, shift.dx, blockMap);
+  if (shift.dy) moveClusterVertically(cluster, shift.dy, blockMap);
+  preserveClusterOuterSide(cluster, blockMap, previousCenter);
+  refreshClusterOuterConstraint(cluster, blockMap);
+  return true;
+}
+
+function tryResolveClusterPair(a, b, padding, blockMap) {
+  const shift = getClusterPairSeparation(a, b, padding);
+  if (!shift.dx && !shift.dy) return false;
+  if (a.bbox.minY <= b.bbox.minY) {
+    moveClusterVertically(b, shift.dy, blockMap);
+    refreshClusterOuterConstraint(b, blockMap);
+  } else {
+    moveClusterVertically(a, shift.dy, blockMap);
+    refreshClusterOuterConstraint(a, blockMap);
+  }
+  return true;
+}
+
+function clampClusterDistance(cluster, blockMap) {
+  const parent = blockMap[cluster.parentId];
+  if (!parent || !cluster.bbox) return;
+
+  const parentCenter = parent.x + getBlockWidth(parent) / 2;
+  const maxDistance = Math.max(260, Math.min(520, cluster.leafIds.length * 70));
+  const clusterCenter = (cluster.bbox.minX + cluster.bbox.maxX) / 2;
+  const delta = clusterCenter - parentCenter;
+  if (Math.abs(delta) <= maxDistance) return;
+
+  const targetCenter = parentCenter + Math.sign(delta) * maxDistance;
+  moveCluster(cluster, targetCenter - clusterCenter, 0, blockMap);
+}
+
+function updateClusterBoundingBox(cluster, blockMap) {
+  const boxes = cluster.leafIds
+    .map(id => blockMap[id])
+    .filter(block => block && block.x !== undefined && block.y !== undefined)
+    .map(block => ({
+      minX: block.x,
+      minY: block.y,
+      maxX: block.x + getBlockWidth(block),
+      maxY: block.y + getBlockHeight(block),
+    }));
+
+  if (boxes.length === 0) {
+    cluster.bbox = null;
+    return null;
+  }
+
+  const bbox = {
+    minX: Math.min(...boxes.map(box => box.minX)),
+    minY: Math.min(...boxes.map(box => box.minY)),
+    maxX: Math.max(...boxes.map(box => box.maxX)),
+    maxY: Math.max(...boxes.map(box => box.maxY)),
+  };
+  cluster.bbox = bbox;
+  return bbox;
+}
+
+function moveCluster(cluster, dx, dy, blockMap) {
+  if (!dx && !dy) return;
+  for (const leafId of cluster.leafIds) {
+    const leaf = blockMap[leafId];
+    if (!leaf || leaf.locked || leaf.x === undefined || leaf.y === undefined) continue;
+    leaf.x += dx;
+    leaf.y += dy;
+  }
+  updateClusterBoundingBox(cluster, blockMap);
+}
+
+function getClusterOuterBounds(cluster, padding = 0) {
+  if (!cluster?.bbox) return null;
+  return {
+    minX: cluster.bbox.minX - padding,
+    minY: cluster.bbox.minY - padding,
+    maxX: cluster.bbox.maxX + padding,
+    maxY: cluster.bbox.maxY + padding,
+  };
+}
+
+function overlapsBox(a, b) {
+  return a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY;
+}
+
+function identifyLeafClusters(blocks, connections, blockMap) {
+  const outDegree = {};
+  const parentOf = {};
+  for (const b of blocks) {
+    outDegree[b.id] = 0;
+    parentOf[b.id] = [];
+  }
+  for (const conn of connections) {
+    outDegree[conn.fromId] = (outDegree[conn.fromId] || 0) + 1;
+    if (parentOf[conn.toId]) parentOf[conn.toId].push(conn.fromId);
+  }
+
+  const leafGroups = {};
+  for (const b of blocks) {
+    if (outDegree[b.id] === 0 && parentOf[b.id].length === 1) {
+      const pid = parentOf[b.id][0];
+      if (!leafGroups[pid]) leafGroups[pid] = [];
+      leafGroups[pid].push(b.id);
+    }
+  }
+
+  const clusters = {};
+  for (const [pid, leafIds] of Object.entries(leafGroups)) {
+    if (leafIds.length < LEAF_CLUSTER_MIN) continue;
+
+    const normalLeafIds = [];
+    const tallLeafIds = [];
+    let maxLeafW = 0;
+    let maxLeafH = 0;
+
+    for (const leafId of leafIds) {
+      const leaf = blockMap[leafId];
+      if (!leaf) continue;
+      const width = getBlockWidth(leaf);
+      const height = getBlockHeight(leaf);
+      maxLeafW = Math.max(maxLeafW, width);
+      maxLeafH = Math.max(maxLeafH, height);
+      if (height > TALL_LEAF_HEIGHT_THRESHOLD) tallLeafIds.push(leafId);
+      else normalLeafIds.push(leafId);
+    }
+
+    const gridCols = Math.min(Math.max(normalLeafIds.length, 1), GRID_MAX_COLS);
+    const gridRows = normalLeafIds.length > 0 ? Math.ceil(normalLeafIds.length / gridCols) : 0;
+    const gridW = normalLeafIds.length > 0
+      ? gridCols * maxLeafW + (gridCols - 1) * GRID_H_GAP
+      : maxLeafW;
+    const gridH = normalLeafIds.length > 0
+      ? gridRows * maxLeafH + Math.max(gridRows - 1, 0) * GRID_V_GAP
+      : 0;
+
+    clusters[pid] = {
+      parentId: pid,
+      leafIds: [...leafIds],
+      normalLeafIds,
+      tallLeafIds,
+      maxLeafW,
+      maxLeafH,
+      gridCols,
+      gridRows,
+      gridW,
+      gridH,
+      bbox: null,
+      outerDir: 1,
+    };
+  }
+  return clusters;
 }
 
 /**
@@ -441,14 +746,12 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
   const layerNumbers = Object.keys(orderedLayers).map(Number).sort((a, b) => a - b);
   let currentY = 80;
 
-  // 构建父子映射
   const parentMap = {};
   blocks.forEach(b => { parentMap[b.id] = []; });
   connections.forEach(c => {
     if (parentMap[c.toId]) parentMap[c.toId].push(c.fromId);
   });
 
-  // 获取期望居中位置
   function getTargetInfo(id) {
     const parents = parentMap[id] || [];
     let sumCx = 0; let counted = 0;
@@ -458,8 +761,17 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
         counted++;
       }
     }
+
+    let targetCx = counted > 0 ? sumCx / counted : null;
+    if (parents.length === 1) {
+      const parent = blockMap[parents[0]];
+      if (parent && parent.x !== undefined) {
+        targetCx = parent.x + getBlockWidth(parent) / 2;
+      }
+    }
+
     return {
-      targetCx: counted > 0 ? sumCx / counted : null,
+      targetCx,
       parentIds: new Set(parents)
     };
   }
@@ -483,7 +795,6 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
       continue;
     }
 
-    // 1. 初始化每个节点为独立的 Cluster
     let clusters = realBlockIds.map(id => {
       const w = getBlockWidth(blockMap[id]);
       const info = getTargetInfo(id);
@@ -495,7 +806,6 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
       };
     });
 
-    // 2. 对于没有父节点（targetCx 为 null）的根层分配大致距离
     const defaultGap = 300;
     let noTargetCount = clusters.filter(c => c.targetCx === null).length;
     let curX = - ((noTargetCount - 1) * defaultGap) / 2;
@@ -506,7 +816,8 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
       }
     });
 
-    // 3. 处理 Cluster 间的重叠，如有重叠则合并
+    clusters.sort((a, b) => a.targetCx - b.targetCx);
+
     let merged = true;
     while (merged) {
       merged = false;
@@ -514,7 +825,7 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
         const c1 = clusters[i];
         const c2 = clusters[i + 1];
 
-        const right1 = c1.targetCx - c1.width / 2 + c1.width;
+        const right1 = c1.targetCx + c1.width / 2;
         const left2 = c2.targetCx - c2.width / 2;
 
         const lastNodeId = c1.nodes[c1.nodes.length - 1];
@@ -524,14 +835,12 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
         let sharedParent = false;
         c1.parentIds.forEach(p => { if (c2.parentIds.has(p)) sharedParent = true; });
         if (!sharedParent || (c1.parentIds.size === 0 && c2.parentIds.size === 0)) {
-          gap += 100; // 跨分支时增加额外呼吸余量
+          gap += 100;
         }
 
         if (right1 + gap > left2) {
           const totalWidth = c1.width + gap + c2.width;
-          // 重心偏移混合
           const newTargetCx = (c1.targetCx * c1.width + c2.targetCx * c2.width) / (c1.width + c2.width);
-
           const mergedParents = new Set([...c1.parentIds, ...c2.parentIds]);
 
           clusters.splice(i, 2, {
@@ -544,9 +853,9 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
           break;
         }
       }
+      if (merged) clusters.sort((a, b) => a.targetCx - b.targetCx);
     }
 
-    // 4. 定位并分配各个节点实际 X 坐标
     for (const c of clusters) {
       let startX = c.targetCx - c.width / 2;
       for (let i = 0; i < c.nodes.length; i++) {
@@ -572,10 +881,16 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
       }
     }
 
+    const chainProtection = buildCenteredChainProtection(realBlockIds.map(id => blockMap[id]).filter(Boolean), connections);
+    resolveHorizontalOverlaps(
+      realBlockIds.map(id => blockMap[id]).filter(Boolean),
+      connections,
+      parentMap,
+      { protectedIds: chainProtection.protectedIds }
+    );
     currentY += maxHeight + maxVGap;
   }
 
-  // 最终：确保所有节点 x >= 100
   let minX = Infinity;
   for (const b of blocks) {
     if (b.x !== undefined && b.x < minX) minX = b.x;
@@ -590,6 +905,720 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
   }
 }
 
+function resolveHorizontalOverlaps(blocks, connections, parentMap = {}, options = {}) {
+  const movableBlocks = blocks.filter(b => !b.isVirtual && b.x !== undefined && b.y !== undefined);
+  if (movableBlocks.length <= 1) return;
+
+  const protectedIds = options.protectedIds || new Set();
+
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    const sorted = [...movableBlocks].sort((a, b) => a.x - b.x || a.y - b.y);
+
+    for (let i = 0; i < sorted.length; i++) {
+      const left = sorted[i];
+      const leftBottom = left.y + getBlockHeight(left);
+      const leftRight = left.x + getBlockWidth(left);
+
+      for (let j = i + 1; j < sorted.length; j++) {
+        const right = sorted[j];
+        const rightBottom = right.y + getBlockHeight(right);
+        const overlapY = left.y < rightBottom && leftBottom > right.y;
+        if (!overlapY) continue;
+
+        const leftParents = parentMap[left.id] || [];
+        const rightParents = parentMap[right.id] || [];
+        const sharedParent = leftParents.some(parentId => rightParents.includes(parentId));
+        let gap = Math.max(getSmartHGap(left, connections), getSmartHGap(right, connections));
+        if (!sharedParent || (leftParents.length === 0 && rightParents.length === 0)) {
+          gap += 100;
+        }
+
+        const minRightX = leftRight + gap;
+        const rightProtected = protectedIds.has(right.id);
+        const leftProtected = protectedIds.has(left.id);
+        if (right.x < minRightX && !right.locked) {
+          if (rightProtected && !leftProtected) continue;
+          right.x = minRightX;
+          moved = true;
+        }
+      }
+    }
+
+    if (!moved) break;
+  }
+}
+
+function buildParentMap(blocks, connections) {
+  const parentMap = {};
+  blocks.forEach(block => { parentMap[block.id] = []; });
+  connections.forEach(conn => {
+    if (parentMap[conn.toId]) parentMap[conn.toId].push(conn.fromId);
+  });
+  return parentMap;
+}
+
+function buildChildMap(blocks, connections) {
+  const childMap = {};
+  blocks.forEach(block => { childMap[block.id] = []; });
+  connections.forEach(conn => {
+    if (childMap[conn.fromId]) childMap[conn.fromId].push(conn.toId);
+  });
+  return childMap;
+}
+
+function buildCenteredChainProtection(blocks, connections, blockedIds = new Set()) {
+  const blockMap = {};
+  for (const block of blocks) {
+    if (block.isVirtual) continue;
+    blockMap[block.id] = block;
+  }
+
+  const parentMap = buildParentMap(blocks, connections);
+  const childMap = buildChildMap(blocks, connections);
+  const protectedIds = new Set();
+  const CENTER_TOLERANCE = 12;
+
+  for (const block of blocks) {
+    if (!block || block.isVirtual || block.locked || blockedIds.has(block.id)) continue;
+    if (block.x === undefined || block.y === undefined) continue;
+
+    const parents = parentMap[block.id] || [];
+    const children = childMap[block.id] || [];
+    if (parents.length !== 1 || children.length > 1) continue;
+
+    const parent = blockMap[parents[0]];
+    if (!parent || parent.locked || blockedIds.has(parent.id)) continue;
+
+    const targetX = parent.x + getBlockWidth(parent) / 2 - getBlockWidth(block) / 2;
+    if (Math.abs(block.x - targetX) <= CENTER_TOLERANCE) {
+      protectedIds.add(block.id);
+    }
+  }
+
+  return { protectedIds, parentMap, childMap, blockMap };
+}
+
+function buildLayerBands(blocks, tolerance = 60) {
+  const bands = [];
+  const sorted = [...blocks].filter(b => !b.isVirtual && b.y !== undefined).sort((a, b) => a.y - b.y);
+  for (const block of sorted) {
+    const topY = block.y;
+    let band = bands.find(item => Math.abs(item.topY - topY) <= tolerance);
+    if (!band) {
+      band = { topY, blocks: [] };
+      bands.push(band);
+    }
+    band.blocks.push(block);
+    band.topY = (band.topY * (band.blocks.length - 1) + topY) / band.blocks.length;
+  }
+  return bands;
+}
+
+function resolveLayerBandOverlaps(blocks, connections, options = {}) {
+  const parentMap = buildParentMap(blocks, connections);
+  const protectedIds = options.protectedIds || buildCenteredChainProtection(blocks, connections, options.blockedIds || new Set()).protectedIds;
+  for (const band of buildLayerBands(blocks)) {
+    resolveHorizontalOverlaps(band.blocks, connections, parentMap, { protectedIds });
+  }
+}
+
+function resolveResidualSkeletonOverlaps(blocks, connections) {
+  const movableBlocks = blocks.filter(block => !block.isVirtual && block.x !== undefined && block.y !== undefined);
+  if (movableBlocks.length <= 1) return;
+
+  const parentMap = buildParentMap(blocks, connections);
+  const childMap = buildChildMap(blocks, connections);
+
+  function isDirectChainPair(upper, lower) {
+    if (!upper || !lower) return false;
+    if ((childMap[upper.id] || []).length === 1 && childMap[upper.id][0] === lower.id) return true;
+    if ((parentMap[upper.id] || []).length === 1 && parentMap[upper.id][0] === lower.id) return true;
+    return false;
+  }
+
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    const sorted = [...movableBlocks].sort((a, b) => a.y - b.y || a.x - b.x);
+
+    for (let i = 0; i < sorted.length; i++) {
+      const upper = sorted[i];
+      const upperRight = upper.x + getBlockWidth(upper);
+      const upperBottom = upper.y + getBlockHeight(upper);
+
+      for (let j = i + 1; j < sorted.length; j++) {
+        const lower = sorted[j];
+        const lowerRight = lower.x + getBlockWidth(lower);
+        const lowerBottom = lower.y + getBlockHeight(lower);
+        const overlaps = upper.x < lowerRight && upperRight > lower.x && upper.y < lowerBottom && upperBottom > lower.y;
+        if (!overlaps) continue;
+
+        if (isDirectChainPair(upper, lower)) {
+          const gapY = Math.max(MIN_V_GAP, Math.round(Math.max(getSmartVGap(upper, connections), getSmartVGap(lower, connections)) * 0.35));
+          const nextY = upperBottom + gapY;
+          if (!lower.locked && lower.y < nextY) {
+            lower.y = nextY;
+            moved = true;
+          }
+          continue;
+        }
+
+        if (Math.abs(upper.y - lower.y) <= 60) {
+          const gap = Math.max(getSmartHGap(upper, connections), getSmartHGap(lower, connections));
+          const nextX = upperRight + gap;
+          if (!lower.locked && lower.x < nextX) {
+            lower.x = nextX;
+            moved = true;
+          }
+        } else {
+          const gapY = Math.max(MIN_V_GAP, Math.round(Math.max(getSmartVGap(upper, connections), getSmartVGap(lower, connections)) * 0.35));
+          const nextY = upperBottom + gapY;
+          if (!lower.locked && lower.y < nextY) {
+            lower.y = nextY;
+            moved = true;
+          }
+        }
+      }
+    }
+
+    if (!moved) break;
+  }
+}
+
+function blockIntersectsBounds(block, bounds, padding = 0) {
+  return overlapsBox(
+    {
+      minX: block.x,
+      minY: block.y,
+      maxX: block.x + getBlockWidth(block),
+      maxY: block.y + getBlockHeight(block),
+    },
+    {
+      minX: bounds.minX - padding,
+      minY: bounds.minY - padding,
+      maxX: bounds.maxX + padding,
+      maxY: bounds.maxY + padding,
+    }
+  );
+}
+
+function isBoundsOccupied(bounds, blocks, ignoreIds = new Set(), padding = 0) {
+  return blocks.some(block => {
+    if (ignoreIds.has(block.id) || block.isVirtual || block.x === undefined || block.y === undefined) return false;
+    return blockIntersectsBounds(block, bounds, padding);
+  });
+}
+
+function getPlacedLeafBounds(cluster, blockMap) {
+  updateClusterBoundingBox(cluster, blockMap);
+  return cluster.bbox;
+}
+
+function moveClusterToFreeSlot(cluster, occupiedBlocks, blockMap, baseDx = 0, baseDy = 0, padding = 25) {
+  updateClusterBoundingBox(cluster, blockMap);
+  if (!cluster.bbox) return;
+  if (baseDx || baseDy) moveCluster(cluster, baseDx, baseDy, blockMap);
+
+  const ignoreIds = new Set(cluster.leafIds);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const bounds = getPlacedLeafBounds(cluster, blockMap);
+    if (!bounds || !isBoundsOccupied(bounds, occupiedBlocks, ignoreIds, padding)) return;
+
+    const dx = cluster.outerDir < 0 ? -(bounds.maxX - bounds.minX + GRID_H_GAP) : (bounds.maxX - bounds.minX + GRID_H_GAP);
+    moveCluster(cluster, dx, attempt > 2 ? GRID_V_GAP : 0, blockMap);
+  }
+}
+
+function resolveIntraClusterLeafOverlaps(cluster, blockMap) {
+  const blocks = cluster.leafIds.map(id => blockMap[id]).filter(Boolean);
+  resolveHorizontalOverlaps(blocks, [], {});
+}
+
+function getSkeletonBlocksForPlacement(blocks, strippedIds) {
+  return blocks.filter(b => !strippedIds.has(b.id) && !b.isVirtual && b.x !== undefined && b.y !== undefined);
+}
+
+function getClusterShiftForBlock(cluster, block, outerDir, padding) {
+  return chooseClusterShift(cluster, block, padding);
+}
+
+function getClusterVerticalSeparation(a, b, padding) {
+  if (!a.bbox || !b.bbox) return 0;
+  if (a.bbox.minY <= b.bbox.minY) return a.bbox.maxY + padding - b.bbox.minY;
+  return b.bbox.maxY + padding - a.bbox.minY;
+}
+
+function resolveAllOverlaps(blocks, connections, clusters = null, blockMap = null) {
+  const strippedIds = clusters ? getClusterLeafIdsSet(clusters) : new Set();
+  const skeletonBlocks = blocks.filter(block => !strippedIds.has(block.id));
+  const chainProtection = buildCenteredChainProtection(skeletonBlocks, connections, strippedIds);
+  resolveLayerBandOverlaps(skeletonBlocks, connections, {
+    protectedIds: chainProtection.protectedIds,
+    blockedIds: strippedIds,
+  });
+  resolveResidualSkeletonOverlaps(skeletonBlocks, connections);
+
+  if (clusters && blockMap) {
+    const clusterList = Object.values(clusters);
+    const placedSkeleton = getSkeletonBlocksForPlacement(blocks, strippedIds);
+
+    for (const cluster of clusterList) {
+      refreshClusterConstraint(cluster, blockMap);
+      resolveClusterAgainstSkeleton(cluster, placedSkeleton, blockMap, 25);
+      refreshClusterConstraint(cluster, blockMap);
+    }
+
+    for (let pass = 0; pass < 4; pass++) {
+      let moved = false;
+      for (let i = 0; i < clusterList.length; i++) {
+        for (let j = i + 1; j < clusterList.length; j++) {
+          moved = resolveClusterPair(clusterList[i], clusterList[j], blockMap, 25) || moved;
+        }
+      }
+      if (!moved) break;
+    }
+  }
+}
+
+function getClusterShiftForCluster(a, b, padding) {
+  if (!a.bbox || !b.bbox) return { dx: 0, dy: 0 };
+  if (!hasOverlapWithCluster(a, b, padding)) return { dx: 0, dy: 0 };
+  const dy = getClusterVerticalSeparation(a, b, padding);
+  return { dx: 0, dy };
+}
+
+function getSkeletonBoundsBlocks(blocks, strippedIds) {
+  return getSkeletonBlocksForPlacement(blocks, strippedIds);
+}
+
+function resolveClusterAgainstSkeleton(cluster, skeletonBlocks, blockMap, padding) {
+  for (let pass = 0; pass < 6; pass++) {
+    let moved = false;
+    for (const skeletonBlock of skeletonBlocks) {
+      moved = tryResolveClusterAgainstBlock(cluster, skeletonBlock, padding, blockMap) || moved;
+    }
+    if (!moved) break;
+  }
+}
+
+function resolveClusterPair(a, b, blockMap, padding) {
+  return tryResolveClusterPair(a, b, padding, blockMap);
+}
+
+function validateLayoutInput(blocks) {
+  const duplicateIds = findDuplicateBlockIds(blocks);
+  if (duplicateIds.length === 0) return true;
+
+  console.warn('[autoLayout] Skip layout because duplicate block ids were found:', duplicateIds);
+  return false;
+}
+
+function hasOverlapWithCluster(cluster, otherCluster, padding = 0) {
+  const a = getClusterBoundsWithPadding(cluster, padding);
+  const b = getClusterBoundsWithPadding(otherCluster, padding);
+  return a && b ? overlapsBox(a, b) : false;
+}
+
+function getClusterBoundsWithPadding(cluster, padding = 0) {
+  return getClusterOuterBounds(cluster, padding);
+}
+
+function refreshAllClusterBounds(clusters, blockMap) {
+  for (const cluster of Object.values(clusters)) {
+    updateClusterBoundingBox(cluster, blockMap);
+  }
+}
+
+function refreshClusterConstraint(cluster, blockMap) {
+  refreshClusterOuterConstraint(cluster, blockMap);
+}
+
+function translateCluster(cluster, dx, dy, blockMap) {
+  moveCluster(cluster, dx, dy, blockMap);
+}
+
+function getSkeletonBlocks(blocks, strippedIds) {
+  return blocks.filter(b => !strippedIds.has(b.id));
+}
+
+function getSkeletonConnections(connections, strippedIds) {
+  return connections.filter(c => !strippedIds.has(c.toId) && !strippedIds.has(c.fromId));
+}
+
+function getClusterLeafIdsSet(clusters) {
+  return getStrippedLeafIds(clusters);
+}
+
+function setClusterGridRows(cluster, rows) {
+  cluster.gridRows = rows;
+}
+
+function setClusterGridCols(cluster, cols) {
+  cluster.gridCols = cols;
+}
+
+function setClusterGridSize(cluster, width, height) {
+  cluster.gridW = width;
+  cluster.gridH = height;
+}
+
+function setClusterOuterDir(cluster, dir) {
+  cluster.outerDir = dir;
+}
+
+function getClusterOuterDir(cluster) {
+  return cluster.outerDir || 1;
+}
+
+function getClusterParentId(cluster) {
+  return cluster.parentId;
+}
+
+function getClusterMaxLeafWidth(cluster) {
+  return cluster.maxLeafW || 0;
+}
+
+function getClusterMaxLeafHeight(cluster) {
+  return cluster.maxLeafH || 0;
+}
+
+function getClusterNormalLeafIds(cluster) {
+  return cluster.normalLeafIds;
+}
+
+function getClusterTallLeafIds(cluster) {
+  return cluster.tallLeafIds;
+}
+
+function getClusterBBox(cluster) {
+  return cluster.bbox;
+}
+
+function hasClusters(clusters) {
+  return Object.keys(clusters).length > 0;
+}
+
+function getClusterCount(clusters) {
+  return Object.keys(clusters).length;
+}
+
+function getLeafCount(clusters) {
+  let count = 0;
+  for (const cluster of Object.values(clusters)) count += cluster.leafIds.length;
+  return count;
+}
+
+function getClusterEntries(clusters) {
+  return Object.entries(clusters);
+}
+
+function getStrippedLeafIds(clusters) {
+  const strippedLeafIds = new Set();
+  for (const cluster of Object.values(clusters)) {
+    cluster.leafIds.forEach(id => strippedLeafIds.add(id));
+  }
+  return strippedLeafIds;
+}
+
+function normalizeLayoutBounds(blocks, clusters = null, blockMap = null, padding = 100) {
+  let minX = Infinity;
+  let minY = Infinity;
+
+  for (const block of blocks) {
+    if (block.x === undefined || block.y === undefined) continue;
+    minX = Math.min(minX, block.x);
+    minY = Math.min(minY, block.y);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return;
+
+  const offsetX = padding - minX;
+  const offsetY = 80 - minY;
+  if (offsetX === 0 && offsetY === 0) return;
+
+  for (const block of blocks) {
+    if (!block.locked && block.x !== undefined && block.y !== undefined) {
+      block.x += offsetX;
+      block.y += offsetY;
+    }
+  }
+
+  if (clusters && blockMap) {
+    refreshAllClusterBounds(clusters, blockMap);
+  }
+}
+
+function compactHorizontalBands(blocks, clusters = null) {
+  const blockedIds = new Set();
+  if (clusters) {
+    for (const cluster of Object.values(clusters)) {
+      cluster.leafIds.forEach(id => blockedIds.add(id));
+    }
+  }
+  const movableBlocks = blocks.filter(
+    b => !b.isVirtual && !blockedIds.has(b.id) && b.x !== undefined && b.y !== undefined
+  );
+  const bandTolerance = 90;
+  const bands = [];
+
+  for (const block of movableBlocks.sort((a, b) => a.y - b.y)) {
+    const centerY = block.y + getBlockHeight(block) / 2;
+    let band = bands.find(item => Math.abs(item.centerY - centerY) <= bandTolerance);
+    if (!band) {
+      band = { centerY, blocks: [] };
+      bands.push(band);
+    }
+    band.blocks.push(block);
+    band.centerY = (band.centerY * (band.blocks.length - 1) + centerY) / band.blocks.length;
+  }
+
+  for (const band of bands) {
+    const sorted = [...band.blocks].sort((a, b) => a.x - b.x);
+    if (sorted.length <= 1) continue;
+
+    const originalLeft = sorted[0].x;
+    const originalRight = Math.max(...sorted.map(b => b.x + getBlockWidth(b)));
+    const originalWidth = originalRight - originalLeft;
+
+    let compactWidth = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      compactWidth += getBlockWidth(sorted[i]);
+      if (i < sorted.length - 1) compactWidth += MIN_H_GAP;
+    }
+
+    if (compactWidth >= originalWidth - 40) continue;
+
+    let currentX = originalLeft + (originalWidth - compactWidth) / 2;
+    for (const block of sorted) {
+      if (!block.locked) block.x = currentX;
+      currentX += getBlockWidth(block) + MIN_H_GAP;
+    }
+  }
+}
+
+function stabilizeLeafClusters(clusters, blockMap) {
+  for (const cluster of Object.values(clusters)) {
+    refreshClusterOuterConstraint(cluster, blockMap);
+  }
+}
+
+function alignLinearChains(blocks, connections, clusters = null) {
+  const blockedIds = new Set();
+  if (clusters) {
+    for (const cluster of Object.values(clusters)) {
+      cluster.leafIds.forEach(id => blockedIds.add(id));
+    }
+  }
+
+  const blockMap = {};
+  const parentMap = {};
+  const childMap = {};
+  for (const block of blocks) {
+    if (block.isVirtual) continue;
+    blockMap[block.id] = block;
+    parentMap[block.id] = [];
+    childMap[block.id] = [];
+  }
+  for (const conn of connections) {
+    if (parentMap[conn.toId]) parentMap[conn.toId].push(conn.fromId);
+    if (childMap[conn.fromId]) childMap[conn.fromId].push(conn.toId);
+  }
+
+  const occupiedBlocks = blocks.filter(block => !block.isVirtual && block.x !== undefined && block.y !== undefined);
+
+  function canMoveToX(block, targetX, parentId) {
+    const parent = blockMap[parentId];
+    const candidate = {
+      minX: targetX,
+      minY: block.y,
+      maxX: targetX + getBlockWidth(block),
+      maxY: block.y + getBlockHeight(block),
+    };
+
+    if (parent) {
+      const parentBox = {
+        minX: parent.x,
+        minY: parent.y,
+        maxX: parent.x + getBlockWidth(parent),
+        maxY: parent.y + getBlockHeight(parent),
+      };
+      if (overlapsBox(candidate, parentBox)) return false;
+    }
+
+    for (const other of occupiedBlocks) {
+      if (other.id === block.id || other.id === parentId) continue;
+      const otherBox = {
+        minX: other.x,
+        minY: other.y,
+        maxX: other.x + getBlockWidth(other),
+        maxY: other.y + getBlockHeight(other),
+      };
+      if (overlapsBox(candidate, otherBox)) return false;
+    }
+    return true;
+  }
+
+  function findNearestOpenX(block, targetX, parentId) {
+    if (canMoveToX(block, targetX, parentId)) return targetX;
+
+    const step = 20;
+    const maxShift = 400;
+    for (let offset = step; offset <= maxShift; offset += step) {
+      const leftX = targetX - offset;
+      if (canMoveToX(block, leftX, parentId)) return leftX;
+      const rightX = targetX + offset;
+      if (canMoveToX(block, rightX, parentId)) return rightX;
+    }
+
+    return null;
+  }
+
+  for (const block of blocks) {
+    if (block.isVirtual || block.locked || blockedIds.has(block.id)) continue;
+
+    const parents = parentMap[block.id] || [];
+    const children = childMap[block.id] || [];
+    if (parents.length !== 1 || children.length > 1) continue;
+
+    const parent = blockMap[parents[0]];
+    if (!parent) continue;
+
+    const targetX = parent.x + getBlockWidth(parent) / 2 - getBlockWidth(block) / 2;
+    const nextX = findNearestOpenX(block, targetX, parent.id);
+    if (nextX === null) continue;
+    block.x = nextX;
+  }
+}
+
+function runStablePass(blocks, connections, clusters, blockMap, layerMap) {
+  const beforeSpread = measureLayoutSpread(blocks);
+  const snapshot = blocks.map(block => ({ id: block.id, x: block.x, y: block.y }));
+
+  compactSkeletonLayersY(blocks, layerMap, connections);
+  stabilizeLeafClusters(clusters, blockMap);
+  compactHorizontalBands(blocks, clusters);
+  resolveAllOverlaps(blocks, connections, clusters, blockMap);
+  const blockedIds = clusters ? getClusterLeafIdsSet(clusters) : new Set();
+  const stableBlocks = blocks.filter(block => !block.isVirtual);
+  const stableChainProtection = buildCenteredChainProtection(stableBlocks, connections, blockedIds);
+  resolveLayerBandOverlaps(stableBlocks, connections, {
+    protectedIds: stableChainProtection.protectedIds,
+    blockedIds,
+  });
+  alignLinearChains(blocks, connections, clusters);
+  normalizeLayoutBounds(blocks, clusters, blockMap);
+
+  const afterSpread = measureLayoutSpread(blocks);
+  if (afterSpread > beforeSpread + 120) {
+    const posMap = new Map(snapshot.map(item => [item.id, item]));
+    for (const block of blocks) {
+      const prev = posMap.get(block.id);
+      if (prev && !block.locked) {
+        block.x = prev.x;
+        block.y = prev.y;
+      }
+    }
+    stabilizeLeafClusters(clusters, blockMap);
+    resolveAllOverlaps(blocks, connections, clusters, blockMap);
+    alignLinearChains(blocks, connections, clusters);
+    normalizeLayoutBounds(blocks, clusters, blockMap);
+  }
+}
+
+function compactSkeletonLayersY(blocks, layerMap, connections = []) {
+  const layers = new Map();
+  const blockMap = new Map();
+  const parentIdsByBlock = new Map();
+
+  for (const block of blocks) {
+    if (block.isVirtual) continue;
+    blockMap.set(block.id, block);
+    const layer = layerMap[block.id];
+    if (layer === undefined) continue;
+    if (!layers.has(layer)) layers.set(layer, []);
+    layers.get(layer).push(block);
+  }
+
+  for (const conn of connections) {
+    if (!parentIdsByBlock.has(conn.toId)) parentIdsByBlock.set(conn.toId, []);
+    parentIdsByBlock.get(conn.toId).push(conn.fromId);
+  }
+
+  const sortedLayers = [...layers.keys()].sort((a, b) => a - b);
+  const processedUpperBlocks = [];
+
+  const hasHorizontalOverlap = (upper, lower) => {
+    const upperLeft = upper.x;
+    const upperRight = upper.x + getBlockWidth(upper);
+    const lowerLeft = lower.x;
+    const lowerRight = lower.x + getBlockWidth(lower);
+    return lowerLeft < upperRight && lowerRight > upperLeft;
+  };
+
+  const getCompactionGap = (upper, lower) => {
+    return Math.max(
+      MIN_V_GAP,
+      Math.round(Math.max(getSmartVGap(upper, connections), getSmartVGap(lower, connections)) * 0.35)
+    );
+  };
+
+  for (const layer of sortedLayers) {
+    const layerBlocks = layers.get(layer);
+    if (!layerBlocks || layerBlocks.length === 0) continue;
+
+    if (processedUpperBlocks.length === 0) {
+      const layerTop = Math.min(...layerBlocks.map(block => block.y));
+      const shift = 80 - layerTop;
+      if (shift !== 0) {
+        for (const block of layerBlocks) {
+          if (!block.locked) block.y += shift;
+        }
+      }
+      processedUpperBlocks.push(...layerBlocks);
+      continue;
+    }
+
+    const sortedLayerBlocks = [...layerBlocks].sort((a, b) => {
+      if (a.x !== b.x) return a.x - b.x;
+      return a.y - b.y;
+    });
+
+    for (const block of sortedLayerBlocks) {
+      let targetTop = 80;
+
+      const parentIds = parentIdsByBlock.get(block.id) || [];
+      for (const parentId of parentIds) {
+        const parent = blockMap.get(parentId);
+        if (!parent || parent.isVirtual) continue;
+        targetTop = Math.max(
+          targetTop,
+          parent.y + getBlockHeight(parent) + getCompactionGap(parent, block)
+        );
+      }
+
+      for (const upper of processedUpperBlocks) {
+        if (!hasHorizontalOverlap(upper, block)) continue;
+        targetTop = Math.max(
+          targetTop,
+          upper.y + getBlockHeight(upper) + getCompactionGap(upper, block)
+        );
+      }
+
+      if (!block.locked) {
+        block.y = targetTop;
+      }
+    }
+
+    processedUpperBlocks.push(...sortedLayerBlocks);
+  }
+}
+
+function measureLayoutSpread(blocks) {
+  const visibleBlocks = blocks.filter(b => !b.isVirtual && b.x !== undefined && b.y !== undefined);
+  if (visibleBlocks.length === 0) return 0;
+  const box = getBoundingBox(visibleBlocks, getBlockWidth);
+  return box.width + box.height;
+}
 
 /**
  * 检测并修复连线穿块问题（增强版）
@@ -759,37 +1788,6 @@ function avoidBlockCrossing(blocks, connections) {
  * 找到所有出度为 0 的叶子节点，按单一父节点分组
  * 仅返回满足阈值（≥ LEAF_CLUSTER_MIN）的组
  */
-function identifyLeafClusters(blocks, connections) {
-  const outDegree = {};
-  const parentOf = {};
-  for (const b of blocks) {
-    outDegree[b.id] = 0;
-    parentOf[b.id] = [];
-  }
-  for (const conn of connections) {
-    outDegree[conn.fromId] = (outDegree[conn.fromId] || 0) + 1;
-    if (parentOf[conn.toId]) parentOf[conn.toId].push(conn.fromId);
-  }
-
-  // 按父节点分组叶子（仅单父叶子参与聚类）
-  const leafGroups = {};
-  for (const b of blocks) {
-    if (outDegree[b.id] === 0 && parentOf[b.id].length === 1) {
-      const pid = parentOf[b.id][0];
-      if (!leafGroups[pid]) leafGroups[pid] = [];
-      leafGroups[pid].push(b.id);
-    }
-  }
-
-  // 过滤：只保留 >= 阈值的组
-  const clusters = {};
-  for (const [pid, leafIds] of Object.entries(leafGroups)) {
-    if (leafIds.length >= LEAF_CLUSTER_MIN) {
-      clusters[pid] = leafIds;
-    }
-  }
-  return clusters;
-}
 
 /**
  * 将叶子聚类编排为网格矩阵，安置在父节点下方空隙中
@@ -797,20 +1795,16 @@ function identifyLeafClusters(blocks, connections) {
  * - 有核心子线时：网格偏移至核心子树的对侧空隙
  */
 function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
-  // 构建原始子节点映射
   const childrenMap = {};
   for (const b of allBlocks) childrenMap[b.id] = [];
   for (const conn of originalConnections) {
     if (childrenMap[conn.fromId]) childrenMap[conn.fromId].push(conn.toId);
   }
 
-  const strippedIds = new Set();
-  for (const leafIds of Object.values(clusters)) {
-    leafIds.forEach(id => strippedIds.add(id));
-  }
+  const strippedIds = getClusterLeafIdsSet(clusters);
 
-  // 计算骨架重心 X（用于判断外侧方向）
-  let graphCenterX = 0, skelCount = 0;
+  let graphCenterX = 0;
+  let skelCount = 0;
   for (const b of allBlocks) {
     if (!strippedIds.has(b.id) && !b.isVirtual && b.x !== undefined) {
       graphCenterX += b.x + getBlockWidth(b) / 2;
@@ -819,7 +1813,8 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
   }
   if (skelCount > 0) graphCenterX /= skelCount;
 
-  for (const [parentId, leafIds] of Object.entries(clusters)) {
+  for (const [, cluster] of getClusterEntries(clusters)) {
+    const parentId = getClusterParentId(cluster);
     const parent = blockMap[parentId];
     if (!parent || parent.x === undefined) continue;
 
@@ -828,15 +1823,9 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
     const parentCx = parent.x + parentW / 2;
     const gridTop = parent.y + parentH + GRID_PARENT_OFFSET;
 
-    // 计算网格尺寸
-    const cols = Math.min(leafIds.length, GRID_MAX_COLS);
-    const maxLeafW = Math.max(...leafIds.map(id => getBlockWidth(blockMap[id])));
-    const leafH = Math.max(...leafIds.map(id => getBlockHeight(blockMap[id])));
-    const gridW = cols * maxLeafW + (cols - 1) * GRID_H_GAP;
-
-    // 核心子节点边界
     const coreChildren = (childrenMap[parentId] || []).filter(cid => !strippedIds.has(cid));
-    let coreMinX = Infinity, coreMaxX = -Infinity;
+    let coreMinX = Infinity;
+    let coreMaxX = -Infinity;
     for (const cid of coreChildren) {
       const cb = blockMap[cid];
       if (cb && cb.x !== undefined) {
@@ -845,170 +1834,244 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
       }
     }
 
-    // 网格放置方向：始终朝图的外侧
+    const normalLeafIds = getClusterNormalLeafIds(cluster);
+    const tallLeafIds = getClusterTallLeafIds(cluster);
+    const maxLeafW = Math.max(1, getClusterMaxLeafWidth(cluster));
+    const maxLeafH = Math.max(1, getClusterMaxLeafHeight(cluster));
+    const cols = normalLeafIds.length > 0 ? Math.min(normalLeafIds.length, GRID_MAX_COLS) : 1;
+    const rows = normalLeafIds.length > 0 ? Math.ceil(normalLeafIds.length / cols) : 0;
+    const gridW = normalLeafIds.length > 0 ? cols * maxLeafW + (cols - 1) * GRID_H_GAP : maxLeafW;
+    const gridH = normalLeafIds.length > 0 ? rows * maxLeafH + Math.max(rows - 1, 0) * GRID_V_GAP : 0;
+
+    setClusterGridCols(cluster, cols);
+    setClusterGridRows(cluster, rows);
+    setClusterGridSize(cluster, gridW, gridH);
+
     let gridCx;
     const outerOffset = gridW / 2 + 40;
+    let outerDir = 1;
 
     if (parentCx < graphCenterX - 30) {
-      // 父节点偏左 → 网格往更左放（外侧）
+      outerDir = -1;
       gridCx = parentCx - outerOffset;
-      if (coreMinX !== Infinity) {
-        gridCx = Math.min(gridCx, coreMinX - gridW / 2 - 40);
-      }
+      if (coreMinX !== Infinity) gridCx = Math.min(gridCx, coreMinX - gridW / 2 - 40);
     } else if (parentCx > graphCenterX + 30) {
-      // 父节点偏右 → 网格往更右放（外侧）
+      outerDir = 1;
       gridCx = parentCx + outerOffset;
-      if (coreMaxX !== -Infinity) {
-        gridCx = Math.max(gridCx, coreMaxX + gridW / 2 + 40);
-      }
+      if (coreMaxX !== -Infinity) gridCx = Math.max(gridCx, coreMaxX + gridW / 2 + 40);
+    } else if (coreChildren.length === 0) {
+      outerDir = 1;
+      gridCx = parentCx;
     } else {
-      // 父节点居中
-      if (coreChildren.length === 0) {
-        gridCx = parentCx;
+      const coreCx = (coreMinX + coreMaxX) / 2;
+      if (coreCx >= parentCx) {
+        outerDir = -1;
+        gridCx = coreMinX - gridW / 2 - 40;
       } else {
-        const coreCx = (coreMinX + coreMaxX) / 2;
-        if (coreCx >= parentCx) {
-          gridCx = coreMinX - gridW / 2 - 40;
-        } else {
-          gridCx = coreMaxX + gridW / 2 + 40;
+        outerDir = 1;
+        gridCx = coreMaxX + gridW / 2 + 40;
+      }
+    }
+    setClusterOuterDir(cluster, outerDir);
+
+    const gridLeft = gridCx - gridW / 2;
+    for (let i = 0; i < normalLeafIds.length; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const leaf = blockMap[normalLeafIds[i]];
+      if (leaf && !leaf.locked) {
+        leaf.x = gridLeft + col * (maxLeafW + GRID_H_GAP);
+        leaf.y = gridTop + row * (maxLeafH + GRID_V_GAP);
+      }
+    }
+
+    if (tallLeafIds.length > 0) {
+      if (normalLeafIds.length === 0) {
+        let currentY = gridTop;
+        for (const tallLeafId of tallLeafIds) {
+          const leaf = blockMap[tallLeafId];
+          if (!leaf || leaf.locked) continue;
+          leaf.x = parentCx - getBlockWidth(leaf) / 2;
+          leaf.y = currentY;
+          currentY += getBlockHeight(leaf) + GRID_V_GAP;
+        }
+      } else {
+        const tallStartX = outerDir < 0
+          ? gridLeft - TALL_LEAF_OFFSET
+          : gridLeft + gridW + TALL_LEAF_OFFSET;
+        let currentY = gridTop;
+        for (const tallLeafId of tallLeafIds) {
+          const leaf = blockMap[tallLeafId];
+          if (!leaf || leaf.locked) continue;
+          const leafW = getBlockWidth(leaf);
+          leaf.x = outerDir < 0 ? tallStartX - leafW : tallStartX;
+          leaf.y = currentY;
+          currentY += getBlockHeight(leaf) + GRID_V_GAP;
         }
       }
     }
 
-    // 将每个叶子放置到网格中
-    const gridLeft = gridCx - gridW / 2;
-    for (let i = 0; i < leafIds.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const leaf = blockMap[leafIds[i]];
-      if (leaf && !leaf.locked) {
-        leaf.x = gridLeft + col * (maxLeafW + GRID_H_GAP);
-        leaf.y = gridTop + row * (leafH + GRID_V_GAP);
-      }
-    }
+    updateClusterBoundingBox(cluster, blockMap);
   }
 }
 
 /**
  * 碰撞微调：检查网格叶子与骨架节点重叠
- * 增强：水平朝外侧推开 + 不同聚类组间碰撞检测
+ * 增强：整体平移聚类，保持矩阵形状不被打散
  */
 function resolveGridCollisions(blocks, clusters, blockMap) {
-  const strippedIds = new Set();
-  for (const leafIds of Object.values(clusters)) {
-    leafIds.forEach(id => strippedIds.add(id));
-  }
-
+  const strippedIds = getClusterLeafIdsSet(clusters);
   const skeletonBlocks = blocks.filter(b => !strippedIds.has(b.id) && !b.isVirtual && b.x !== undefined);
   const COLLISION_PADDING = 25;
+  const MAX_ITERATIONS = 6;
 
-  // 骨架重心
-  let graphCenterX = 0, skelCount = 0;
-  for (const sb of skeletonBlocks) {
-    graphCenterX += sb.x + getBlockWidth(sb) / 2;
-    skelCount++;
-  }
-  if (skelCount > 0) graphCenterX /= skelCount;
+  refreshAllClusterBounds(clusters, blockMap);
 
-  // 逐聚类检查与骨架的碰撞
-  for (const [parentId, leafIds] of Object.entries(clusters)) {
-    const parent = blockMap[parentId];
-    if (!parent || parent.x === undefined) continue;
-    const parentCx = parent.x + getBlockWidth(parent) / 2;
-    const outerDir = parentCx < graphCenterX ? -1 : 1;
+  const clusterList = Object.values(clusters);
+  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    let moved = false;
 
-    for (const leafId of leafIds) {
-      const gb = blockMap[leafId];
-      if (!gb || gb.locked || gb.x === undefined) continue;
-      const gbW = getBlockWidth(gb);
-      const gbH = getBlockHeight(gb);
+    for (const cluster of clusterList) {
+      refreshClusterOuterConstraint(cluster, blockMap);
+      if (!getClusterBBox(cluster)) continue;
 
-      for (const sb of skeletonBlocks) {
-        const sbW = getBlockWidth(sb);
-        const sbH = getBlockHeight(sb);
-        const overlapX = gb.x < sb.x + sbW + COLLISION_PADDING && gb.x + gbW + COLLISION_PADDING > sb.x;
-        const overlapY = gb.y < sb.y + sbH + COLLISION_PADDING && gb.y + gbH + COLLISION_PADDING > sb.y;
-
-        if (overlapX && overlapY) {
-          // 按外侧方向水平位移（而非只是下移）
-          if (outerDir < 0) {
-            gb.x = sb.x - gbW - COLLISION_PADDING;
-          } else {
-            gb.x = sb.x + sbW + COLLISION_PADDING;
-          }
-        }
+      for (const skeletonBlock of skeletonBlocks) {
+        moved = tryResolveClusterAgainstBlock(cluster, skeletonBlock, COLLISION_PADDING, blockMap) || moved;
       }
     }
-  }
 
-  // 不同聚类组间碰撞
-  const clusterKeys = Object.keys(clusters);
-  for (let i = 0; i < clusterKeys.length; i++) {
-    for (let j = i + 1; j < clusterKeys.length; j++) {
-      for (const id1 of clusters[clusterKeys[i]]) {
-        const b1 = blockMap[id1];
-        if (!b1 || b1.x === undefined) continue;
-        for (const id2 of clusters[clusterKeys[j]]) {
-          const b2 = blockMap[id2];
-          if (!b2 || b2.x === undefined) continue;
-          const w1 = getBlockWidth(b1), h1 = getBlockHeight(b1);
-          const w2 = getBlockWidth(b2), h2 = getBlockHeight(b2);
-          const overlapX = b1.x < b2.x + w2 + COLLISION_PADDING && b1.x + w1 + COLLISION_PADDING > b2.x;
-          const overlapY = b1.y < b2.y + h2 + COLLISION_PADDING && b1.y + h1 + COLLISION_PADDING > b2.y;
-          if (overlapX && overlapY) {
-            if (b1.y > b2.y) {
-              b1.y = b2.y + h2 + COLLISION_PADDING;
-            } else {
-              b2.y = b1.y + h1 + COLLISION_PADDING;
-            }
-          }
-        }
+    for (let i = 0; i < clusterList.length; i++) {
+      for (let j = i + 1; j < clusterList.length; j++) {
+        moved = tryResolveClusterPair(clusterList[i], clusterList[j], COLLISION_PADDING, blockMap) || moved;
       }
     }
+
+    if (!moved) break;
   }
 }
 
-/**
- * 主函数：执行完整的分层布局（Two-Pass: 骨架优先 + 叶子网格填充）
- */
-export function autoLayout(blocks, connections, groups = []) {
-  if (blocks.length === 0) return;
+function classifyRootComponents(blocks, connections) {
+  const adjacency = new Map();
+  const inDegree = new Map();
+  const outDegree = new Map();
 
-  const originalConnections = connections;
-  const blockMap = {};
-  for (const b of blocks) blockMap[b.id] = b;
-
-  // ====== Two-Pass Layout: Pass 1 — 剥离叶子，布局骨架 ======
-
-  // 1. 识别叶子聚类（≥3 个纯叶子挂载在同一父节点下）
-  const leafClusters = identifyLeafClusters(blocks, connections);
-  const strippedLeafIds = new Set();
-  for (const leafIds of Object.values(leafClusters)) {
-    leafIds.forEach(id => strippedLeafIds.add(id));
+  for (const block of blocks) {
+    adjacency.set(block.id, new Set());
+    inDegree.set(block.id, 0);
+    outDegree.set(block.id, 0);
   }
 
-  console.log(`=== Two-Pass Layout ===`);
-  console.log(`剥离叶子聚类: ${Object.keys(leafClusters).length} 组, 共 ${strippedLeafIds.size} 个叶子`);
+  for (const conn of connections) {
+    if (!adjacency.has(conn.fromId) || !adjacency.has(conn.toId)) continue;
+    adjacency.get(conn.fromId).add(conn.toId);
+    adjacency.get(conn.toId).add(conn.fromId);
+    outDegree.set(conn.fromId, (outDegree.get(conn.fromId) || 0) + 1);
+    inDegree.set(conn.toId, (inDegree.get(conn.toId) || 0) + 1);
+  }
 
-  // 2. 生成骨架（剥离叶子后的块和连线）
-  const skeletonBlocks = blocks.filter(b => !strippedLeafIds.has(b.id));
-  const skeletonConnections = connections.filter(
-    c => !strippedLeafIds.has(c.toId) && !strippedLeafIds.has(c.fromId)
-  );
+  return blocks.map(block => ({
+    id: block.id,
+    isolatedRootCard: (inDegree.get(block.id) || 0) === 0 && (outDegree.get(block.id) || 0) === 0,
+  }));
+}
 
-  // 3. 分层（仅骨架）
+function getBoundsForBlockIds(blockIds, blockMap) {
+  const items = blockIds
+    .map(id => blockMap[id])
+    .filter(block => block && block.x !== undefined && block.y !== undefined);
+
+  if (items.length === 0) {
+    return {
+      minX: 0,
+      minY: 0,
+      maxX: 0,
+      maxY: 0,
+      width: 0,
+      height: 0,
+    };
+  }
+
+  const bbox = getBoundingBox(items);
+  return {
+    minX: bbox.x,
+    minY: bbox.y,
+    maxX: bbox.x + bbox.width,
+    maxY: bbox.y + bbox.height,
+    width: bbox.width,
+    height: bbox.height,
+  };
+}
+
+function getBoundsForBlocks(items) {
+  if (items.length === 0) {
+    return {
+      minX: 0,
+      minY: 0,
+      maxX: 0,
+      maxY: 0,
+      width: 0,
+      height: 0,
+    };
+  }
+
+  const bbox = getBoundingBox(items);
+  return {
+    minX: bbox.x,
+    minY: bbox.y,
+    maxX: bbox.x + bbox.width,
+    maxY: bbox.y + bbox.height,
+    width: bbox.width,
+    height: bbox.height,
+  };
+}
+
+function translateBlocksById(blockIds, dx, dy, blockMap) {
+  if (!dx && !dy) return;
+  for (const blockId of blockIds) {
+    const block = blockMap[blockId];
+    if (!block || block.locked || block.x === undefined || block.y === undefined) continue;
+    block.x += dx;
+    block.y += dy;
+  }
+}
+
+function packFloatingRootCards(floatingRootIds, allBlocks, blockMap) {
+  if (floatingRootIds.length === 0) return;
+
+  const floatingRoots = floatingRootIds
+    .map(id => blockMap[id])
+    .filter(block => block && block.x !== undefined && block.y !== undefined)
+    .sort((a, b) => (getBlockHeight(b) - getBlockHeight(a)) || (getBlockWidth(b) - getBlockWidth(a)));
+  if (floatingRoots.length === 0) return;
+
+  const nonFloatingBlocks = allBlocks.filter(block => !floatingRootIds.includes(block.id));
+  const primaryBounds = getBoundsForBlocks(nonFloatingBlocks.length > 0 ? nonFloatingBlocks : allBlocks);
+
+  const FLOATING_GAP_X = 60;
+  const SIDE_MARGIN = 40;
+  let currentX = primaryBounds.minX;
+  let currentY = primaryBounds.minY;
+
+  for (const block of floatingRoots) {
+    const width = getBlockWidth(block);
+    const dx = currentX - width - SIDE_MARGIN - block.x;
+    const dy = currentY - block.y;
+    translateBlocksById([block.id], dx, dy, blockMap);
+    currentX -= width + FLOATING_GAP_X;
+  }
+}
+function layoutSingleComponent(blocks, connections, blockMap) {
+  const leafClusters = identifyLeafClusters(blocks, connections, blockMap);
+  const strippedLeafIds = getStrippedLeafIds(leafClusters);
+  const skeletonBlocks = getSkeletonBlocks(blocks, strippedLeafIds);
+  const skeletonConnections = getSkeletonConnections(connections, strippedLeafIds);
+
   const { layer } = assignLayers(skeletonBlocks, skeletonConnections);
-
-  // 4. 插入虚拟节点以撑开跨层连线空间
   const { activeBlocks, activeConnections } = insertVirtualNodes(skeletonBlocks, skeletonConnections, layer);
-
-  // 5. Barycenter 迭代排序（层内排序）
   const orderedLayers = barycentricSort(activeBlocks, activeConnections, layer);
 
-  // 5.5 叶子外移：将无后续子节点的叶子排到各层外侧
   reorderLeavesToOuterSide(orderedLayers, activeConnections, activeBlocks);
 
-  // 调试输出
   console.log('=== Barycenter 优化布局结果 ===');
   for (const [layerNum, blockIds] of Object.entries(orderedLayers)) {
     console.log(`Layer ${layerNum}: [${blockIds.length} nodes]`);
@@ -1016,20 +2079,59 @@ export function autoLayout(blocks, connections, groups = []) {
   const minCrossings = countTotalCrossings(orderedLayers, activeConnections);
   console.log(`Barycenter 总计连线交叉: ${minCrossings}`);
 
-  // 6. 定位骨架
   positionBlocks(activeBlocks, activeConnections, orderedLayers, layer);
-
-  // 7. 避免穿块
   avoidBlockCrossing(activeBlocks, activeConnections);
 
-  // ====== Two-Pass Layout: Pass 2 — 叶子网格填充 ======
-  if (strippedLeafIds.size > 0) {
-    console.log(`=== Pass 2: 安置 ${strippedLeafIds.size} 个叶子到网格 ===`);
-    placeLeafGrids(blocks, originalConnections, leafClusters, blockMap);
+  if (hasClusters(leafClusters)) {
+    console.log(`=== Pass 2: 安置 ${getLeafCount(leafClusters)} 个叶子到网格 ===`);
+    placeLeafGrids(blocks, connections, leafClusters, blockMap);
     resolveGridCollisions(blocks, leafClusters, blockMap);
   }
 
-  // 8. 处理组的相对位置
+  runStablePass(blocks, connections, leafClusters, blockMap, layer);
+  return { leafClusters, layer, activeBlocks };
+}
+
+function collectAllLeafClusters(states) {
+  return Object.assign({}, ...states.map(state => state.leafClusters));
+}
+
+/**
+ * 主函数：执行完整的分层布局（Two-Pass: 骨架优先 + 叶子网格填充）
+ */
+export function autoLayout(blocks, connections, groups = []) {
+  if (blocks.length === 0) return;
+  if (!validateLayoutInput(blocks)) return;
+
+  const blockMap = {};
+  for (const b of blocks) blockMap[b.id] = b;
+
+  console.log(`=== Two-Pass Layout ===`);
+
+  const componentTags = classifyRootComponents(blocks, connections);
+  const floatingRootIds = componentTags.filter(item => item.isolatedRootCard).map(item => item.id);
+  const mainBlocks = blocks.filter(block => !floatingRootIds.includes(block.id));
+  const mainBlockIds = new Set(mainBlocks.map(block => block.id));
+  const mainConnections = connections.filter(conn => mainBlockIds.has(conn.fromId) && mainBlockIds.has(conn.toId));
+
+  const layoutStates = [];
+  if (mainBlocks.length > 0) {
+    const mainBlockMap = {};
+    for (const block of mainBlocks) mainBlockMap[block.id] = block;
+    layoutStates.push(layoutSingleComponent(mainBlocks, mainConnections, mainBlockMap));
+  }
+
+  const allLeafClusters = collectAllLeafClusters(layoutStates);
+
+  if (floatingRootIds.length > 0) {
+    packFloatingRootCards(floatingRootIds, blocks.filter(block => !floatingRootIds.includes(block.id)), blockMap);
+    refreshAllClusterBounds(allLeafClusters, blockMap);
+  }
+
+  resolveAllOverlaps(blocks, connections, allLeafClusters, blockMap);
+  alignLinearChains(blocks, connections, allLeafClusters);
+  normalizeLayoutBounds(blocks, allLeafClusters, blockMap);
+
   const groupMap = {};
   if (groups && groups.length > 0) {
     groups.forEach(group => {
@@ -1068,11 +2170,7 @@ export function autoLayout(blocks, connections, groups = []) {
       }
     });
   }
-
-  // 9. 脱掉马甲，清理虚拟节点
-  removeVirtualNodes(activeBlocks, originalConnections);
 }
-
 
 /**
  * 为新增节点找到一个不重叠的位置

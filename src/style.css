@@ -123,7 +123,7 @@ html, body {
 .topbar-center {
   display: flex;
   justify-content: center;
-  min-width: 0;
+  flex-shrink: 0;
 }
 
 .topbar-right {
@@ -290,6 +290,8 @@ html, body {
   font-weight: 700;
   font-size: 15px;
   color: #000;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .logo-svg {
   width: 20px;
@@ -1342,6 +1344,7 @@ select.cfg-input {
 /* ═══════════════════════════════════════════════════
    RESPONSIVE
    ═══════════════════════════════════════════════════ */
+/* 窄屏：聊天面板移到底部 */
 @media (max-width: 768px) {
   :root { --chat-width: 100%; }
 
@@ -1355,34 +1358,20 @@ select.cfg-input {
   }
   .chat-panel.collapsed { height: 0; }
 
-  /* 窄屏下小地图和组选择器移到右上角，避免被聊天面板遮挡 */
-  .canvas-minimap {
-    bottom: auto;
-    top: var(--space-md);
-    right: var(--space-md);
-    left: auto;
-    width: 140px;
-    height: 100px;
-  }
+  /* 聊天面板横板时隐藏灯泡图标 */
+  .chat-welcome-icon { display: none; }
 
-  .group-selector {
-    bottom: auto;
-    top: var(--space-md);
-    right: calc(var(--space-md) + 140px + var(--space-md));
-    left: auto;
-  }
-
-  .topbar-center { display: none; }
-
-  /* 极度窄屏下隐藏演示按钮和它前面的分隔线 */
-  #resetDemo,
-  #resetDemo + .topbar-divider { display: none; }
-
-  /* 极度窄屏下隐藏 logo 文字，只保留图标 */
+  /* 先隐藏 logo 文字，只保留图标 */
   .logo-text { display: none; }
 
-  /* 极度窄屏下隐藏聊天欢迎区域的灯泡图标 */
-  .chat-welcome-icon { display: none; }
+  /* 隐藏演示按钮和它前面的分隔线 */
+  #resetDemo,
+  #resetDemo + .topbar-divider { display: none; }
+}
+
+/* 更窄的屏幕：再隐藏白板标题 */
+@media (max-width: 480px) {
+  .topbar-center { display: none; }
 }
 
 

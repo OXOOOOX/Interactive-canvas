@@ -1360,6 +1360,12 @@ select.cfg-input {
   /* 极度窄屏下隐藏演示按钮和它前面的分隔线 */
   #resetDemo,
   #resetDemo + .topbar-divider { display: none; }
+
+  /* 极度窄屏下隐藏 logo 文字，只保留图标 */
+  .logo-text { display: none; }
+
+  /* 极度窄屏下隐藏聊天欢迎区域的灯泡图标 */
+  .chat-welcome-icon { display: none; }
 }
 
 

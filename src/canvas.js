@@ -16,6 +16,8 @@ const AUTO_LAYOUT_WIDTH_STEP = 24;
 const AUTO_LAYOUT_MIN_HEIGHT_GAIN = 24;
 const DRAG_THRESHOLD = 5;
 const SNAP_GRID = 20;
+const BACKGROUND_LONG_PRESS_MS = 180;
+const BACKGROUND_TAP_TOLERANCE = 8;
 
 /** 预设节点颜色 */
 const NODE_COLORS = [
@@ -75,9 +77,6 @@ export function initCanvas(callbacks) {
   createScissorsLayer();
   renderEmptyState();
 
-  // 初始化剪刀按钮位置
-  setScissorsBtnPosition();
-
   // 注册全局导出函数（浏览器控制台可用）
   window.exportCanvasData = () => {
     const data = exportCanvasData(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
@@ -108,6 +107,7 @@ function createScissorsLayer() {
 /** 创建剪刀模式按钮 */
 function createScissorsModeButton() {
   $linkScissorsModeBtn = document.createElement('button');
+  $linkScissorsModeBtn.type = 'button';
   $linkScissorsModeBtn.className = 'link-scissors-mode-btn';
   $linkScissorsModeBtn.innerHTML = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -119,8 +119,9 @@ function createScissorsModeButton() {
     </svg>
   `;
   $linkScissorsModeBtn.title = '开启剪刀模式（点击连线删除）';
+  $linkScissorsModeBtn.setAttribute('aria-label', '开启剪刀模式');
   $linkScissorsModeBtn.addEventListener('click', toggleScissorsMode);
-  $view.appendChild($linkScissorsModeBtn);
+  $groupSelector?.appendChild($linkScissorsModeBtn);
 }
 
 /** 更新多选 UI 样式 */
@@ -680,16 +681,137 @@ function applyTransform() {
 
 function setupPanZoom() {
   let isPanning = false;
-  let startX, startY;
+  let panPointerId = null;
+  let startX = 0;
+  let startY = 0;
   let spaceDown = false;
+  let backgroundGesture = null;
+  let pinchGesture = null;
+  const activePointers = new Map();
 
-  function endPanInteraction({ clearSpace = false } = {}) {
+  function isCanvasBackgroundTarget(target) {
+    return target === $view || target === $transform || target === $blockCanvas || target === $linkLayer;
+  }
+
+  function clearSelection() {
+    appState.selectedBlockId = null;
+    appState.selectedBlockIds = [];
+    $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
+      b.classList.remove('selected');
+      b.classList.remove('selected-multi');
+    });
+    hideNodeToolbar();
+    hideCtxMenu();
+  }
+
+  function updatePointerCache(e) {
+    activePointers.set(e.pointerId, {
+      id: e.pointerId,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      pointerType: e.pointerType,
+      target: e.target,
+    });
+  }
+
+  function removePointerCache(pointerId) {
+    activePointers.delete(pointerId);
+  }
+
+  function getActiveBackgroundPointers() {
+    return [...activePointers.values()].filter(pointer => isCanvasBackgroundTarget(pointer.target));
+  }
+
+  function beginPan(pointerId, clientX, clientY) {
+    isPanning = true;
+    panPointerId = pointerId;
+    startX = clientX - appState.viewport.panX;
+    startY = clientY - appState.viewport.panY;
+    if (pointerId !== null && !$view.hasPointerCapture(pointerId)) {
+      $view.setPointerCapture(pointerId);
+    }
+    $view.classList.add('grabbing');
+  }
+
+  function endPanInteraction({ clearSpace = false, pointerId = panPointerId } = {}) {
+    if (pointerId !== null && $view.hasPointerCapture(pointerId)) {
+      $view.releasePointerCapture(pointerId);
+    }
     isPanning = false;
+    panPointerId = null;
     if (clearSpace) spaceDown = false;
-    if (!spaceDown) $view.classList.remove('grabbing');
+    if (!spaceDown && !pinchGesture) $view.classList.remove('grabbing');
+  }
+
+  function cancelBackgroundGesture() {
+    if (!backgroundGesture) return;
+    if (backgroundGesture.longPressTimer) clearTimeout(backgroundGesture.longPressTimer);
+    backgroundGesture = null;
+  }
+
+  function beginPinch() {
+    const pointers = getActiveBackgroundPointers();
+    if (pointers.length < 2) return;
+
+    cancelBackgroundGesture();
+    if (isPanning) endPanInteraction();
+
+    const [first, second] = pointers;
+    const dx = second.clientX - first.clientX;
+    const dy = second.clientY - first.clientY;
+    const distance = Math.hypot(dx, dy);
+    if (!distance) return;
+
+    pinchGesture = {
+      pointerIds: [first.id, second.id],
+      startDistance: distance,
+      startZoom: appState.viewport.zoom,
+      startPanX: appState.viewport.panX,
+      startPanY: appState.viewport.panY,
+      centerX: (first.clientX + second.clientX) / 2,
+      centerY: (first.clientY + second.clientY) / 2,
+      canvasX: ((first.clientX + second.clientX) / 2 - $view.getBoundingClientRect().left - appState.viewport.panX) / appState.viewport.zoom,
+      canvasY: ((first.clientY + second.clientY) / 2 - $view.getBoundingClientRect().top - appState.viewport.panY) / appState.viewport.zoom,
+    };
+
+    $view.classList.add('grabbing');
+  }
+
+  function updatePinch() {
+    if (!pinchGesture) return;
+    const [firstId, secondId] = pinchGesture.pointerIds;
+    const first = activePointers.get(firstId);
+    const second = activePointers.get(secondId);
+    if (!first || !second) return;
+
+    const dx = second.clientX - first.clientX;
+    const dy = second.clientY - first.clientY;
+    const distance = Math.hypot(dx, dy);
+    if (!distance) return;
+
+    const newZoom = Math.min(4, Math.max(0.2, pinchGesture.startZoom * (distance / pinchGesture.startDistance)));
+    const centerX = (first.clientX + second.clientX) / 2;
+    const centerY = (first.clientY + second.clientY) / 2;
+    const rect = $view.getBoundingClientRect();
+    appState.viewport.zoom = newZoom;
+    appState.viewport.panX = centerX - rect.left - pinchGesture.canvasX * newZoom;
+    appState.viewport.panY = centerY - rect.top - pinchGesture.canvasY * newZoom;
+    applyTransform();
+  }
+
+  function endPinchIfNeeded(pointerId) {
+    if (!pinchGesture || !pinchGesture.pointerIds.includes(pointerId)) return;
+    pinchGesture = null;
+    if (!spaceDown && !isPanning) $view.classList.remove('grabbing');
+  }
+
+  function commitBackgroundTap() {
+    clearSelection();
   }
 
   resetPanInteraction = () => {
+    cancelBackgroundGesture();
+    pinchGesture = null;
     endPanInteraction({ clearSpace: false });
   };
 
@@ -722,36 +844,123 @@ function setupPanZoom() {
   document.addEventListener('keyup', (e) => {
     if (e.code === 'Space') {
       spaceDown = false;
-      if (!isPanning) $view.classList.remove('grabbing');
+      if (!isPanning && !pinchGesture) $view.classList.remove('grabbing');
     }
   });
 
   $view.addEventListener('pointerdown', (e) => {
-    if (e.button === 1 || (e.button === 0 && spaceDown)) {
-      isPanning = true;
-      startX = e.clientX - appState.viewport.panX;
-      startY = e.clientY - appState.viewport.panY;
-      $view.setPointerCapture(e.pointerId);
-      $view.classList.add('grabbing');
+    updatePointerCache(e);
+
+    const isCanvasBackground = isCanvasBackgroundTarget(e.target);
+    const isMiddleMousePan = e.button === 1;
+    const isSpacePan = e.button === 0 && spaceDown;
+
+    if (getActiveBackgroundPointers().length >= 2) {
+      beginPinch();
       e.preventDefault();
+      return;
     }
+
+    if (isMiddleMousePan || isSpacePan) {
+      cancelBackgroundGesture();
+      beginPan(e.pointerId, e.clientX, e.clientY);
+      e.preventDefault();
+      return;
+    }
+
+    if (!isCanvasBackground || e.button !== 0) return;
+
+    backgroundGesture = {
+      pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      panning: false,
+      longPressTriggered: false,
+      movedTooFar: false,
+      longPressTimer: null,
+    };
+
+    if (e.pointerType === 'touch') return;
+
+    backgroundGesture.longPressTimer = window.setTimeout(() => {
+      if (!backgroundGesture || backgroundGesture.pointerId !== e.pointerId || backgroundGesture.movedTooFar || pinchGesture) return;
+      backgroundGesture.longPressTriggered = true;
+      backgroundGesture.panning = true;
+      beginPan(e.pointerId, backgroundGesture.startClientX, backgroundGesture.startClientY);
+    }, BACKGROUND_LONG_PRESS_MS);
   });
 
   $view.addEventListener('pointermove', (e) => {
-    if (!isPanning) return;
+    updatePointerCache(e);
+
+    if (pinchGesture) {
+      updatePinch();
+      e.preventDefault();
+      return;
+    }
+
+    if (backgroundGesture && backgroundGesture.pointerId === e.pointerId) {
+      const dx = e.clientX - backgroundGesture.startClientX;
+      const dy = e.clientY - backgroundGesture.startClientY;
+      if (Math.hypot(dx, dy) > BACKGROUND_TAP_TOLERANCE) {
+        backgroundGesture.movedTooFar = true;
+      }
+
+      if (!backgroundGesture.longPressTriggered) {
+        if (backgroundGesture.pointerType === 'touch' && backgroundGesture.movedTooFar) {
+          backgroundGesture.longPressTriggered = true;
+          backgroundGesture.panning = true;
+          beginPan(e.pointerId, backgroundGesture.startClientX, backgroundGesture.startClientY);
+        } else if (backgroundGesture.movedTooFar) {
+          cancelBackgroundGesture();
+          return;
+        } else {
+          return;
+        }
+      }
+    }
+
+    if (!isPanning || panPointerId !== e.pointerId) return;
     appState.viewport.panX = e.clientX - startX;
     appState.viewport.panY = e.clientY - startY;
     applyTransform();
+    e.preventDefault();
   });
 
-  $view.addEventListener('pointerup', () => {
-    if (isPanning) endPanInteraction();
-  });
-  $view.addEventListener('pointercancel', () => {
-    if (isPanning) endPanInteraction();
-  });
-  $view.addEventListener('lostpointercapture', () => {
-    if (isPanning) endPanInteraction();
+  function finalizePointer(e) {
+    endPinchIfNeeded(e.pointerId);
+
+    if (backgroundGesture && backgroundGesture.pointerId === e.pointerId) {
+      const shouldCommitTap = !backgroundGesture.longPressTriggered && !backgroundGesture.movedTooFar;
+      const wasPanning = backgroundGesture.panning;
+      cancelBackgroundGesture();
+      if (wasPanning && isPanning && panPointerId === e.pointerId) {
+        endPanInteraction({ pointerId: e.pointerId });
+      } else if (shouldCommitTap) {
+        commitBackgroundTap();
+      }
+    } else if (isPanning && panPointerId === e.pointerId) {
+      endPanInteraction({ pointerId: e.pointerId });
+    }
+
+    removePointerCache(e.pointerId);
+
+    if (pinchGesture) {
+      const pointers = getActiveBackgroundPointers();
+      if (pointers.length < 2) {
+        pinchGesture = null;
+        if (!spaceDown && !isPanning) $view.classList.remove('grabbing');
+      }
+    }
+  }
+
+  $view.addEventListener('pointerup', finalizePointer);
+  $view.addEventListener('pointercancel', finalizePointer);
+  $view.addEventListener('lostpointercapture', (e) => {
+    if (isPanning && panPointerId === e.pointerId) {
+      endPanInteraction({ pointerId: e.pointerId });
+    }
   });
 }
 
@@ -869,23 +1078,9 @@ function navigateNodes(key) {
 }
 
 function setupCanvasClick() {
-  // 单击空白 → 取消选中
-  $view.addEventListener('pointerdown', (e) => {
-    if (e.target === $view || e.target === $transform || e.target === $blockCanvas) {
-      appState.selectedBlockId = null;
-      appState.selectedBlockIds = [];
-      $blockCanvas.querySelectorAll('.mm-block.selected, .mm-block.selected-multi').forEach(b => {
-        b.classList.remove('selected');
-        b.classList.remove('selected-multi');
-      });
-      hideNodeToolbar();
-      hideCtxMenu();
-    }
-  });
-
   // 双击空白 → 创建新块
   $view.addEventListener('dblclick', (e) => {
-    if (e.target !== $view && e.target !== $transform && e.target !== $blockCanvas) return;
+    if (e.target !== $view && e.target !== $transform && e.target !== $blockCanvas && e.target !== $linkLayer) return;
     const zoom = appState.viewport.zoom;
     const rect = $view.getBoundingClientRect();
     const canvasX = (e.clientX - rect.left - appState.viewport.panX) / zoom;
@@ -2141,28 +2336,6 @@ export function fitToView() {
   applyTransform();
 }
 
-/** 设置剪刀模式按钮位置（固定在组选择器右侧） */
-export function setScissorsBtnPosition() {
-  if (!$linkScissorsModeBtn || !$groupSelector) return;
-  // 获取组选择器的实际位置
-  const groupSelectorRect = $groupSelector.getBoundingClientRect();
-  const viewRect = document.querySelector('.canvas-area').getBoundingClientRect();
-
-  // 计算相对于 canvas-area 的位置
-  // 组选择器右侧 + 2px 间距
-  const left = groupSelectorRect.right - viewRect.left + 2;
-  // 顶部对齐组选择器容器
-  const top = groupSelectorRect.top - viewRect.top;
-  // 高度与组选择器一致
-  const height = groupSelectorRect.height;
-
-  $linkScissorsModeBtn.style.left = `${left}px`;
-  $linkScissorsModeBtn.style.top = `${top}px`;
-  $linkScissorsModeBtn.style.height = `${height}px`;
-  $linkScissorsModeBtn.style.right = 'auto';
-  $linkScissorsModeBtn.style.bottom = 'auto';
-}
-
 // ═══════════════════════════════════════
 //  MINIMAP
 // ═══════════════════════════════════════
@@ -2370,8 +2543,6 @@ function updateGroupSelector() {
   groupListMenu.setAttribute('aria-hidden', 'true');
   groupListMenu.style.display = 'none';
 
-  // 更新剪刀按钮位置，使其跟随组选择器宽度变化
-  setScissorsBtnPosition();
 }
 
 /**
@@ -2430,9 +2601,6 @@ function renderGroupList() {
   const neededWidth = 22 + maxNameWidth + 8 + 12;
   const finalWidth = Math.min(Math.max(neededWidth, 180), 200);
   groupListMenu.style.width = `${finalWidth}px`;
-
-  // 更新剪刀按钮位置，使其跟随组选择器宽度变化
-  setScissorsBtnPosition();
 
   // 为重命名按钮添加事件
   groupListMenu.querySelectorAll('.group-rename-btn').forEach(btn => {

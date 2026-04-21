@@ -413,6 +413,7 @@ html, body {
   inset: 0;
   overflow: hidden;
   cursor: grab;
+  touch-action: none;
   background-image: radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px);
   background-size: 24px 24px;
 }
@@ -1355,6 +1356,10 @@ select.cfg-input {
   .chat-panel.collapsed { height: 0; }
 
   .topbar-center { display: none; }
+
+  /* 极度窄屏下隐藏演示按钮和它前面的分隔线 */
+  #resetDemo,
+  #resetDemo + .topbar-divider { display: none; }
 }
 
 
@@ -2174,10 +2179,13 @@ select.cfg-input {
   pointer-events: none;
 }
 
-/* 剪刀模式切换按钮 - 固定在组选择器右侧 */
+/* 剪刀模式切换按钮 */
 .link-scissors-mode-btn {
-  position: absolute;
+  flex: 0 0 40px;
+  align-self: stretch;
   width: 40px;
+  min-height: 32px;
+  padding: 0;
   background: var(--bg-surface);
   border: 2px solid var(--glass-border);
   border-radius: var(--radius-md);
@@ -2185,7 +2193,6 @@ select.cfg-input {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
   transition: all var(--duration-fast);
   opacity: 0.7;
 }

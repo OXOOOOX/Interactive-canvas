@@ -1355,6 +1355,23 @@ select.cfg-input {
   }
   .chat-panel.collapsed { height: 0; }
 
+  /* 窄屏下小地图和组选择器移到右上角，避免被聊天面板遮挡 */
+  .canvas-minimap {
+    bottom: auto;
+    top: var(--space-md);
+    right: var(--space-md);
+    left: auto;
+    width: 140px;
+    height: 100px;
+  }
+
+  .group-selector {
+    bottom: auto;
+    top: var(--space-md);
+    right: calc(var(--space-md) + 140px + var(--space-md));
+    left: auto;
+  }
+
   .topbar-center { display: none; }
 
   /* 极度窄屏下隐藏演示按钮和它前面的分隔线 */

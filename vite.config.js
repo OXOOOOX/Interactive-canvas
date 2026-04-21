@@ -94,10 +94,12 @@ export default defineConfig({
     port,
     strictPort: true,
     open: false,
+    allowedHosts: ['interactive-canvas.zeabur.app'],
   },
   preview: {
     host,
     port,
     strictPort: true,
+    allowedHosts: ['interactive-canvas.zeabur.app'],
   },
 })

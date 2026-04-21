@@ -430,9 +430,9 @@ async function handleCreateGroupFromMenu() {
   // 优先从 localStorage 读取配置，如果没有则尝试从 UI 表单读取
   let config = loadConfig();
   if (!config) {
-    const apiKeyInput = document.getElementById('apiKey');
-    if (apiKeyInput && apiKeyInput.value) {
-      config = { apiKey: apiKeyInput.value };
+    const llmApiKeyInput = document.getElementById('llmApiKey');
+    if (llmApiKeyInput && llmApiKeyInput.value) {
+      config = { llmApiKey: llmApiKeyInput.value };
     }
   }
   suggestGroupName(selectedIds, config).then(name => {

@@ -22,12 +22,11 @@ export async function suggestGroupName(blockIds, config = null) {
     console.log('[AI 组名] 完整配置:', config);
 
     const endpoint = config?.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm;
-    const apiKey = config?.apiKey || '';
+    const apiKey = config?.llmApiKey || '';
     const model = config?.llmModel || 'qwen-plus';
 
     console.log('[AI 组名] 使用配置:', { endpoint, model, apiKey: apiKey ? `${apiKey.slice(0, 8)}...` : '空' });
 
-    // 检查 API key 是否存在
     if (!apiKey) {
       console.error('[AI 组名] API Key 为空，请在设置中配置');
       return null;
@@ -149,7 +148,17 @@ export function saveConfig(config) {
 
 export function loadConfig() {
   const text = localStorage.getItem(STORAGE_KEY);
-  return text ? JSON.parse(text) : null;
+  if (!text) return null;
+
+  const config = JSON.parse(text);
+  if (config && typeof config === 'object' && config.apiKey) {
+    if (!config.llmApiKey) config.llmApiKey = config.apiKey;
+    if (!config.doubaoApiKey && config.sttProvider === 'doubao') {
+      config.doubaoApiKey = config.apiKey;
+    }
+    delete config.apiKey;
+  }
+  return config;
 }
 
 /** 保存画布到 localStorage */
@@ -324,14 +333,21 @@ export const ENDPOINT_PRESETS = {
     llm: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
     stt: 'https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions',
     tts: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    sttModel: 'sensevoice-v1',
+    fileSttModel: 'sensevoice-v1',
+    ttsModel: 'qwen-tts',
+    realtimeVoiceModel: '',
   },
   doubao: {
     llm: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
     stt: 'https://openspeech.bytedance.com/api/v1/vc/ata/submit',
     tts: 'https://openspeech.bytedance.com/api/v1/tts',
+    sttModel: 'doubao-asr-streaming-2.0',
+    fileSttModel: 'doubao-asr-file-2.0',
+    ttsModel: 'doubao-tts-2.0',
+    realtimeVoiceModel: 'doubao-realtime-voice',
   },
 };
-
 // ═══════════════════════════════════════
 //  Group Management
 // ═══════════════════════════════════════

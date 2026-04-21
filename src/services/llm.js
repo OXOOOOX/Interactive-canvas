@@ -82,8 +82,9 @@ function getEndpoint(config) {
 }
 
 function buildPayload(config, messages, isCanvas = false, stream = false) {
+  const defaultModel = config.llmProvider === 'doubao' ? 'doubao-1.5-pro' : 'qwen-max-latest';
   const payload = {
-    model: config.llmProvider === 'doubao' ? 'doubao-1.5-pro' : 'qwen-max-latest',
+    model: config.llmModel || defaultModel,
     messages,
   };
 
@@ -101,7 +102,7 @@ function buildPayload(config, messages, isCanvas = false, stream = false) {
 function buildHeaders(config) {
   return {
     'Content-Type': 'application/json',
-    ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+    ...(config.llmApiKey ? { Authorization: `Bearer ${config.llmApiKey}` } : {}),
   };
 }
 

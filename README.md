@@ -17,11 +17,28 @@
 
 ## 快速开始 / Quick Start
 
-> 这是纯前端静态页面，不需要构建。  
-> This is a pure frontend static page, no build required.
+当前项目基于 Vite 开发与构建。  
+This project uses Vite for development and build.
 
 ```bash
-python3 -m http.server 8080
+npm install
+npm run dev
+# 浏览器打开 Browser to http://localhost:8080
+```
+
+构建预览：
+
+```bash
+npm run build
+npm run preview
+# 浏览器打开 Browser to http://localhost:8080
+```
+
+Docker / Zeabur 部署：
+
+```bash
+docker build -t interactive-canvas .
+docker run --rm -p 8080:8080 interactive-canvas
 # 浏览器打开 Browser to http://localhost:8080
 ```
 
@@ -69,12 +86,24 @@ python3 -m http.server 8080
 为避免把密钥提交到 Git，可使用本地配置文件：  
 To avoid committing secrets to Git, use a local config file:
 
-1. 复制 `public/local.config.example.js` 为 `public/local.config.js`  
-   Copy `public/local.config.example.js` to `public/local.config.js`
-2. 在 `local.config.js` 中填写 `DASHSCOPE_KEY`  
-   Add your `DASHSCOPE_KEY` in `local.config.js`
-3. 刷新页面后，系统会自动把 key 注入到 API Key 输入框（仅本地，`local.config.js` 已被 gitignore）  
-   After refreshing, the system will automatically inject the key into the API Key input field (local only, `local.config.js` is gitignored)
+1. 在 `public/local.config.js` 中填写本地凭证（文件已被 gitignore）  
+   Fill your local credentials in `public/local.config.js` (this file is gitignored)
+2. 建议填写 `LLM_API_KEY` 与 `DOUBAO_API_KEY`，按需补充默认 endpoint  
+   Recommended fields are `LLM_API_KEY` and `DOUBAO_API_KEY`, plus optional default endpoints
+3. 刷新页面后，系统会自动把本地配置注入到对应输入框  
+   After refreshing, the app injects the local config into the corresponding input fields
+
+示例：
+
+```javascript
+window.__LOCAL_CONFIG__ = {
+  LLM_API_KEY: "sk-your-llm-key",
+  DOUBAO_API_KEY: "your-doubao-key",
+  DEFAULT_LLM_ENDPOINT: "",
+  DEFAULT_STT_ENDPOINT: "",
+  DEFAULT_TTS_ENDPOINT: "",
+};
+```
 
 ---
 

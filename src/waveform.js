@@ -1,6 +1,8 @@
 /**
- * waveform.js — 原生浏览器 Web Speech API + 动态波浪支持
+ * waveform.js — 浏览器 / 豆包流式语音识别 + 动态波浪支持
  */
+
+import { startDoubaoStreamingRecognition } from './services/doubao-asr.js';
 
 let analyser = null;
 let animFrameId = null;
@@ -8,17 +10,79 @@ let startTime = 0;
 
 let audioCtx = null;
 let streamGlobal = null;
+let doubaoSession = null;
+let usingDoubaoRecognition = false;
 
 // Speech Recognition
 let recognition = null;
 
 // VAD / 状态
 export let isConversationActive = false;
-let isPaused = false; // 用于在 AI 说话时暂停监听
+let isPaused = false;
 
 let $waveformBar, $waveformCanvas, $waveTime, $recordBtn;
 let ctx = null;
 let onTextComplete = () => {};
+
+function getVoiceHelpers() {
+  return window.__VOICE_MODE_HELPERS__ || {};
+}
+
+function getVoiceLanguage() {
+  return window.__GET_VOICE_LANGUAGE__?.() || 'zh-CN';
+}
+
+function getTranscriptText(text) {
+  return window.__VOICE_TRANSCRIPT_TEXT__?.(text) ?? (text || '').trim();
+}
+
+function isMeaningfulTranscript(text) {
+  if (window.__VOICE_TRANSCRIPT_VALID__) {
+    return window.__VOICE_TRANSCRIPT_VALID__(text);
+  }
+  return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
+}
+
+function shouldUseBrowserRecognition() {
+  return !!getVoiceHelpers().shouldUseBrowserRecognition?.();
+}
+
+function getVoiceConfig() {
+  return window.__GET_CONFIG__?.() || {};
+}
+
+function bindInputInterim(text) {
+  const chatInput = document.getElementById('chatInput');
+  if (chatInput) {
+    chatInput.value = text || '';
+  }
+}
+
+function beginVisualSession() {
+  isConversationActive = true;
+  isPaused = false;
+  startTime = Date.now();
+  $recordBtn.classList.add('recording');
+  $waveformBar.classList.add('active');
+  drawWaveform();
+  updateTimer();
+}
+
+function clearVisualSession() {
+  cancelAnimationFrame(animFrameId);
+  $recordBtn.classList.remove('recording');
+  $waveformBar.classList.remove('active');
+  bindInputInterim('');
+}
+
+async function setupAudioMonitoring(stream) {
+  streamGlobal = stream;
+  audioCtx = new AudioContext();
+  const source = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+}
 
 export function initWaveform(completeCallback) {
   $waveformBar = document.getElementById('waveformBar');
@@ -29,14 +93,12 @@ export function initWaveform(completeCallback) {
   onTextComplete = completeCallback;
 
   $recordBtn.addEventListener('click', toggleConversation);
-  
-  // 预检
+
   if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
     console.warn('当前浏览器不支持原生 SpeechRecognition，需要 Chrome/Edge');
   }
 }
 
-// 供外部调用，AI 开始说话时暂停监听
 export function pauseListening() {
   if (isPaused) return;
   isPaused = true;
@@ -44,20 +106,24 @@ export function pauseListening() {
   $recordBtn.classList.remove('recording');
 
   if (recognition) {
-    try { recognition.stop(); } catch(e) {}
+    try { recognition.stop(); } catch (e) {}
+  }
+
+  if (usingDoubaoRecognition && doubaoSession) {
+    doubaoSession.stop().catch(() => {});
+    doubaoSession = null;
   }
 }
 
-// AI 说完文字后调用，恢复监听
 export function resumeListening() {
   if (!isConversationActive) return;
   isPaused = false;
-  
+
   $waveformBar.classList.add('active');
   $recordBtn.classList.add('recording');
 
   if (recognition) {
-    try { recognition.start(); } catch(e) {}
+    try { recognition.start(); } catch (e) {}
   }
 }
 
@@ -69,109 +135,127 @@ async function toggleConversation() {
   }
 }
 
-async function startConversation() {
+async function startBrowserConversation() {
+  usingDoubaoRecognition = false;
   const SRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SRec) {
     alert('您的浏览器不支持原生语音识别，请使用 Chrome 或 Edge。');
     return;
   }
 
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  await setupAudioMonitoring(stream);
+  beginVisualSession();
+
+  recognition = new SRec();
+  recognition.lang = getVoiceLanguage();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onresult = (e) => {
+    if (isPaused) return;
+
+    let interimTranscript = '';
+    let finalTranscript = '';
+
+    for (let i = e.resultIndex; i < e.results.length; ++i) {
+      if (e.results[i].isFinal) {
+        finalTranscript += e.results[i][0].transcript;
+      } else {
+        interimTranscript += e.results[i][0].transcript;
+      }
+    }
+
+    if (interimTranscript) bindInputInterim(interimTranscript);
+
+    if (finalTranscript) {
+      bindInputInterim('');
+      pauseListening();
+      onTextComplete(finalTranscript.trim());
+    }
+  };
+
+  recognition.onend = () => {
+    if (isConversationActive && !isPaused) {
+      try { recognition.start(); } catch (e) {}
+    }
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error !== 'no-speech') {
+      console.error('Speech recognition error:', e.error);
+    }
+  };
+
+  recognition.start();
+}
+
+async function startDoubaoConversation() {
+  usingDoubaoRecognition = true;
+  const config = getVoiceConfig();
+  doubaoSession = await startDoubaoStreamingRecognition(config, {
+    onInterim(text) {
+      if (isPaused) return;
+      bindInputInterim(text);
+    },
+    onFinal(fullText) {
+      if (isPaused) return;
+      const cleaned = getTranscriptText(fullText);
+      if (!isMeaningfulTranscript(cleaned)) return;
+      bindInputInterim('');
+      pauseListening();
+      onTextComplete(cleaned);
+    },
+    onError(error) {
+      console.error('Doubao streaming ASR error:', error);
+    },
+  });
+
+  await setupAudioMonitoring(doubaoSession.stream);
+  beginVisualSession();
+}
+
+async function startConversation() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    streamGlobal = stream;
-    
-    audioCtx = new AudioContext();
-    const source = audioCtx.createMediaStreamSource(stream);
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-
-    isConversationActive = true;
-    isPaused = false;
-    startTime = Date.now();
-    
-    $recordBtn.classList.add('recording');
-    $waveformBar.classList.add('active');
-
-    drawWaveform();
-    updateTimer();
-
-    // 启动原生识别
-    recognition = new SRec();
-    recognition.lang = 'zh-CN';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    
-    // 输入框实时回显
-    const $chatInput = document.getElementById('chatInput');
-
-    recognition.onresult = (e) => {
-      if (isPaused) return; // 暂停时不处理
-
-      let interimTranscript = '';
-      let finalTranscript = '';
-
-      for (let i = e.resultIndex; i < e.results.length; ++i) {
-        if (e.results[i].isFinal) {
-          finalTranscript += e.results[i][0].transcript;
-        } else {
-          interimTranscript += e.results[i][0].transcript;
-        }
-      }
-
-      // 回显 interim
-      if (interimTranscript) {
-        if ($chatInput) $chatInput.value = interimTranscript;
-      }
-
-      if (finalTranscript) {
-        if ($chatInput) $chatInput.value = ''; // 清空以备后用
-        
-        // 发现完整短句，暂停听筒，送去请求
-        pauseListening();
-        onTextComplete(finalTranscript.trim());
-      }
-    };
-
-    // 如果连续说话断开了，自动重启
-    recognition.onend = () => {
-      // 只要没有手动 stop 或设为 pause，就自动重启，从而实现不间断监听
-      if (isConversationActive && !isPaused) {
-        try { recognition.start(); } catch(e) {}
-      }
-    };
-
-    recognition.onerror = (e) => {
-      // no-speech 不抛异常，静静等待
-      if (e.error !== 'no-speech') {
-        console.error('Speech recognition error:', e.error);
-      }
-    };
-
-    recognition.start();
-
+    if (shouldUseBrowserRecognition()) {
+      await startBrowserConversation();
+      return;
+    }
+    await startDoubaoConversation();
   } catch (err) {
     console.error('麦克风权限被拒绝或启动失败:', err);
+    alert(`语音启动失败：${err.message}`);
+    stopConversation();
   }
 }
 
 export function stopConversation() {
   isConversationActive = false;
+  isPaused = false;
+  usingDoubaoRecognition = false;
+
   if (recognition) {
-    try { recognition.stop(); } catch(e) {}
+    try { recognition.stop(); } catch (e) {}
     recognition = null;
   }
+
+  if (doubaoSession) {
+    doubaoSession.stop().catch(() => {});
+    doubaoSession = null;
+  }
+
   if (streamGlobal) {
     streamGlobal.getTracks().forEach(t => t.stop());
     streamGlobal = null;
   }
+
   if (audioCtx) {
     audioCtx.close();
     audioCtx = null;
   }
-  cancelAnimationFrame(animFrameId);
-  $recordBtn.classList.remove('recording');
-  $waveformBar.classList.remove('active');
+
+  analyser = null;
+  clearVisualSession();
 }
 
 function drawWaveform() {

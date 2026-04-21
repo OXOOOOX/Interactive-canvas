@@ -16,9 +16,10 @@ const publicDir = join(rootDir, 'public');
 const localConfigPath = join(publicDir, 'local.config.js');
 
 const DEFAULT_LOCAL_CONFIG = `// Interactive Canvas - Local Configuration
-// Please edit sk-xxxxxxxx with your actual API key
+// Please edit the keys below with your actual credentials
 window.__LOCAL_CONFIG__ = {
-  DASHSCOPE_KEY: "sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+  LLM_API_KEY: "sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+  DOUBAO_API_KEY: "",
   DEFAULT_LLM_ENDPOINT: "",
   DEFAULT_STT_ENDPOINT: "",
   DEFAULT_TTS_ENDPOINT: "",
@@ -53,7 +54,7 @@ function ensureDependencies() {
 
 function startDevServer() {
   console.log('[Starting] Launching Vite dev server...');
-  console.log('[Info] The browser will open automatically at http://localhost:5173');
+  console.log('[Info] Dev server will be available at http://localhost:8080');
   console.log('[Info] Press Ctrl+C to stop the server');
   console.log('');
 

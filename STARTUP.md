@@ -23,7 +23,7 @@ npm start
 
 1. **Creates `public/local.config.js`** if it doesn't exist (with placeholder values)
 2. **Installs dependencies** if `node_modules` doesn't exist
-3. **Starts the Vite dev server** - browser opens automatically at http://localhost:5173
+3. **Starts the Vite dev server** - available at http://localhost:8080
 
 ## First Time Setup
 
@@ -31,7 +31,8 @@ After the first startup, edit `public/local.config.js` with your actual API keys
 
 ```javascript
 window.__LOCAL_CONFIG__ = {
-  DASHSCOPE_KEY: "sk-your-actual-api-key-here",
+  LLM_API_KEY: "sk-your-actual-llm-key-here",
+  DOUBAO_API_KEY: "your-doubao-api-key-here",
   DEFAULT_LLM_ENDPOINT: "",
   DEFAULT_STT_ENDPOINT: "",
   DEFAULT_TTS_ENDPOINT: "",

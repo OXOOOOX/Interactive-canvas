@@ -80,7 +80,11 @@ const dom = {
   llmEndpoint: $('llmEndpoint'),
   sttEndpoint: $('sttEndpoint'),
   ttsEndpoint: $('ttsEndpoint'),
-  apiKey: $('apiKey'),
+  llmApiKey: $('llmApiKey'),
+  doubaoApiKey: $('doubaoApiKey'),
+  appId: $('appId'),
+  accessToken: $('accessToken'),
+  secretKey: $('secretKey'),
   proxyUrl: $('proxyUrl'),
   saveConfig: $('saveConfig'),
   loadConfig: $('loadConfig'),
@@ -100,6 +104,15 @@ const dom = {
 
   // Voice
   speakBtn: $('speakBtn'),
+  voiceMode: $('voiceMode'),
+  voiceLanguage: $('voiceLanguage'),
+  sttModel: $('sttModel'),
+  fileSttModel: $('fileSttModel'),
+  ttsModel: $('ttsModel'),
+  ttsVoice: $('ttsVoice'),
+  realtimeVoiceModel: $('realtimeVoiceModel'),
+  audioUploadBtn: $('audioUploadBtn'),
+  audioFileInput: $('audioFileInput'),
 };
 
 // ── Config Helper ──
@@ -108,11 +121,22 @@ function getConfig() {
     llmProvider: dom.llmProvider.value,
     sttProvider: dom.sttProvider.value,
     ttsProvider: dom.ttsProvider.value,
+    voiceMode: dom.voiceMode.value,
+    voiceLanguage: dom.voiceLanguage.value,
     llmEndpoint: dom.llmEndpoint.value,
     llmModel: dom.llmModel.value,
     sttEndpoint: dom.sttEndpoint.value,
+    sttModel: dom.sttModel.value,
+    fileSttModel: dom.fileSttModel.value,
     ttsEndpoint: dom.ttsEndpoint.value,
-    apiKey: dom.apiKey.value,
+    ttsModel: dom.ttsModel.value,
+    ttsVoice: dom.ttsVoice.value,
+    realtimeVoiceModel: dom.realtimeVoiceModel.value,
+    llmApiKey: dom.llmApiKey.value,
+    doubaoApiKey: dom.doubaoApiKey.value,
+    appId: dom.appId.value,
+    accessToken: dom.accessToken.value,
+    secretKey: dom.secretKey.value,
     proxyUrl: dom.proxyUrl?.value || '',
     oauthProvider: dom.oauthProvider.value,
     oauthClientId: dom.oauthClientId.value,
@@ -123,13 +147,93 @@ function getConfig() {
   };
 }
 
-function setConfig(config) {
-  for (const [key, value] of Object.entries(config)) {
-    if (dom[key] && typeof value === 'string') dom[key].value = value;
+function applyConfigDefaults(config = {}) {
+  return {
+    voiceMode: 'doubao-pipeline',
+    voiceLanguage: 'zh-CN',
+    sttModel: ENDPOINT_PRESETS.doubao?.sttModel || '',
+    fileSttModel: ENDPOINT_PRESETS.doubao?.fileSttModel || '',
+    ttsModel: ENDPOINT_PRESETS.doubao?.ttsModel || '',
+    realtimeVoiceModel: ENDPOINT_PRESETS.doubao?.realtimeVoiceModel || '',
+    ...config,
+  };
+}
+
+function syncVoiceModeFallback() {
+  if (dom.voiceMode.value === 'browser') return;
+  const hasDoubaoCreds = !!(
+    dom.doubaoApiKey.value ||
+    (dom.appId.value && dom.accessToken.value) ||
+    (dom.appId.value && dom.secretKey.value)
+  );
+  if (!hasDoubaoCreds || !dom.sttEndpoint.value) {
+    dom.voiceMode.value = 'browser';
   }
 }
 
-function applyProviderPreset() {
+function setPresetInputValue(input, value, preserveExisting = false) {
+  if (!input || !value) return;
+  if (!preserveExisting || !input.value) {
+    input.value = value;
+  }
+}
+
+function setSttProviderModels(provider, preserveExisting = false) {
+  const preset = ENDPOINT_PRESETS[provider] || {};
+  setPresetInputValue(dom.sttModel, preset.sttModel, preserveExisting);
+  setPresetInputValue(dom.fileSttModel, preset.fileSttModel, preserveExisting);
+}
+
+function setTtsProviderModels(provider, preserveExisting = false) {
+  const preset = ENDPOINT_PRESETS[provider] || {};
+  setPresetInputValue(dom.ttsModel, preset.ttsModel, preserveExisting);
+  setPresetInputValue(dom.realtimeVoiceModel, preset.realtimeVoiceModel, preserveExisting);
+}
+
+function setConfig(config) {
+  const finalConfig = applyConfigDefaults(config);
+  for (const [key, value] of Object.entries(finalConfig)) {
+    if (dom[key] && typeof value === 'string') dom[key].value = value;
+  }
+  syncVoiceModeFallback();
+}
+
+function setAudioUploadBusy(isBusy, label = '上传音频转写') {
+  if (!dom.audioUploadBtn) return;
+  dom.audioUploadBtn.disabled = isBusy;
+  dom.audioUploadBtn.title = label;
+  dom.audioUploadBtn.setAttribute('aria-label', label);
+}
+
+async function handleAudioFileSelected(file) {
+  if (!file) return;
+  setAudioUploadBusy(true, '正在转写音频...');
+  try {
+    const text = await transcribe(file, getConfig());
+    const cleaned = (text || '').trim();
+    if (!cleaned) throw new Error('未识别到有效文本');
+
+    if (isConversationActive) {
+      await sendText(cleaned);
+      return;
+    }
+
+    const input = document.getElementById('chatInput');
+    if (input) {
+      input.value = cleaned;
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    }
+  } catch (error) {
+    console.error('音频文件转写失败:', error);
+    alert(`音频转写失败：${error.message}`);
+  } finally {
+    if (dom.audioFileInput) dom.audioFileInput.value = '';
+    setAudioUploadBusy(false, '上传音频转写');
+  }
+}
+
+function applyProviderPreset(preserveExistingModels = true) {
   const llmPreset = ENDPOINT_PRESETS[dom.llmProvider.value]?.llm || '';
   const sttPreset = ENDPOINT_PRESETS[dom.sttProvider.value]?.stt || '';
   const ttsPreset = ENDPOINT_PRESETS[dom.ttsProvider.value]?.tts || '';
@@ -145,21 +249,144 @@ function applyProviderPreset() {
   if (!llmCustom) dom.llmEndpoint.value = llmPreset;
   if (!sttCustom) dom.sttEndpoint.value = sttPreset;
   if (!ttsCustom) dom.ttsEndpoint.value = ttsPreset;
+
+  setSttProviderModels(dom.sttProvider.value, preserveExistingModels);
+  setTtsProviderModels(dom.ttsProvider.value, preserveExistingModels);
+  syncVoiceModeFallback();
 }
+
+function applyVoiceModePreset() {
+  if (dom.voiceMode.value === 'browser') {
+    dom.ttsProvider.value = 'browser';
+    applyProviderPreset(false);
+    return;
+  }
+
+  if (dom.sttProvider.value === 'custom') dom.sttProvider.value = 'doubao';
+  if (dom.ttsProvider.value === 'custom' || dom.ttsProvider.value === 'browser') dom.ttsProvider.value = 'doubao';
+  applyProviderPreset(false);
+}
+
+function applyVoiceLocalDefaults() {
+  if (!dom.voiceMode.value) dom.voiceMode.value = 'doubao-pipeline';
+  if (!dom.voiceLanguage.value) dom.voiceLanguage.value = 'zh-CN';
+}
+
+function bindAudioUpload() {
+  if (!dom.audioUploadBtn || !dom.audioFileInput) return;
+  dom.audioUploadBtn.addEventListener('click', () => dom.audioFileInput.click());
+  dom.audioFileInput.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    await handleAudioFileSelected(file);
+  });
+}
+
+function isBrowserVoiceMode() {
+  return dom.voiceMode.value === 'browser';
+}
+
+function getSpeechSynthesisLanguage() {
+  return dom.voiceLanguage.value || 'zh-CN';
+}
+
+async function playAssistantReply(reply) {
+  if (!reply) {
+    resumeListening();
+    return;
+  }
+
+  if (isBrowserVoiceMode()) {
+    const utterance = new SpeechSynthesisUtterance(reply);
+    utterance.lang = getSpeechSynthesisLanguage();
+    utterance.rate = 1.4;
+    utterance.onend = () => resumeListening();
+    utterance.onerror = () => resumeListening();
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utterance);
+    return;
+  }
+
+  try {
+    await speak(reply, getConfig());
+  } catch (error) {
+    console.error('豆包语音合成失败，回退浏览器朗读:', error);
+    const utterance = new SpeechSynthesisUtterance(reply);
+    utterance.lang = getSpeechSynthesisLanguage();
+    utterance.rate = 1.4;
+    utterance.onend = () => resumeListening();
+    utterance.onerror = () => resumeListening();
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utterance);
+    return;
+  }
+
+  resumeListening();
+}
+
+function getVoiceSubmitText(transcribedText) {
+  return (transcribedText || '').trim();
+}
+
+function isMeaningfulTranscript(text) {
+  return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
+}
+
+function shouldUseBrowserRecognition() {
+  return isBrowserVoiceMode();
+}
+
+window.__VOICE_MODE_HELPERS__ = {
+  shouldUseBrowserRecognition,
+};
+window.__GET_CONFIG__ = getConfig;
+window.__PLAY_ASSISTANT_REPLY__ = playAssistantReply;
+window.__GET_VOICE_LANGUAGE__ = getSpeechSynthesisLanguage;
+window.__VOICE_FILE_TRANSCRIBE__ = handleAudioFileSelected;
+window.__VOICE_TRANSCRIPT_TEXT__ = getVoiceSubmitText;
+window.__VOICE_TRANSCRIPT_VALID__ = isMeaningfulTranscript;
 
 function applyLocalConfig() {
   const cfg = window.__LOCAL_CONFIG__ || {};
-  const envKey = import.meta.env?.VITE_DASHSCOPE_KEY;
-  const finalKey = envKey || cfg.DASHSCOPE_KEY;
-  
-  if (finalKey) {
-    dom.apiKey.value = finalKey;
-  } else if (!dom.apiKey.value && typeof finalKey === 'string') {
-    dom.apiKey.value = finalKey;
+  const envLlmApiKey = import.meta.env?.VITE_LLM_API_KEY || import.meta.env?.VITE_DASHSCOPE_KEY;
+  const envDoubaoApiKey = import.meta.env?.VITE_DOUBAO_API_KEY;
+  const envAppId = import.meta.env?.VITE_DOUBAO_APP_ID;
+  const envAccessToken = import.meta.env?.VITE_DOUBAO_ACCESS_TOKEN;
+  const envSecretKey = import.meta.env?.VITE_DOUBAO_SECRET_KEY;
+  const finalLlmApiKey = envLlmApiKey || cfg.LLM_API_KEY || cfg.DASHSCOPE_KEY;
+  const finalDoubaoApiKey = envDoubaoApiKey || cfg.DOUBAO_API_KEY;
+  const finalAppId = envAppId || cfg.DOUBAO_APP_ID;
+  const finalAccessToken = envAccessToken || cfg.DOUBAO_ACCESS_TOKEN;
+  const finalSecretKey = envSecretKey || cfg.DOUBAO_SECRET_KEY;
+
+  if (finalLlmApiKey) {
+    dom.llmApiKey.value = finalLlmApiKey;
+  } else if (!dom.llmApiKey.value && typeof finalLlmApiKey === 'string') {
+    dom.llmApiKey.value = finalLlmApiKey;
   }
+
+  if (finalDoubaoApiKey) {
+    dom.doubaoApiKey.value = finalDoubaoApiKey;
+  } else if (!dom.doubaoApiKey.value && typeof finalDoubaoApiKey === 'string') {
+    dom.doubaoApiKey.value = finalDoubaoApiKey;
+  }
+
+
+  if (finalAppId) {
+    dom.appId.value = finalAppId;
+  }
+  if (finalAccessToken) {
+    dom.accessToken.value = finalAccessToken;
+  }
+  if (finalSecretKey) {
+    dom.secretKey.value = finalSecretKey;
+  }
+
   if (!dom.llmEndpoint.value && cfg.DEFAULT_LLM_ENDPOINT) dom.llmEndpoint.value = cfg.DEFAULT_LLM_ENDPOINT;
   if (!dom.sttEndpoint.value && cfg.DEFAULT_STT_ENDPOINT) dom.sttEndpoint.value = cfg.DEFAULT_STT_ENDPOINT;
   if (!dom.ttsEndpoint.value && cfg.DEFAULT_TTS_ENDPOINT) dom.ttsEndpoint.value = cfg.DEFAULT_TTS_ENDPOINT;
+
+  applyVoiceLocalDefaults();
+  syncVoiceModeFallback();
 }
 
 let namingInProgress = false;
@@ -341,7 +568,7 @@ async function handleSplitNode() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`
+        'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
         model: config.llmModel || 'qwen-plus',
@@ -455,7 +682,7 @@ async function handleMergeNode() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`
+        'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
         model: config.llmModel || 'qwen-plus',
@@ -586,7 +813,7 @@ async function handleExpandNode() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`
+        'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
         model: config.llmModel || 'qwen-plus',
@@ -652,7 +879,7 @@ async function handleDeriveNode() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`
+        'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
         model: config.llmModel || 'qwen-plus',
@@ -736,7 +963,7 @@ async function handleTranslateNode() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`
+        'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
         model: config.llmModel || 'qwen-plus',
@@ -807,8 +1034,9 @@ function init() {
   // 1. Load saved config
   const saved = loadSavedConfig();
   if (saved) setConfig(saved);
-  applyProviderPreset();
+  applyProviderPreset(true);
   applyLocalConfig();
+  applyVoiceModePreset();
 
   // 2. Load canvas - try multi-canvas system first, fallback to single canvas
   const currentId = getCurrentCanvasId();
@@ -858,30 +1086,21 @@ function init() {
   initChat(getConfig);
   initWaveform(async (transcribedText) => {
     try {
-      const text = transcribedText;
-      // 过滤纯标点符号/噪音
-      if (text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0) {
-        const reply = await sendText(text);
-        if (reply && isConversationActive) {
-          // AI 响应后使用原生引擎低延迟朗读
-          const utterance = new SpeechSynthesisUtterance(reply);
-          utterance.lang = 'zh-CN';
-          utterance.rate = 1.4; // 加快语速，让语感更干练
-          utterance.onend = () => resumeListening();
-          utterance.onerror = () => resumeListening();
-          // 如果之前有没念完的，强制切断
-          speechSynthesis.cancel();
-          speechSynthesis.speak(utterance);
-        } else {
-          resumeListening();
-        }
+      const text = getVoiceSubmitText(transcribedText);
+      if (!isMeaningfulTranscript(text)) {
+        resumeListening();
+        return;
+      }
+
+      const reply = await sendText(text);
+      if (reply && isConversationActive) {
+        await playAssistantReply(reply);
       } else {
-        // 无效语音，继续听
         resumeListening();
       }
     } catch (err) {
       console.error('语音转写或响应失败:', err);
-      resumeListening(); // 即使报错也尝试继续听
+      resumeListening();
     }
   });
 
@@ -1353,9 +1572,16 @@ function bindEvents() {
   }
 
   // Provider presets
-  dom.llmProvider.addEventListener('change', applyProviderPreset);
-  dom.sttProvider.addEventListener('change', applyProviderPreset);
-  dom.ttsProvider.addEventListener('change', applyProviderPreset);
+  dom.llmProvider.addEventListener('change', () => applyProviderPreset(false));
+  dom.sttProvider.addEventListener('change', () => applyProviderPreset(false));
+  dom.ttsProvider.addEventListener('change', () => applyProviderPreset(false));
+  dom.voiceMode.addEventListener('change', applyVoiceModePreset);
+  dom.doubaoApiKey.addEventListener('change', syncVoiceModeFallback);
+  dom.appId.addEventListener('change', syncVoiceModeFallback);
+  dom.accessToken.addEventListener('change', syncVoiceModeFallback);
+  dom.secretKey.addEventListener('change', syncVoiceModeFallback);
+  dom.sttEndpoint.addEventListener('change', syncVoiceModeFallback);
+  bindAudioUpload();
 
   // Save / Load config
   dom.saveConfig.addEventListener('click', () => {
@@ -1379,7 +1605,7 @@ function bindEvents() {
 
       try {
         const config = getConfig();
-        if (!config.apiKey) throw new Error('请先填写 API Key');
+        if (!config.llmApiKey) throw new Error('请先填写 LLM API Key');
         
         let url = config.llmEndpoint || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
         if (url.endsWith('/chat/completions')) url = url.replace('/chat/completions', '');
@@ -1388,7 +1614,7 @@ function bindEvents() {
         const res = await fetch(config.proxyUrl || url, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${config.apiKey}`
+            'Authorization': `Bearer ${config.llmApiKey}`
           }
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1464,18 +1690,16 @@ function bindEvents() {
     dom.settingsBtn.classList.add('api-key-alert');
 
     // 给 API key 输入框添加高亮红框
-    dom.apiKey.classList.add('api-key-highlight');
+    dom.llmApiKey.classList.add('api-key-highlight');
 
-    // 聚焦 API key 输入框
     setTimeout(() => {
-      dom.apiKey.focus();
-      dom.apiKey.select();
+      dom.llmApiKey.focus();
+      dom.llmApiKey.select();
     }, 300);
 
-    // 动画结束后移除类
     setTimeout(() => {
       dom.settingsBtn.classList.remove('api-key-alert');
-      dom.apiKey.classList.remove('api-key-highlight');
+      dom.llmApiKey.classList.remove('api-key-highlight');
     }, 3000);
   });
 

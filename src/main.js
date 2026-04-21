@@ -202,7 +202,7 @@ function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false,
   }
 
   renderBlocks();
-  syncBlockSizes();
+  syncBlockSizes({ adaptForAutoLayout: true });
   autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
   renderBlocks();
   syncBlockSizes();
@@ -261,9 +261,12 @@ function handleAddSibling() {
     });
   }
   appState.selectedBlockId = newBlock.id;
-  syncBlockSizes();
+  renderBlocks();
+  syncBlockSizes({ adaptForAutoLayout: true });
   autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
   pushHistory();
+  renderBlocks();
+  syncBlockSizes();
   renderBlocks();
   saveCurrentCanvas();
   checkAutoNaming();
@@ -1170,9 +1173,11 @@ function bindEvents() {
   dom.fitBtn.addEventListener('click', fitToView);
   dom.autoLayoutBtn.addEventListener('click', () => {
     renderBlocks();
-    syncBlockSizes();
+    syncBlockSizes({ adaptForAutoLayout: true });
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
     pushHistory();
+    renderBlocks();
+    syncBlockSizes();
     renderBlocks();
     fitToView();
     saveCurrentCanvas();
@@ -1629,8 +1634,11 @@ function runAutoLayoutBenchmark(iterations = 5) {
   const results = [];
 
   for (let i = 0; i < rounds; i++) {
-    syncBlockSizes();
+    renderBlocks();
+    syncBlockSizes({ adaptForAutoLayout: true });
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+    renderBlocks();
+    syncBlockSizes();
     renderBlocks();
     const box = getBoundingBox(appState.canvas.blocks, b => b.width || 200);
     results.push({

@@ -9,6 +9,11 @@ import { renderMarkdown } from './utils/parser.js';
 const BLOCK_DEFAULT_W = 200;
 const BLOCK_MIN_W = 120;
 const BLOCK_MIN_H = 60;
+const AUTO_LAYOUT_TARGET_RATIO = 1.5;
+const AUTO_LAYOUT_RATIO_TOLERANCE = 0.2;
+const AUTO_LAYOUT_MAX_WIDTH = 640;
+const AUTO_LAYOUT_WIDTH_STEP = 24;
+const AUTO_LAYOUT_MIN_HEIGHT_GAIN = 24;
 const DRAG_THRESHOLD = 5;
 const SNAP_GRID = 20;
 
@@ -2029,11 +2034,58 @@ export function hideNodeToolbar() {
   $nodeToolbar.setAttribute('aria-hidden', 'true');
 }
 
+function measureBlockAtWidth(el, width) {
+  const prevWidth = el.style.width;
+  const prevHeight = el.style.height;
+  el.style.width = `${width}px`;
+  el.style.height = 'auto';
+  const measuredWidth = parseFloat(getComputedStyle(el).width) || el.offsetWidth || width;
+  const measuredHeight = el.offsetHeight || 0;
+  el.style.width = prevWidth;
+  el.style.height = prevHeight;
+  return {
+    width: Math.max(BLOCK_MIN_W, Math.round(measuredWidth)),
+    height: Math.max(BLOCK_MIN_H, Math.round(measuredHeight)),
+  };
+}
+
+function getAutoLayoutSize(el, block, measuredWidth, measuredHeight) {
+  if (measuredWidth <= 0 || measuredHeight <= 0) return null;
+  const currentWidth = Math.max(BLOCK_MIN_W, Math.round(block.width || measuredWidth || BLOCK_DEFAULT_W));
+  const currentHeight = Math.max(BLOCK_MIN_H, Math.round(measuredHeight));
+  const currentRatio = currentWidth / Math.max(currentHeight, 1);
+  const targetHeight = Math.max(BLOCK_MIN_H, Math.round(currentWidth / AUTO_LAYOUT_TARGET_RATIO));
+  const needsHeightRelief = currentHeight - targetHeight >= AUTO_LAYOUT_MIN_HEIGHT_GAIN;
+  const needsRatioRelief = currentRatio < AUTO_LAYOUT_TARGET_RATIO - AUTO_LAYOUT_RATIO_TOLERANCE;
+  if (!needsHeightRelief && !needsRatioRelief) return null;
+
+  let best = { width: currentWidth, height: currentHeight, score: Math.abs(currentWidth / currentHeight - AUTO_LAYOUT_TARGET_RATIO) };
+  let candidateWidth = currentWidth;
+
+  while (candidateWidth < AUTO_LAYOUT_MAX_WIDTH) {
+    candidateWidth += AUTO_LAYOUT_WIDTH_STEP;
+    const candidate = measureBlockAtWidth(el, candidateWidth);
+    const ratio = candidate.width / Math.max(candidate.height, 1);
+    const heightGain = best.height - candidate.height;
+    const improvesHeight = heightGain >= AUTO_LAYOUT_MIN_HEIGHT_GAIN / 2;
+    const improvesRatio = Math.abs(ratio - AUTO_LAYOUT_TARGET_RATIO) < best.score;
+    if (!improvesHeight && !improvesRatio) continue;
+    best = { width: candidate.width, height: candidate.height, score: Math.abs(ratio - AUTO_LAYOUT_TARGET_RATIO) };
+    if (ratio >= AUTO_LAYOUT_TARGET_RATIO - AUTO_LAYOUT_RATIO_TOLERANCE && candidate.height <= targetHeight + AUTO_LAYOUT_MIN_HEIGHT_GAIN) {
+      break;
+    }
+  }
+
+  if (best.width <= currentWidth + 8 && best.height >= currentHeight - 8) return null;
+  return { width: best.width, height: best.height };
+}
+
 /**
  * 同步 DOM 中块的尺寸到数据对象
  * 在自动布局前调用，确保使用最新的块尺寸
  */
-export function syncBlockSizes() {
+export function syncBlockSizes(options = {}) {
+  const { adaptForAutoLayout = false } = options;
   for (const block of appState.canvas.blocks) {
     const el = $blockCanvas.querySelector(`[data-id="${block.id}"]`);
     if (!el) continue;
@@ -2050,6 +2102,12 @@ export function syncBlockSizes() {
     if (measuredHeight > 0) {
       block.height = Math.max(BLOCK_MIN_H, Math.round(measuredHeight));
     }
+
+    if (!adaptForAutoLayout || block.locked || block.isVirtual) continue;
+    const adapted = getAutoLayoutSize(el, block, measuredWidth, measuredHeight);
+    if (!adapted) continue;
+    block.width = Math.max(block.width || BLOCK_DEFAULT_W, adapted.width);
+    block.height = adapted.height;
   }
 }
 

@@ -4,8 +4,8 @@
 
 import { extractAssistantText, buildCanvasOutline } from '../utils/parser.js';
 
-/** 
- * 白板后台幽灵 Agent 的 System Prompt 
+/**
+ * 白板后台幽灵 Agent 的 System Prompt
  */
 function buildCanvasSystemPrompt(canvasJson) {
   return `You are a silent 'Canvas Agent' organizing whiteboard data in the background. Your task is to organize concepts into a mind map structure based on the user's conversation.
@@ -21,8 +21,8 @@ Available Operations:
 Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
 }
 
-/** 
- * 白板单节点提炼 Agent 的 System Prompt 
+/**
+ * 白板单节点提炼 Agent 的 System Prompt
  */
 function buildRefineSystemPrompt(outline, blockLabel, blockContent) {
   return `You are an expert copywriter and logic refiner.
@@ -42,8 +42,8 @@ Analyze the context and deeply refine this node's content:
 {"label": "Optimized Label", "content": "Refined Content..."}`;
 }
 
-/** 
- * 白板自动命名 Agent 的 System Prompt 
+/**
+ * 白板自动命名 Agent 的 System Prompt
  */
 function buildNamingSystemPrompt(outline) {
   return `You are a meeting/whiteboard secretary.
@@ -57,7 +57,7 @@ Current Whiteboard Outline:
 ${outline}`;
 }
 
-/** 
+/**
  * 聊天主力 Agent 的 System Prompt
  */
 function buildChatSystemPrompt(canvasOutline) {
@@ -75,53 +75,170 @@ ${canvasOutline}
 If the outline is helpful, integrate the current whiteboard state into your response to provide more contextually relevant replies.`;
 }
 
-/**
- * 内部通用的调用请求
- */
-async function sendRequest(config, messages, isCanvas = false) {
+function getEndpoint(config) {
   const endpoint = config.proxyUrl || config.llmEndpoint;
   if (!endpoint) throw new Error('未配置 LLM endpoint');
+  return endpoint;
+}
 
+function buildPayload(config, messages, isCanvas = false, stream = false) {
   const payload = {
-    // 升级至阿里云最新顶级旗舰大模型处理能力
     model: config.llmProvider === 'doubao' ? 'doubao-1.5-pro' : 'qwen-max-latest',
     messages,
   };
 
-  // 白板Agent可以尝试加一点temperature或者改参数
   if (isCanvas) {
-    payload.temperature = 0.2; // canvas需要更确定的json
-    // 如果模型支持专门的 response_format，可以加上。不过各大模型支持不一致，暂时省略
+    payload.temperature = 0.2;
   } else {
-    payload.temperature = 0.7; // 聊天丰富一点
-    // 为聊天副驾开启搜索能力，大幅增强智能（兼容通义千问等支持该参数的底层模型）
+    payload.temperature = 0.7;
     payload.enable_search = true;
+    if (stream) payload.stream = true;
   }
+
+  return payload;
+}
+
+function buildHeaders(config) {
+  return {
+    'Content-Type': 'application/json',
+    ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+  };
+}
+
+async function handleErrorResponse(res) {
+  const text = await res.text().catch(() => '');
+
+  if (res.status === 401 || res.status === 403) {
+    window.dispatchEvent(new CustomEvent('api:key-missing', {
+      detail: { status: res.status, message: text.slice(0, 200) }
+    }));
+  }
+
+  throw new Error(`LLM 请求失败 (${res.status}): ${text.slice(0, 200)}`);
+}
+
+function extractStreamDelta(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (typeof payload.output_text_delta === 'string') return payload.output_text_delta;
+  if (typeof payload.delta === 'string') return payload.delta;
+  if (typeof payload.text === 'string') return payload.text;
+
+  const choice = payload.choices?.[0];
+  if (!choice) return '';
+  const delta = choice.delta || choice.message || {};
+
+  if (typeof delta.content === 'string') return delta.content;
+  if (Array.isArray(delta.content)) {
+    return delta.content.map(part => {
+      if (typeof part === 'string') return part;
+      if (typeof part?.text === 'string') return part.text;
+      if (typeof part?.content === 'string') return part.content;
+      return '';
+    }).join('');
+  }
+  if (typeof delta.text === 'string') return delta.text;
+  return '';
+}
+
+function consumeSseBuffer(buffer, onEvent) {
+  let rest = buffer;
+  while (true) {
+    let boundary = rest.indexOf('\n\n');
+    let boundaryLength = 2;
+    const windowsBoundary = rest.indexOf('\r\n\r\n');
+    if (windowsBoundary !== -1 && (boundary === -1 || windowsBoundary < boundary)) {
+      boundary = windowsBoundary;
+      boundaryLength = 4;
+    }
+    if (boundary === -1) break;
+
+    const rawEvent = rest.slice(0, boundary);
+    rest = rest.slice(boundary + boundaryLength);
+
+    const dataLines = rawEvent
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trim())
+      .filter(Boolean);
+
+    if (dataLines.length === 0) continue;
+    onEvent(dataLines.join('\n'));
+  }
+  return rest;
+}
+
+async function sendRequest(config, messages, isCanvas = false) {
+  const endpoint = getEndpoint(config);
+  const payload = buildPayload(config, messages, isCanvas, false);
 
   const res = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-    },
+    headers: buildHeaders(config),
     body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-
-    // 401/403 错误表示 API key 缺失或无效，触发自定义事件通知 UI
-    if (res.status === 401 || res.status === 403) {
-      window.dispatchEvent(new CustomEvent('api:key-missing', {
-        detail: { status: res.status, message: text.slice(0, 200) }
-      }));
-    }
-
-    throw new Error(`LLM 请求失败 (${res.status}): ${text.slice(0, 200)}`);
+    await handleErrorResponse(res);
   }
 
   const data = await res.json();
   return extractAssistantText(data);
+}
+
+async function sendStreamingChatRequest(config, messages, onDelta) {
+  const endpoint = getEndpoint(config);
+  const payload = buildPayload(config, messages, false, true);
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: buildHeaders(config),
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    await handleErrorResponse(res);
+  }
+
+  if (!res.body) {
+    const data = await res.json();
+    const text = extractAssistantText(data);
+    onDelta?.(text, text);
+    return text;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let fullText = '';
+
+  const handleEvent = (dataLine) => {
+    if (!dataLine || dataLine === '[DONE]') return;
+
+    try {
+      const payload = JSON.parse(dataLine);
+      const delta = extractStreamDelta(payload);
+      if (!delta) return;
+      fullText += delta;
+      onDelta?.(fullText, delta);
+    } catch {
+      fullText += dataLine;
+      onDelta?.(fullText, dataLine);
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeSseBuffer(buffer, handleEvent);
+  }
+
+  buffer += decoder.decode();
+  buffer = consumeSseBuffer(buffer, handleEvent);
+  const trailing = buffer.trim().replace(/^data:/, '').trim();
+  if (trailing) handleEvent(trailing);
+
+  return fullText;
 }
 
 /**
@@ -138,6 +255,16 @@ export async function callChatLlm(config, conversation, canvas) {
   return rawText;
 }
 
+export async function callChatLlmStream(config, conversation, canvas, handlers = {}) {
+  const outline = buildCanvasOutline(canvas);
+  const systemPrompt = buildChatSystemPrompt(outline);
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...conversation,
+  ];
+  return await sendStreamingChatRequest(config, messages, handlers.onDelta);
+}
+
 /**
  * 后台幽灵 Agent：白板更新
  */
@@ -151,7 +278,6 @@ export async function callCanvasLlm(config, conversation, canvas) {
   const systemPrompt = buildCanvasSystemPrompt(canvasJson);
   const messages = [
     { role: 'system', content: systemPrompt },
-    // 仅仅传递对话内容，看看需不需要画图
     ...conversation,
   ];
 
@@ -241,8 +367,8 @@ export async function callRefineLlm(config, block, canvas) {
     { role: 'system', content: systemPrompt },
     { role: 'user', content: 'Please refine this node.' }
   ];
-  const rawText = await sendRequest(config, messages, true); // true for low temp / structured
-  
+  const rawText = await sendRequest(config, messages, true);
+
   let result = { label: block.label, content: block.content };
   try {
     const jsonStr = rawText.replace(/```json\n?|\n?```/gi, '').trim();
@@ -261,9 +387,6 @@ export async function callRefineLlm(config, block, canvas) {
 export async function callNamingLlm(config, canvas) {
   const outline = buildCanvasOutline(canvas);
   const systemPrompt = buildNamingSystemPrompt(outline);
-  const messages = [
-    { role: 'system', content: systemPrompt }
-  ];
-  const title = await sendRequest(config, messages, true);
-  return title ? title.trim() : null;
+  const rawText = await sendRequest(config, [{ role: 'system', content: systemPrompt }], true);
+  return rawText.replace(/^['"]|['"]$/g, '').trim();
 }

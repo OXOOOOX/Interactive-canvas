@@ -25,6 +25,10 @@ const GRID_PARENT_OFFSET = 40;   // 网格与父节点底部的垂直偏移
 const LEAF_CLUSTER_MIN = 3;      // 叶子聚类最小数量阈值
 const TALL_LEAF_HEIGHT_THRESHOLD = 500;
 const TALL_LEAF_OFFSET = 60;
+const LEAF_DIMENSION_SIMILARITY_THRESHOLD = 1.2;
+const PORTRAIT_RATIO_THRESHOLD = 5;
+const PORTRAIT_TARGET_RATIO = 1.5;
+const PORTRAIT_WIDTH_CHANGE_MIN = 24;
 
 /**
  * 获取块的实际宽度
@@ -38,6 +42,33 @@ function getBlockWidth(block) {
  */
 function getBlockHeight(block) {
   return block.height || BLOCK_H;
+}
+
+function normalizeExtremePortraitBlocks(blocks) {
+  const originallyTallIds = new Set();
+  let changed = false;
+
+  for (const block of blocks) {
+    if (!block || block.isVirtual || block.locked) continue;
+    const width = getBlockWidth(block);
+    const height = getBlockHeight(block);
+    if (height > TALL_LEAF_HEIGHT_THRESHOLD) originallyTallIds.add(block.id);
+    if (width <= 0 || height <= 0) continue;
+    if (height / width <= PORTRAIT_RATIO_THRESHOLD) continue;
+
+    const area = width * height;
+    const targetWidth = Math.max(BLOCK_W, Math.round(Math.sqrt(area / PORTRAIT_TARGET_RATIO)));
+    if (targetWidth <= width + PORTRAIT_WIDTH_CHANGE_MIN) continue;
+
+    const targetHeight = Math.max(BLOCK_H, Math.round(area / targetWidth));
+    if (Math.abs(targetHeight - height) < 1) continue;
+
+    block.width = targetWidth;
+    block.height = targetHeight;
+    changed = true;
+  }
+
+  return { originallyTallIds, changed };
 }
 
 function findDuplicateBlockIds(blocks) {
@@ -282,7 +313,89 @@ function overlapsBox(a, b) {
   return a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY;
 }
 
-function identifyLeafClusters(blocks, connections, blockMap) {
+function isLeafSizeCompatible(bucket, leaf) {
+  if (!bucket || bucket.items.length === 0) return true;
+  const width = getBlockWidth(leaf);
+  const height = getBlockHeight(leaf);
+  return bucket.minWidth > 0
+    && bucket.minHeight > 0
+    && width / bucket.minWidth <= LEAF_DIMENSION_SIMILARITY_THRESHOLD
+    && bucket.maxWidth / width <= LEAF_DIMENSION_SIMILARITY_THRESHOLD
+    && height / bucket.minHeight <= LEAF_DIMENSION_SIMILARITY_THRESHOLD
+    && bucket.maxHeight / height <= LEAF_DIMENSION_SIMILARITY_THRESHOLD;
+}
+
+function addLeafToBucket(bucket, leafId, blockMap) {
+  const leaf = blockMap[leafId];
+  if (!leaf) return;
+  const width = getBlockWidth(leaf);
+  const height = getBlockHeight(leaf);
+  bucket.items.push(leafId);
+  bucket.minWidth = Math.min(bucket.minWidth, width);
+  bucket.maxWidth = Math.max(bucket.maxWidth, width);
+  bucket.minHeight = Math.min(bucket.minHeight, height);
+  bucket.maxHeight = Math.max(bucket.maxHeight, height);
+}
+
+function createLeafBucket() {
+  return {
+    items: [],
+    minWidth: Infinity,
+    maxWidth: 0,
+    minHeight: Infinity,
+    maxHeight: 0,
+  };
+}
+
+function buildLeafCluster(parentId, normalLeafIds, tallLeafIds, blockMap) {
+  const leafIds = [...normalLeafIds, ...tallLeafIds];
+  if (leafIds.length === 0) return null;
+
+  let maxLeafW = 0;
+  let maxLeafH = 0;
+  let maxNormalLeafW = 0;
+  let maxNormalLeafH = 0;
+  for (const leafId of leafIds) {
+    const leaf = blockMap[leafId];
+    if (!leaf) continue;
+    const width = getBlockWidth(leaf);
+    const height = getBlockHeight(leaf);
+    maxLeafW = Math.max(maxLeafW, width);
+    maxLeafH = Math.max(maxLeafH, height);
+    if (normalLeafIds.includes(leafId)) {
+      maxNormalLeafW = Math.max(maxNormalLeafW, width);
+      maxNormalLeafH = Math.max(maxNormalLeafH, height);
+    }
+  }
+
+  const gridCols = Math.min(Math.max(normalLeafIds.length, 1), GRID_MAX_COLS);
+  const gridRows = normalLeafIds.length > 0 ? Math.ceil(normalLeafIds.length / gridCols) : 0;
+  const gridW = normalLeafIds.length > 0
+    ? gridCols * maxNormalLeafW + (gridCols - 1) * GRID_H_GAP
+    : maxLeafW;
+  const gridH = normalLeafIds.length > 0
+    ? gridRows * maxNormalLeafH + Math.max(gridRows - 1, 0) * GRID_V_GAP
+    : 0;
+
+  return {
+    parentId,
+    leafIds,
+    normalLeafIds: [...normalLeafIds],
+    tallLeafIds: [...tallLeafIds],
+    maxLeafW,
+    maxLeafH,
+    maxNormalLeafW,
+    maxNormalLeafH,
+    gridCols,
+    gridRows,
+    gridW,
+    gridH,
+    bbox: null,
+    outerDir: 1,
+  };
+}
+
+function identifyLeafClusters(blocks, connections, blockMap, originallyTallIds = new Set()) {
   const outDegree = {};
   const parentOf = {};
   for (const b of blocks) {
@@ -309,52 +422,52 @@ function identifyLeafClusters(blocks, connections, blockMap) {
 
     const normalLeafIds = [];
     const tallLeafIds = [];
-    let maxLeafW = 0;
-    let maxLeafH = 0;
-    let maxNormalLeafW = 0;
-    let maxNormalLeafH = 0;
-
     for (const leafId of leafIds) {
       const leaf = blockMap[leafId];
       if (!leaf) continue;
-      const width = getBlockWidth(leaf);
       const height = getBlockHeight(leaf);
-      maxLeafW = Math.max(maxLeafW, width);
-      maxLeafH = Math.max(maxLeafH, height);
-      if (height > TALL_LEAF_HEIGHT_THRESHOLD) {
+      if (originallyTallIds.has(leafId) || height > TALL_LEAF_HEIGHT_THRESHOLD) {
         tallLeafIds.push(leafId);
       } else {
         normalLeafIds.push(leafId);
-        maxNormalLeafW = Math.max(maxNormalLeafW, width);
-        maxNormalLeafH = Math.max(maxNormalLeafH, height);
       }
     }
 
-    const gridCols = Math.min(Math.max(normalLeafIds.length, 1), GRID_MAX_COLS);
-    const gridRows = normalLeafIds.length > 0 ? Math.ceil(normalLeafIds.length / gridCols) : 0;
-    const gridW = normalLeafIds.length > 0
-      ? gridCols * maxNormalLeafW + (gridCols - 1) * GRID_H_GAP
-      : maxLeafW;
-    const gridH = normalLeafIds.length > 0
-      ? gridRows * maxNormalLeafH + Math.max(gridRows - 1, 0) * GRID_V_GAP
-      : 0;
+    const sortedNormalLeafIds = [...normalLeafIds].sort((a, b) => {
+      const aw = getBlockWidth(blockMap[a]);
+      const bw = getBlockWidth(blockMap[b]);
+      if (aw !== bw) return aw - bw;
+      return getBlockHeight(blockMap[a]) - getBlockHeight(blockMap[b]);
+    });
 
-    clusters[pid] = {
-      parentId: pid,
-      leafIds: [...leafIds],
-      normalLeafIds,
-      tallLeafIds,
-      maxLeafW,
-      maxLeafH,
-      maxNormalLeafW,
-      maxNormalLeafH,
-      gridCols,
-      gridRows,
-      gridW,
-      gridH,
-      bbox: null,
-      outerDir: 1,
-    };
+    const buckets = [];
+    for (const leafId of sortedNormalLeafIds) {
+      const leaf = blockMap[leafId];
+      if (!leaf) continue;
+      let bucket = buckets.find(item => isLeafSizeCompatible(item, leaf));
+      if (!bucket) {
+        bucket = createLeafBucket();
+        buckets.push(bucket);
+      }
+      addLeafToBucket(bucket, leafId, blockMap);
+    }
+
+    const qualifiedBuckets = buckets
+      .filter(bucket => bucket.items.length >= LEAF_CLUSTER_MIN)
+      .sort((a, b) => b.items.length - a.items.length);
+    if (qualifiedBuckets.length === 0) {
+      if (tallLeafIds.length >= LEAF_CLUSTER_MIN) {
+        const cluster = buildLeafCluster(pid, [], tallLeafIds, blockMap);
+        if (cluster) clusters[`${pid}::tall`] = cluster;
+      }
+      continue;
+    }
+
+    qualifiedBuckets.forEach((bucket, index) => {
+      const clusterTallLeafIds = index === 0 ? tallLeafIds : [];
+      const cluster = buildLeafCluster(pid, bucket.items, clusterTallLeafIds, blockMap);
+      if (cluster) clusters[`${pid}::grid::${index}`] = cluster;
+    });
   }
   return clusters;
 }
@@ -1841,16 +1954,26 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
   }
   if (skelCount > 0) graphCenterX /= skelCount;
 
+  const clustersByParent = new Map();
   for (const [, cluster] of getClusterEntries(clusters)) {
     const parentId = getClusterParentId(cluster);
+    if (!clustersByParent.has(parentId)) clustersByParent.set(parentId, []);
+    clustersByParent.get(parentId).push(cluster);
+  }
+
+  for (const [parentId, parentClusters] of clustersByParent.entries()) {
     const parent = blockMap[parentId];
     if (!parent || parent.x === undefined) continue;
+
+    parentClusters.sort((a, b) => {
+      const aSize = getClusterNormalLeafIds(b).length - getClusterNormalLeafIds(a).length;
+      if (aSize !== 0) return aSize;
+      return (b.gridH || 0) - (a.gridH || 0);
+    });
 
     const parentW = getBlockWidth(parent);
     const parentH = getBlockHeight(parent);
     const parentCx = parent.x + parentW / 2;
-    const gridTop = parent.y + parentH + GRID_PARENT_OFFSET;
-
     const coreChildren = (childrenMap[parentId] || []).filter(cid => !strippedIds.has(cid));
     let coreMinX = Infinity;
     let coreMaxX = -Infinity;
@@ -1862,87 +1985,96 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
       }
     }
 
-    const normalLeafIds = getClusterNormalLeafIds(cluster);
-    const tallLeafIds = getClusterTallLeafIds(cluster);
-    const maxNormalLeafW = Math.max(1, getClusterMaxNormalLeafWidth(cluster));
-    const maxNormalLeafH = Math.max(1, getClusterMaxNormalLeafHeight(cluster));
-    const maxLeafW = Math.max(1, getClusterMaxLeafWidth(cluster));
-    const cols = normalLeafIds.length > 0 ? Math.min(normalLeafIds.length, GRID_MAX_COLS) : 1;
-    const rows = normalLeafIds.length > 0 ? Math.ceil(normalLeafIds.length / cols) : 0;
-    const gridW = normalLeafIds.length > 0 ? cols * maxNormalLeafW + (cols - 1) * GRID_H_GAP : maxLeafW;
-    const gridH = normalLeafIds.length > 0 ? rows * maxNormalLeafH + Math.max(rows - 1, 0) * GRID_V_GAP : 0;
+    let nextGridTop = parent.y + parentH + GRID_PARENT_OFFSET;
+    for (const cluster of parentClusters) {
+      const normalLeafIds = getClusterNormalLeafIds(cluster);
+      const tallLeafIds = getClusterTallLeafIds(cluster);
+      const maxNormalLeafW = Math.max(1, getClusterMaxNormalLeafWidth(cluster));
+      const maxNormalLeafH = Math.max(1, getClusterMaxNormalLeafHeight(cluster));
+      const maxLeafW = Math.max(1, getClusterMaxLeafWidth(cluster));
+      const cols = normalLeafIds.length > 0 ? Math.min(normalLeafIds.length, GRID_MAX_COLS) : 1;
+      const rows = normalLeafIds.length > 0 ? Math.ceil(normalLeafIds.length / cols) : 0;
+      const gridW = normalLeafIds.length > 0 ? cols * maxNormalLeafW + (cols - 1) * GRID_H_GAP : maxLeafW;
+      const gridH = normalLeafIds.length > 0 ? rows * maxNormalLeafH + Math.max(rows - 1, 0) * GRID_V_GAP : 0;
 
-    setClusterGridCols(cluster, cols);
-    setClusterGridRows(cluster, rows);
-    setClusterGridSize(cluster, gridW, gridH);
+      setClusterGridCols(cluster, cols);
+      setClusterGridRows(cluster, rows);
+      setClusterGridSize(cluster, gridW, gridH);
 
-    let gridCx;
-    const outerOffset = gridW / 2 + 40;
-    let outerDir = 1;
-    let placementMode = 'outer';
+      let gridCx;
+      const outerOffset = gridW / 2 + 40;
+      let outerDir = 1;
+      let placementMode = 'outer';
 
-    if (coreChildren.length === 0) {
-      placementMode = 'center';
-      gridCx = parentCx;
-    } else if (parentCx < graphCenterX - 30) {
-      outerDir = -1;
-      gridCx = parentCx - outerOffset;
-      if (coreMinX !== Infinity) gridCx = Math.min(gridCx, coreMinX - gridW / 2 - 40);
-    } else if (parentCx > graphCenterX + 30) {
-      outerDir = 1;
-      gridCx = parentCx + outerOffset;
-      if (coreMaxX !== -Infinity) gridCx = Math.max(gridCx, coreMaxX + gridW / 2 + 40);
-    } else {
-      const coreCx = (coreMinX + coreMaxX) / 2;
-      if (coreCx >= parentCx) {
+      if (coreChildren.length === 0) {
+        placementMode = 'center';
+        gridCx = parentCx;
+      } else if (parentCx < graphCenterX - 30) {
         outerDir = -1;
-        gridCx = coreMinX - gridW / 2 - 40;
-      } else {
+        gridCx = parentCx - outerOffset;
+        if (coreMinX !== Infinity) gridCx = Math.min(gridCx, coreMinX - gridW / 2 - 40);
+      } else if (parentCx > graphCenterX + 30) {
         outerDir = 1;
-        gridCx = coreMaxX + gridW / 2 + 40;
-      }
-    }
-    setClusterOuterDir(cluster, outerDir);
-    setClusterPlacementMode(cluster, placementMode);
-
-    const gridLeft = gridCx - gridW / 2;
-    for (let i = 0; i < normalLeafIds.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const leaf = blockMap[normalLeafIds[i]];
-      if (leaf && !leaf.locked) {
-        leaf.x = gridLeft + col * (maxNormalLeafW + GRID_H_GAP);
-        leaf.y = gridTop + row * (maxNormalLeafH + GRID_V_GAP);
-      }
-    }
-
-    if (tallLeafIds.length > 0) {
-      if (normalLeafIds.length === 0) {
-        let currentY = gridTop;
-        for (const tallLeafId of tallLeafIds) {
-          const leaf = blockMap[tallLeafId];
-          if (!leaf || leaf.locked) continue;
-          leaf.x = parentCx - getBlockWidth(leaf) / 2;
-          leaf.y = currentY;
-          currentY += getBlockHeight(leaf) + GRID_V_GAP;
-        }
+        gridCx = parentCx + outerOffset;
+        if (coreMaxX !== -Infinity) gridCx = Math.max(gridCx, coreMaxX + gridW / 2 + 40);
       } else {
-        const tallStartX = outerDir < 0
-          ? gridLeft - TALL_LEAF_OFFSET
-          : gridLeft + gridW + TALL_LEAF_OFFSET;
-        let currentY = gridTop;
-        for (const tallLeafId of tallLeafIds) {
-          const leaf = blockMap[tallLeafId];
-          if (!leaf || leaf.locked) continue;
-          const leafW = getBlockWidth(leaf);
-          leaf.x = outerDir < 0 ? tallStartX - leafW : tallStartX;
-          leaf.y = currentY;
-          currentY += getBlockHeight(leaf) + GRID_V_GAP;
+        const coreCx = (coreMinX + coreMaxX) / 2;
+        if (coreCx >= parentCx) {
+          outerDir = -1;
+          gridCx = coreMinX - gridW / 2 - 40;
+        } else {
+          outerDir = 1;
+          gridCx = coreMaxX + gridW / 2 + 40;
         }
       }
-    }
+      setClusterOuterDir(cluster, outerDir);
+      setClusterPlacementMode(cluster, placementMode);
 
-    updateClusterBoundingBox(cluster, blockMap);
+      const gridTop = nextGridTop;
+      const gridLeft = gridCx - gridW / 2;
+      for (let i = 0; i < normalLeafIds.length; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const leaf = blockMap[normalLeafIds[i]];
+        if (leaf && !leaf.locked) {
+          leaf.x = gridLeft + col * (maxNormalLeafW + GRID_H_GAP);
+          leaf.y = gridTop + row * (maxNormalLeafH + GRID_V_GAP);
+        }
+      }
+
+      let occupiedBottom = gridTop + gridH;
+      if (tallLeafIds.length > 0) {
+        if (normalLeafIds.length === 0) {
+          let currentY = gridTop;
+          for (const tallLeafId of tallLeafIds) {
+            const leaf = blockMap[tallLeafId];
+            if (!leaf || leaf.locked) continue;
+            leaf.x = parentCx - getBlockWidth(leaf) / 2;
+            leaf.y = currentY;
+            currentY += getBlockHeight(leaf) + GRID_V_GAP;
+          }
+          occupiedBottom = Math.max(occupiedBottom, currentY - GRID_V_GAP);
+        } else {
+          const tallStartX = outerDir < 0
+            ? gridLeft - TALL_LEAF_OFFSET
+            : gridLeft + gridW + TALL_LEAF_OFFSET;
+          let currentY = gridTop;
+          for (const tallLeafId of tallLeafIds) {
+            const leaf = blockMap[tallLeafId];
+            if (!leaf || leaf.locked) continue;
+            const leafW = getBlockWidth(leaf);
+            leaf.x = outerDir < 0 ? tallStartX - leafW : tallStartX;
+            leaf.y = currentY;
+            currentY += getBlockHeight(leaf) + GRID_V_GAP;
+          }
+          occupiedBottom = Math.max(occupiedBottom, currentY - GRID_V_GAP);
+        }
+      }
+
+      updateClusterBoundingBox(cluster, blockMap);
+      occupiedBottom = Math.max(occupiedBottom, cluster.bbox?.maxY || occupiedBottom);
+      nextGridTop = occupiedBottom + GRID_V_GAP;
+    }
   }
 }
 
@@ -2092,8 +2224,8 @@ function packFloatingRootCards(floatingRootIds, allBlocks, blockMap) {
   }
 }
 
-function layoutSingleComponent(blocks, connections, blockMap) {
-  const leafClusters = identifyLeafClusters(blocks, connections, blockMap);
+function layoutSingleComponent(blocks, connections, blockMap, originallyTallIds = new Set()) {
+  const leafClusters = identifyLeafClusters(blocks, connections, blockMap, originallyTallIds);
   const strippedLeafIds = getStrippedLeafIds(leafClusters);
   const skeletonBlocks = getSkeletonBlocks(blocks, strippedLeafIds);
   const skeletonConnections = getSkeletonConnections(connections, strippedLeafIds);
@@ -2135,6 +2267,8 @@ export function autoLayout(blocks, connections, groups = []) {
   if (blocks.length === 0) return;
   if (!validateLayoutInput(blocks)) return;
 
+  const { originallyTallIds } = normalizeExtremePortraitBlocks(blocks);
+
   const blockMap = {};
   for (const b of blocks) blockMap[b.id] = b;
 
@@ -2150,7 +2284,7 @@ export function autoLayout(blocks, connections, groups = []) {
   if (mainBlocks.length > 0) {
     const mainBlockMap = {};
     for (const block of mainBlocks) mainBlockMap[block.id] = block;
-    layoutStates.push(layoutSingleComponent(mainBlocks, mainConnections, mainBlockMap));
+    layoutStates.push(layoutSingleComponent(mainBlocks, mainConnections, mainBlockMap, originallyTallIds));
   }
 
   const allLeafClusters = collectAllLeafClusters(layoutStates);

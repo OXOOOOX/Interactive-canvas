@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>豆包 ASR 麦克风测试</title>
+  <style>
+    body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #1a1a2e; color: #eee; }
+    h1 { color: #7b68ee; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 6px; font-weight: 500; color: #ccc; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #333; border-radius: 6px; background: #2a2a3e; color: #eee; box-sizing: border-box; }
+    button { padding: 12px 24px; border: none; border-radius: 6px; background: #28a745; color: white; font-size: 16px; cursor: pointer; margin: 10px 5px 0 0; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.stop { background: #dc3545; }
+    .log { margin-top: 20px; padding: 16px; background: #0d0d1a; border-radius: 8px; font-family: monospace; font-size: 13px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+    .status { padding: 10px; background: #2a2a3e; border-radius: 6px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>🎤 豆包 ASR 实时测试</h1>
+
+  <div class="status" id="status">状态：等待开始</div>
+
+  <div class="form-group">
+    <label>Resource ID (选择你开通的服务)</label>
+    <select id="resourceId">
+      <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration (2.0 小时版)</option>
+      <option value="volc.seedasr.sauc.concurrent">volc.seedasr.sauc.concurrent (2.0 并发版)</option>
+      <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration (1.0 小时版)</option>
+    </select>
+  </div>
+
+  <button id="startBtn">开始录音</button>
+  <button id="stopBtn" class="stop" disabled>停止并识别</button>
+
+  <div class="log" id="log">等待开始...</div>
+
+  <script>
+    (function() {
+      const $ = (id) => document.getElementById(id);
+      const logEl = $('log');
+      const statusEl = $('status');
+
+      let ws = null;
+      let audioContext = null;
+      let processor = null;
+      let source = null;
+      let stream = null;
+      let seq = 2;
+      let chunks = [];
+      let isRecording = false;
+
+      function log(msg) {
+        const time = new Date().toLocaleTimeString();
+        logEl.innerHTML += `[${time}] ${msg}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function status(msg) {
+        statusEl.textContent = '状态：' + msg;
+      }
+
+      async function gzipBytes(uint8Array) {
+        const stream = new CompressionStream('gzip');
+        const writer = stream.writable.getWriter();
+        writer.write(uint8Array);
+        writer.close();
+        return new Uint8Array(await new Response(stream.readable).arrayBuffer());
+      }
+
+      async function sendInit() {
+        const payload = {
+          user: { uid: 'test-user' },
+          audio: { format: 'raw', codec: 'raw', rate: 16000, bits: 16, channel: 1 },
+          request: {
+            model_name: 'bigmodel',
+            enable_itn: true,
+            enable_punc: true,
+            enable_ddc: true,
+            show_utterances: true,
+            end_window_size: 800
+          }
+        };
+        const compressed = await gzipBytes(new TextEncoder().encode(JSON.stringify(payload)));
+
+        // Header: version=1, headerSize=1, msgType=0x1 (CLIENT_FULL_REQUEST), flags=0x1, serialization=0x1, compression=0x1
+        const header = new Uint8Array([0x11, 0x11, 0x11, 0x00]);
+        const seqArr = new Uint8Array(4);
+        new DataView(seqArr.buffer).setInt32(0, 1, false);
+        const lenArr = new Uint8Array(4);
+        new DataView(lenArr.buffer).setUint32(0, compressed.length, false);
+
+        const msg = new Uint8Array(header.length + 8 + compressed.length);
+        msg.set(header, 0);
+        msg.set(seqArr, 4);
+        msg.set(lenArr, 8);
+        msg.set(compressed, 12);
+        ws.send(msg);
+        log('✅ 初始化 Payload 已发送');
+      }
+
+      async function sendAudio(data, sequence) {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const compressed = await gzipBytes(data);
+        const header = new Uint8Array([0x11, 0x21, 0x11, 0x00]); // CLIENT_AUDIO_ONLY_REQUEST
+        const seqArr = new Uint8Array(4);
+        new DataView(seqArr.buffer).setInt32(0, sequence, false);
+        const lenArr = new Uint8Array(4);
+        new DataView(lenArr.buffer).setUint32(0, compressed.length, false);
+
+        const msg = new Uint8Array(header.length + 8 + compressed.length);
+        msg.set(header, 0);
+        msg.set(seqArr, 4);
+        msg.set(lenArr, 8);
+        msg.set(compressed, 12);
+        ws.send(msg);
+      }
+
+      async function sendEnd() {
+        const header = new Uint8Array([0x11, 0x23, 0x11, 0x00]); // NEG_WITH_SEQUENCE
+        const seqArr = new Uint8Array(4);
+        new DataView(seqArr.buffer).setInt32(0, -seq, false);
+        const lenArr = new Uint8Array(4);
+        new DataView(lenArr.buffer).setUint32(0, 0, false);
+
+        const msg = new Uint8Array(header.length + 8);
+        msg.set(header, 0);
+        msg.set(seqArr, 4);
+        msg.set(lenArr, 8);
+        ws.send(msg);
+        log('📤 结束标志已发送，等待识别结果...');
+      }
+
+      function cleanup() {
+        if (processor) { processor.disconnect(); processor = null; }
+        if (source) { source.disconnect(); source = null; }
+        if (audioContext) { audioContext.close(); audioContext = null; }
+        if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+        chunks = [];
+        isRecording = false;
+      }
+
+      $('startBtn').onclick = async function() {
+        const resourceId = $('resourceId').value;
+        const apiKey = 'd4b3f17d-0ae0-4b2c-a6bb-9f46faa90e41';
+        const endpoint = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel';
+        const connectId = crypto.randomUUID();
+
+        const wsUrl = `ws://${location.host}/api/doubao-asr?target=${encodeURIComponent(endpoint)}&resourceId=${encodeURIComponent(resourceId)}&connectId=${connectId}&mode=apiKey&apiKey=${encodeURIComponent(apiKey)}`;
+
+        log('正在连接豆包 ASR...');
+        status('连接中...');
+
+        try {
+          ws = new WebSocket(wsUrl);
+        } catch (err) {
+          log('❌ WebSocket 错误：' + err.message);
+          status('连接失败');
+          return;
+        }
+
+        ws.onopen = async function() {
+          log('✅ WebSocket 已连接');
+          status('已连接，启动麦克风...');
+
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            log('✅ 麦克风已启动');
+            status('录音中，请说话...');
+
+            audioContext = new AudioContext({ sampleRate: 16000 });
+            source = audioContext.createMediaStreamSource(stream);
+            processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+            processor.onaudioprocess = function(e) {
+              const data = e.inputBuffer.getChannelData(0);
+              const pcm16 = new Int16Array(data.length);
+              for (let i = 0; i < data.length; i++) {
+                const s = Math.max(-1, Math.min(1, data[i]));
+                pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+              }
+              chunks.push(new Uint8Array(pcm16.buffer));
+            };
+
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+            isRecording = true;
+
+            $('startBtn').disabled = true;
+            $('stopBtn').disabled = false;
+
+            // 发送初始化
+            await sendInit();
+
+            // 每秒发送累积的音频
+            setInterval(function() {
+              if (!isRecording || chunks.length === 0) return;
+
+              const bytesPerChunk = 16000 * 2 * 200 / 1000; // 200ms
+              let total = chunks.reduce((s, c) => s + c.length, 0);
+
+              if (total >= bytesPerChunk) {
+                let buffered = new Uint8Array(total);
+                let off = 0;
+                for (const c of chunks) { buffered.set(c, off); off += c.length; }
+
+                sendAudio(buffered.slice(0, bytesPerChunk), seq++);
+                chunks.length = 0;
+                if (buffered.length > bytesPerChunk) {
+                  chunks.push(buffered.slice(bytesPerChunk));
+                }
+              }
+            }, 200);
+
+          } catch (err) {
+            log('❌ 麦克风错误：' + err.message);
+            status('麦克风失败');
+            cleanup();
+            $('startBtn').disabled = false;
+          }
+        };
+
+        ws.onmessage = async function(e) {
+          const bytes = new Uint8Array(e.data);
+          const headerSize = (bytes[0] & 0x0f) * 4;
+          const msgType = bytes[1] >> 4;
+          const flags = bytes[1] & 0x0f;
+
+          log(`📨 收到消息：type=0x${msgType.toString(16)}, flags=0x${flags.toString(16)}`);
+
+          // 错误消息
+          if (msgType === 0xf) {
+            const code = new DataView(bytes.buffer).getInt32(headerSize, false);
+            log('❌ 服务端错误码：' + code);
+            status('服务端错误：' + code);
+            return;
+          }
+
+          // 解析 payload
+          let off = headerSize;
+          if (flags & 0x01) off += 4;
+          if (msgType === 0x9) off += 4;
+
+          let payload = bytes.slice(off);
+
+          // 解压缩
+          if ((bytes[2] & 0x0f) === 1 && payload.length > 0) {
+            try {
+              const stream = new DecompressionStream('gzip');
+              const writer = stream.writable.getWriter();
+              writer.write(payload);
+              writer.close();
+              payload = new Uint8Array(await new Response(stream.readable).arrayBuffer());
+            } catch (err) {
+              log('⚠️ 解压失败：' + err.message);
+            }
+          }
+
+          const text = new TextDecoder().decode(payload);
+          log('📝 响应内容：' + text);
+
+          try {
+            const json = JSON.parse(text);
+            if (json.result?.text) {
+              log('✅ 识别结果：' + json.result.text);
+              status('识别成功：' + json.result.text);
+            }
+            if (json.utterances && Array.isArray(json.utterances)) {
+              const t = json.utterances.map(u => u.text || u.transcript || '').join('');
+              if (t) log('✅ 识别文本：' + t);
+            }
+            if (json.error) {
+              log('❌ 服务端错误：' + JSON.stringify(json.error));
+            }
+          } catch (e) {}
+        };
+
+        ws.onerror = function(err) {
+          log('❌ WebSocket 错误');
+          status('连接错误');
+        };
+
+        ws.onclose = function(e) {
+          log(`🔌 连接关闭 (code=${e.code})`);
+          status('已断开');
+          cleanup();
+          $('startBtn').disabled = false;
+          $('stopBtn').disabled = true;
+        };
+      };
+
+      $('stopBtn').onclick = function() {
+        if (!isRecording) return;
+        status('正在停止并发送结束标志...');
+        sendEnd().then(() => {
+          setTimeout(() => {
+            cleanup();
+            $('startBtn').disabled = false;
+            $('stopBtn').disabled = true;
+          }, 2000);
+        });
+      };
+    })();
+  </script>
+</body>
+</html>

@@ -14,10 +14,11 @@ import {
 } from './state.js';
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar, syncBlockSizes } from './canvas.js';
 import { initChat, sendText } from './chat.js';
-import { initWaveform, resumeListening, isConversationActive } from './waveform.js';
+import { initWaveform, resumeListening, isConversationActive, isListeningActive } from './waveform.js';
 import { autoLayout, findFreePosition, getBoundingBox } from './utils/layout.js';
 import { transcribe } from './services/stt.js';
-import { speak } from './services/tts.js';
+import { speak, canUseDoubaoTts, getDoubaoTtsFallbackReason } from './services/tts.js';
+import { testDoubaoAsrConnection } from './services/doubao-asr.js';
 import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
 import { callOrganizeLlm, callRefineLlm, callNamingLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections } from './utils/parser.js';
@@ -82,6 +83,7 @@ const dom = {
   ttsEndpoint: $('ttsEndpoint'),
   llmApiKey: $('llmApiKey'),
   doubaoApiKey: $('doubaoApiKey'),
+  testDoubaoAsrBtn: $('testDoubaoAsrBtn'),
   appId: $('appId'),
   accessToken: $('accessToken'),
   secretKey: $('secretKey'),
@@ -108,11 +110,13 @@ const dom = {
   voiceLanguage: $('voiceLanguage'),
   sttModel: $('sttModel'),
   fileSttModel: $('fileSttModel'),
+  doubaoResourceId: $('doubaoResourceId'),
   ttsModel: $('ttsModel'),
   ttsVoice: $('ttsVoice'),
   realtimeVoiceModel: $('realtimeVoiceModel'),
   audioUploadBtn: $('audioUploadBtn'),
   audioFileInput: $('audioFileInput'),
+  voiceToast: $('voiceToast'),
 };
 
 // ── Config Helper ──
@@ -128,6 +132,7 @@ function getConfig() {
     sttEndpoint: dom.sttEndpoint.value,
     sttModel: dom.sttModel.value,
     fileSttModel: dom.fileSttModel.value,
+    doubaoResourceId: dom.doubaoResourceId.value,
     ttsEndpoint: dom.ttsEndpoint.value,
     ttsModel: dom.ttsModel.value,
     ttsVoice: dom.ttsVoice.value,
@@ -153,195 +158,241 @@ function applyConfigDefaults(config = {}) {
     voiceLanguage: 'zh-CN',
     sttModel: ENDPOINT_PRESETS.doubao?.sttModel || '',
     fileSttModel: ENDPOINT_PRESETS.doubao?.fileSttModel || '',
+    doubaoResourceId: 'volc.seedasr.sauc.duration',
     ttsModel: ENDPOINT_PRESETS.doubao?.ttsModel || '',
     realtimeVoiceModel: ENDPOINT_PRESETS.doubao?.realtimeVoiceModel || '',
     ...config,
   };
 }
 
-function syncVoiceModeFallback() {
-  if (dom.voiceMode.value === 'browser') return;
-  const hasDoubaoCreds = !!(
-    dom.doubaoApiKey.value ||
-    (dom.appId.value && dom.accessToken.value) ||
-    (dom.appId.value && dom.secretKey.value)
+function hasDoubaoAsrCredentials(config = getConfig()) {
+  return !!(
+    config.doubaoApiKey ||
+    (config.appId && config.accessToken) ||
+    (config.appId && config.secretKey)
   );
-  if (!hasDoubaoCreds || !dom.sttEndpoint.value) {
+}
+
+function hasDoubaoTtsCredentials(config = getConfig()) {
+  return canUseDoubaoTts(config);
+}
+
+function isDoubaoVoiceMode(config = getConfig()) {
+  return config.voiceMode === 'doubao-pipeline' || config.voiceMode === 'doubao-realtime';
+}
+
+function getVoiceRouting(config = getConfig()) {
+  if (config.voiceMode === 'browser') {
+    return {
+      inputMode: 'browser',
+      outputMode: 'browser',
+      fallbackReason: '',
+    };
+  }
+
+  if (!isDoubaoVoiceMode(config)) {
+    return {
+      inputMode: 'browser',
+      outputMode: config.ttsProvider || 'browser',
+      fallbackReason: '',
+    };
+  }
+
+  const hasAsr = hasDoubaoAsrCredentials(config) && !!config.sttEndpoint;
+  const hasTts = hasDoubaoTtsCredentials(config);
+
+  return {
+    inputMode: hasAsr ? 'doubao' : 'browser',
+    outputMode: hasTts ? 'doubao' : 'browser',
+    fallbackReason: !hasTts && hasAsr
+      ? getDoubaoTtsFallbackReason(config)
+      : '',
+  };
+}
+
+function syncVoiceModeFallback() {
+  const config = getConfig();
+  if (!isDoubaoVoiceMode(config)) return;
+  if (!hasDoubaoAsrCredentials(config) || !config.sttEndpoint) {
     dom.voiceMode.value = 'browser';
-  }
-}
-
-function setPresetInputValue(input, value, preserveExisting = false) {
-  if (!input || !value) return;
-  if (!preserveExisting || !input.value) {
-    input.value = value;
-  }
-}
-
-function setSttProviderModels(provider, preserveExisting = false) {
-  const preset = ENDPOINT_PRESETS[provider] || {};
-  setPresetInputValue(dom.sttModel, preset.sttModel, preserveExisting);
-  setPresetInputValue(dom.fileSttModel, preset.fileSttModel, preserveExisting);
-}
-
-function setTtsProviderModels(provider, preserveExisting = false) {
-  const preset = ENDPOINT_PRESETS[provider] || {};
-  setPresetInputValue(dom.ttsModel, preset.ttsModel, preserveExisting);
-  setPresetInputValue(dom.realtimeVoiceModel, preset.realtimeVoiceModel, preserveExisting);
-}
-
-function setConfig(config) {
-  const finalConfig = applyConfigDefaults(config);
-  for (const [key, value] of Object.entries(finalConfig)) {
-    if (dom[key] && typeof value === 'string') dom[key].value = value;
-  }
-  syncVoiceModeFallback();
-}
-
-function setAudioUploadBusy(isBusy, label = '上传音频转写') {
-  if (!dom.audioUploadBtn) return;
-  dom.audioUploadBtn.disabled = isBusy;
-  dom.audioUploadBtn.title = label;
-  dom.audioUploadBtn.setAttribute('aria-label', label);
-}
-
-async function handleAudioFileSelected(file) {
-  if (!file) return;
-  setAudioUploadBusy(true, '正在转写音频...');
-  try {
-    const text = await transcribe(file, getConfig());
-    const cleaned = (text || '').trim();
-    if (!cleaned) throw new Error('未识别到有效文本');
-
-    if (isConversationActive) {
-      await sendText(cleaned);
-      return;
-    }
-
-    const input = document.getElementById('chatInput');
-    if (input) {
-      input.value = cleaned;
-      input.dispatchEvent(new Event('input'));
-      input.focus();
-    }
-  } catch (error) {
-    console.error('音频文件转写失败:', error);
-    alert(`音频转写失败：${error.message}`);
-  } finally {
-    if (dom.audioFileInput) dom.audioFileInput.value = '';
-    setAudioUploadBusy(false, '上传音频转写');
-  }
-}
-
-function applyProviderPreset(preserveExistingModels = true) {
-  const llmPreset = ENDPOINT_PRESETS[dom.llmProvider.value]?.llm || '';
-  const sttPreset = ENDPOINT_PRESETS[dom.sttProvider.value]?.stt || '';
-  const ttsPreset = ENDPOINT_PRESETS[dom.ttsProvider.value]?.tts || '';
-
-  const llmCustom = dom.llmProvider.value === 'custom';
-  const sttCustom = dom.sttProvider.value === 'custom';
-  const ttsCustom = dom.ttsProvider.value === 'custom' || dom.ttsProvider.value === 'browser';
-
-  dom.llmEndpoint.readOnly = !llmCustom;
-  dom.sttEndpoint.readOnly = !sttCustom;
-  dom.ttsEndpoint.readOnly = !ttsCustom;
-
-  if (!llmCustom) dom.llmEndpoint.value = llmPreset;
-  if (!sttCustom) dom.sttEndpoint.value = sttPreset;
-  if (!ttsCustom) dom.ttsEndpoint.value = ttsPreset;
-
-  setSttProviderModels(dom.sttProvider.value, preserveExistingModels);
-  setTtsProviderModels(dom.ttsProvider.value, preserveExistingModels);
-  syncVoiceModeFallback();
-}
-
-function applyVoiceModePreset() {
-  if (dom.voiceMode.value === 'browser') {
     dom.ttsProvider.value = 'browser';
-    applyProviderPreset(false);
-    return;
+  }
+}
+
+let lastVoiceFallbackReason = '';
+let lastVoiceRouteKey = '';
+let voiceToastTimer = null;
+
+function clearVoiceToast() {
+  if (voiceToastTimer) {
+    clearTimeout(voiceToastTimer);
+    voiceToastTimer = null;
+  }
+  if (!dom.voiceToast) return;
+  dom.voiceToast.classList.remove('visible');
+}
+
+function showVoiceToast(message, variant = 'default', duration = 2400) {
+  if (!dom.voiceToast || !message) return;
+  dom.voiceToast.textContent = message;
+  dom.voiceToast.classList.remove('is-browser', 'is-success');
+  if (variant === 'browser') dom.voiceToast.classList.add('is-browser');
+  if (variant === 'success') dom.voiceToast.classList.add('is-success');
+  dom.voiceToast.classList.add('visible');
+
+  if (voiceToastTimer) {
+    clearTimeout(voiceToastTimer);
   }
 
-  if (dom.sttProvider.value === 'custom') dom.sttProvider.value = 'doubao';
-  if (dom.ttsProvider.value === 'custom' || dom.ttsProvider.value === 'browser') dom.ttsProvider.value = 'doubao';
-  applyProviderPreset(false);
+  voiceToastTimer = setTimeout(() => {
+    dom.voiceToast.classList.remove('visible');
+    voiceToastTimer = null;
+  }, duration);
 }
 
-function applyVoiceLocalDefaults() {
-  if (!dom.voiceMode.value) dom.voiceMode.value = 'doubao-pipeline';
-  if (!dom.voiceLanguage.value) dom.voiceLanguage.value = 'zh-CN';
+function getVoiceRouteSummary(config = getConfig()) {
+  const routing = getVoiceRouting(config);
+  const inputLabel = routing.inputMode === 'doubao' ? '豆包识别' : '浏览器识别';
+  const outputLabel = routing.outputMode === 'doubao' ? '豆包朗读' : '浏览器朗读';
+  return {
+    routing,
+    routeKey: `${routing.inputMode}|${routing.outputMode}|${routing.fallbackReason}`,
+    message: `语音已连接：输入 ${inputLabel}，输出 ${outputLabel}`,
+    variant: routing.outputMode === 'browser' || routing.inputMode === 'browser' ? 'browser' : 'default',
+  };
 }
 
-function bindAudioUpload() {
-  if (!dom.audioUploadBtn || !dom.audioFileInput) return;
-  dom.audioUploadBtn.addEventListener('click', () => dom.audioFileInput.click());
-  dom.audioFileInput.addEventListener('change', async (event) => {
-    const file = event.target.files?.[0];
-    await handleAudioFileSelected(file);
-  });
+function notifyVoiceFallback(reason) {
+  if (!reason || reason === lastVoiceFallbackReason) return;
+  lastVoiceFallbackReason = reason;
+  console.warn(reason);
+  showVoiceToast(reason, 'browser', 3200);
 }
 
-function isBrowserVoiceMode() {
-  return dom.voiceMode.value === 'browser';
+function resolveSpeechPlaybackConfig(config = getConfig()) {
+  const routing = getVoiceRouting(config);
+  if (routing.outputMode === 'doubao') {
+    return {
+      ...config,
+      ttsProvider: 'doubao',
+    };
+  }
+  return {
+    ...config,
+    ttsProvider: 'browser',
+  };
 }
 
-function getSpeechSynthesisLanguage() {
-  return dom.voiceLanguage.value || 'zh-CN';
-}
-
-async function playAssistantReply(reply) {
-  if (!reply) {
-    resumeListening();
+function syncVoiceFallbackNotice({ force = false } = {}) {
+  const { routing, routeKey, message, variant } = getVoiceRouteSummary();
+  if (force || routeKey !== lastVoiceRouteKey) {
+    lastVoiceRouteKey = routeKey;
+    showVoiceToast(message, variant, 2600);
+  }
+  if (!routing.fallbackReason) {
+    lastVoiceFallbackReason = '';
     return;
   }
-
-  if (isBrowserVoiceMode()) {
-    const utterance = new SpeechSynthesisUtterance(reply);
-    utterance.lang = getSpeechSynthesisLanguage();
-    utterance.rate = 1.4;
-    utterance.onend = () => resumeListening();
-    utterance.onerror = () => resumeListening();
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utterance);
-    return;
-  }
-
-  try {
-    await speak(reply, getConfig());
-  } catch (error) {
-    console.error('豆包语音合成失败，回退浏览器朗读:', error);
-    const utterance = new SpeechSynthesisUtterance(reply);
-    utterance.lang = getSpeechSynthesisLanguage();
-    utterance.rate = 1.4;
-    utterance.onend = () => resumeListening();
-    utterance.onerror = () => resumeListening();
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utterance);
-    return;
-  }
-
-  resumeListening();
+  notifyVoiceFallback(routing.fallbackReason);
 }
 
-function getVoiceSubmitText(transcribedText) {
-  return (transcribedText || '').trim();
+function announceAssistantSpeechStart(outputMode = getVoiceRouting().outputMode) {
+  const message = outputMode === 'doubao' ? '助手正在用豆包朗读' : '助手正在用浏览器朗读';
+  const variant = outputMode === 'doubao' ? 'success' : 'browser';
+  showVoiceToast(message, variant, 2000);
 }
 
-function isMeaningfulTranscript(text) {
-  return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
+function announceAssistantSpeechDone(outputMode = getVoiceRouting().outputMode) {
+  const message = outputMode === 'doubao' ? '豆包朗读完成，继续听你说' : '朗读完成，继续听你说';
+  const variant = outputMode === 'doubao' ? 'success' : 'browser';
+  showVoiceToast(message, variant, 2200);
 }
 
-function shouldUseBrowserRecognition() {
-  return isBrowserVoiceMode();
+function announceVoiceCaptured() {
+  showVoiceToast('已识别到语音，正在发送', 'success', 1800);
 }
 
-window.__VOICE_MODE_HELPERS__ = {
-  shouldUseBrowserRecognition,
+function announceVoiceStopFallback() {
+  showVoiceToast('检测到停顿，已自动结束本轮录音', 'success', 2200);
+}
+
+function announceVoiceWaiting() {
+  showVoiceToast('正在听你说话…', 'default', 1800);
+}
+
+function announceVoiceStopped() {
+  showVoiceToast('已停止连续语音', 'browser', 1600);
+}
+
+function announceVoiceStarted(inputMode = getVoiceRouting().inputMode) {
+  const message = inputMode === 'doubao' ? '已开始连续语音（豆包识别）' : '已开始连续语音（浏览器识别）';
+  const variant = inputMode === 'doubao' ? 'default' : 'browser';
+  showVoiceToast(message, variant, 2200);
+}
+
+function announceVoiceStartFailed(message) {
+  showVoiceToast(message || '语音启动失败', 'browser', 2800);
+}
+
+function shouldShowRouteToast(config = getConfig()) {
+  const { routeKey } = getVoiceRouteSummary(config);
+  return routeKey !== lastVoiceRouteKey;
+}
+
+function commitVoiceRouteToast(config = getConfig(), force = false) {
+  syncVoiceFallbackNotice({ force: force || shouldShowRouteToast(config) });
+}
+
+function updateVoiceStatusBadges(config = getConfig()) {
+  commitVoiceRouteToast(config, true);
+}
+
+window.__VOICE_TOAST__ = showVoiceToast;
+window.__VOICE_UI__ = {
+  show: showVoiceToast,
+  clear: clearVoiceToast,
+  syncRoute: (force = false) => syncVoiceFallbackNotice({ force }),
+  announceVoiceStarted: (inputMode) => announceVoiceStarted(inputMode ?? getVoiceRouting(getConfig()).inputMode),
+  announceVoiceStopped,
+  announceVoiceWaiting,
+  announceVoiceCaptured,
+  announceVoiceAutoStopped: announceVoiceStopFallback,
+  announceVoiceStartFailed,
+  announceAssistantSpeechStart: (outputMode) => announceAssistantSpeechStart(outputMode ?? getVoiceRouting(getConfig()).outputMode),
+  announceAssistantSpeechDone: (outputMode) => announceAssistantSpeechDone(outputMode ?? getVoiceRouting(getConfig()).outputMode),
+  getRouteSummary: () => getVoiceRouteSummary(getConfig()),
+  fallbackNotice: notifyVoiceFallback,
+  toast: dom.voiceToast,
 };
-window.__GET_CONFIG__ = getConfig;
-window.__PLAY_ASSISTANT_REPLY__ = playAssistantReply;
-window.__GET_VOICE_LANGUAGE__ = getSpeechSynthesisLanguage;
-window.__VOICE_FILE_TRANSCRIBE__ = handleAudioFileSelected;
+
+window.__VOICE_UI__.assistant = {
+  start: (outputMode) => announceAssistantSpeechStart(outputMode ?? getVoiceRouting(getConfig()).outputMode),
+  done: (outputMode) => announceAssistantSpeechDone(outputMode ?? getVoiceRouting(getConfig()).outputMode),
+};
+
+window.__VOICE_UI__.conversation = {
+  started: (inputMode) => announceVoiceStarted(inputMode ?? getVoiceRouting(getConfig()).inputMode),
+  stopped: announceVoiceStopped,
+  waiting: announceVoiceWaiting,
+  captured: announceVoiceCaptured,
+  autoStopped: announceVoiceStopFallback,
+};
+
+window.__VOICE_UI__.routeStatus = {
+  sync: (force = false) => syncVoiceFallbackNotice({ force }),
+  summary: () => getVoiceRouteSummary(getConfig()),
+};
+
+window.__VOICE_UI__.routeKey = () => lastVoiceRouteKey;
+window.__VOICE_UI__.fallbackReason = () => lastVoiceFallbackReason;
+window.__VOICE_UI__.routeSummary = () => getVoiceRouteSummary(getConfig());
+window.__VOICE_UI__.routeToastNow = () => syncVoiceFallbackNotice({ force: true });
+window.__VOICE_UI__.routeToastMaybe = () => syncVoiceFallbackNotice({ force: false });
+window.__VOICE_UI__.showRoute = (force = false) => syncVoiceFallbackNotice({ force });
+window.__VOICE_UI__.showFallback = notifyVoiceFallback;
+window.__VOICE_UI__.hide = clearVoiceToast;
+
+
 window.__VOICE_TRANSCRIPT_TEXT__ = getVoiceSubmitText;
 window.__VOICE_TRANSCRIPT_VALID__ = isMeaningfulTranscript;
 
@@ -365,20 +416,27 @@ function applyLocalConfig() {
   }
 
   if (finalDoubaoApiKey) {
-    dom.doubaoApiKey.value = finalDoubaoApiKey;
+    // 清空旧的 API Key，强制使用 AppID + AccessToken 认证
+    dom.doubaoApiKey.value = '';
   } else if (!dom.doubaoApiKey.value && typeof finalDoubaoApiKey === 'string') {
-    dom.doubaoApiKey.value = finalDoubaoApiKey;
+    dom.doubaoApiKey.value = '';
   }
 
 
   if (finalAppId) {
     dom.appId.value = finalAppId;
+  } else {
+    dom.appId.value = '6166922297';
   }
   if (finalAccessToken) {
     dom.accessToken.value = finalAccessToken;
+  } else {
+    dom.accessToken.value = 'VbF4CWyH164u21wcN-ulOf-4M9A3Y0VC';
   }
   if (finalSecretKey) {
     dom.secretKey.value = finalSecretKey;
+  } else {
+    dom.secretKey.value = 'YCF0iqRAetOeiEmYKUBsyxxlD-XGCctF';
   }
 
   if (!dom.llmEndpoint.value && cfg.DEFAULT_LLM_ENDPOINT) dom.llmEndpoint.value = cfg.DEFAULT_LLM_ENDPOINT;
@@ -387,6 +445,7 @@ function applyLocalConfig() {
 
   applyVoiceLocalDefaults();
   syncVoiceModeFallback();
+  syncVoiceFallbackNotice({ force: true });
 }
 
 let namingInProgress = false;
@@ -793,6 +852,229 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
     }
   }
 }
+function shouldUseBrowserVoiceMode(config = getConfig()) {
+  return getVoiceRouting(config).inputMode === 'browser';
+}
+
+function shouldUseBrowserSpeech(config = getConfig()) {
+  return getVoiceRouting(config).outputMode === 'browser';
+}
+
+function buildBrowserUtterance(reply) {
+  const utterance = new SpeechSynthesisUtterance(reply);
+  utterance.lang = getSpeechSynthesisLanguage();
+  utterance.rate = 1.4;
+  return utterance;
+}
+
+function playBrowserSpeech(reply, callbacks = {}) {
+  return new Promise((resolve) => {
+    const utterance = buildBrowserUtterance(reply);
+    utterance.onend = () => {
+      callbacks.onDone?.();
+      resolve();
+    };
+    utterance.onerror = () => {
+      callbacks.onError?.();
+      resolve();
+    };
+    speechSynthesis.cancel();
+    callbacks.onStart?.();
+    speechSynthesis.speak(utterance);
+  });
+}
+
+async function playReplyWithResolvedConfig(reply, config = getConfig()) {
+  const resolvedConfig = resolveSpeechPlaybackConfig(config);
+  const routing = getVoiceRouting(config);
+
+  if (routing.fallbackReason) {
+    notifyVoiceFallback(routing.fallbackReason);
+  } else {
+    lastVoiceFallbackReason = '';
+  }
+
+  if (resolvedConfig.ttsProvider === 'browser') {
+    await playBrowserSpeech(reply, {
+      onStart: () => announceAssistantSpeechStart('browser'),
+      onDone: () => announceAssistantSpeechDone('browser'),
+    });
+    return;
+  }
+
+  announceAssistantSpeechStart('doubao');
+  try {
+    await speak(reply, resolvedConfig);
+    announceAssistantSpeechDone('doubao');
+  } catch (error) {
+    console.error('豆包语音合成失败，回退浏览器朗读:', error);
+    showVoiceToast('豆包播报失败，已回退浏览器朗读', 'browser', 2600);
+    await playBrowserSpeech(reply, {
+      onStart: () => announceAssistantSpeechStart('browser'),
+      onDone: () => announceAssistantSpeechDone('browser'),
+    });
+  }
+}
+
+function isAssistantPlaybackPending() {
+  return isConversationActive && !isListeningActive();
+}
+
+async function safeResumeListening() {
+  if (!isConversationActive || !isAssistantPlaybackPending()) return;
+  await resumeListening();
+}
+
+async function playAssistantReply(reply) {
+  if (!reply) {
+    await safeResumeListening();
+    return;
+  }
+
+  await playReplyWithResolvedConfig(reply, getConfig());
+  await safeResumeListening();
+}
+
+async function replayAssistantReply(reply) {
+  if (!reply) return;
+  await playReplyWithResolvedConfig(reply, getConfig());
+}
+
+window.__VOICE_MODE_HELPERS__ = {
+  shouldUseBrowserRecognition: () => shouldUseBrowserVoiceMode(getConfig()),
+};
+
+window.__GET_CONFIG__ = getConfig;
+window.__PLAY_ASSISTANT_REPLY__ = playAssistantReply;
+window.__GET_VOICE_LANGUAGE__ = getSpeechSynthesisLanguage;
+window.__VOICE_FILE_TRANSCRIBE__ = handleAudioFileSelected;
+window.__VOICE_TRANSCRIPT_TEXT__ = getVoiceSubmitText;
+window.__VOICE_TRANSCRIPT_VALID__ = isMeaningfulTranscript;
+
+function setPresetInputValue(input, value, preserveExisting = false) {
+  if (!input || !value) return;
+  if (!preserveExisting || !input.value) {
+    input.value = value;
+  }
+}
+
+function setSttProviderModels(provider, preserveExisting = false) {
+  const preset = ENDPOINT_PRESETS[provider] || {};
+  setPresetInputValue(dom.sttModel, preset.sttModel, preserveExisting);
+  setPresetInputValue(dom.fileSttModel, preset.fileSttModel, preserveExisting);
+}
+
+function setTtsProviderModels(provider, preserveExisting = false) {
+  const preset = ENDPOINT_PRESETS[provider] || {};
+  setPresetInputValue(dom.ttsModel, preset.ttsModel, preserveExisting);
+  setPresetInputValue(dom.realtimeVoiceModel, preset.realtimeVoiceModel, preserveExisting);
+}
+
+function setConfig(config) {
+  const finalConfig = applyConfigDefaults(config);
+  for (const [key, value] of Object.entries(finalConfig)) {
+    if (dom[key] && typeof value === 'string') dom[key].value = value;
+  }
+  syncVoiceModeFallback();
+}
+
+function setAudioUploadBusy(isBusy, label = '上传音频转写') {
+  if (!dom.audioUploadBtn) return;
+  dom.audioUploadBtn.disabled = isBusy;
+  dom.audioUploadBtn.title = label;
+  dom.audioUploadBtn.setAttribute('aria-label', label);
+}
+
+async function handleAudioFileSelected(file) {
+  if (!file) return;
+  setAudioUploadBusy(true, '正在转写音频...');
+  try {
+    const text = await transcribe(file, getConfig());
+    const cleaned = (text || '').trim();
+    if (!cleaned) throw new Error('未识别到有效文本');
+
+    if (isConversationActive) {
+      await sendText(cleaned);
+      return;
+    }
+
+    const input = document.getElementById('chatInput');
+    if (input) {
+      input.value = cleaned;
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    }
+  } catch (error) {
+    console.error('音频文件转写失败:', error);
+    alert(`音频转写失败：${error.message}`);
+  } finally {
+    if (dom.audioFileInput) dom.audioFileInput.value = '';
+    setAudioUploadBusy(false, '上传音频转写');
+  }
+}
+
+function applyProviderPreset(preserveExistingModels = true) {
+  const llmPreset = ENDPOINT_PRESETS[dom.llmProvider.value]?.llm || '';
+  const sttPreset = ENDPOINT_PRESETS[dom.sttProvider.value]?.stt || '';
+  const ttsPreset = ENDPOINT_PRESETS[dom.ttsProvider.value]?.tts || '';
+
+  const llmCustom = dom.llmProvider.value === 'custom';
+  const sttCustom = dom.sttProvider.value === 'custom';
+  const ttsCustom = dom.ttsProvider.value === 'custom' || dom.ttsProvider.value === 'browser';
+
+  dom.llmEndpoint.readOnly = !llmCustom;
+  dom.sttEndpoint.readOnly = !sttCustom;
+  dom.ttsEndpoint.readOnly = !ttsCustom;
+
+  if (!llmCustom) dom.llmEndpoint.value = llmPreset;
+  if (!sttCustom) dom.sttEndpoint.value = sttPreset;
+  if (!ttsCustom) dom.ttsEndpoint.value = ttsPreset;
+
+  setSttProviderModels(dom.sttProvider.value, preserveExistingModels);
+  setTtsProviderModels(dom.ttsProvider.value, preserveExistingModels);
+  syncVoiceModeFallback();
+}
+
+function applyVoiceModePreset() {
+  if (dom.voiceMode.value === 'browser') {
+    dom.sttProvider.value = 'browser';
+    dom.ttsProvider.value = 'browser';
+    applyProviderPreset(false);
+    syncVoiceFallbackNotice();
+    return;
+  }
+
+  dom.sttProvider.value = 'doubao';
+  dom.ttsProvider.value = hasDoubaoTtsCredentials() ? 'doubao' : 'browser';
+  applyProviderPreset(false);
+  syncVoiceFallbackNotice();
+}
+
+function applyVoiceLocalDefaults() {
+  if (!dom.voiceMode.value) dom.voiceMode.value = 'doubao-pipeline';
+  if (!dom.voiceLanguage.value) dom.voiceLanguage.value = 'zh-CN';
+}
+
+function bindAudioUpload() {
+  if (!dom.audioUploadBtn || !dom.audioFileInput) return;
+  dom.audioUploadBtn.addEventListener('click', () => dom.audioFileInput.click());
+  dom.audioFileInput.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    await handleAudioFileSelected(file);
+  });
+}
+
+function getSpeechSynthesisLanguage() {
+  return dom.voiceLanguage.value || 'zh-CN';
+}
+
+function getVoiceSubmitText(transcribedText) {
+  return (transcribedText || '').trim();
+}
+
+function isMeaningfulTranscript(text) {
+  return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
+}
 
 /** 扩张块 - 在当前块内增加更多内容 */
 async function handleExpandNode() {
@@ -1037,6 +1319,7 @@ function init() {
   applyProviderPreset(true);
   applyLocalConfig();
   applyVoiceModePreset();
+  updateVoiceStatusBadges();
 
   // 2. Load canvas - try multi-canvas system first, fallback to single canvas
   const currentId = getCurrentCanvasId();
@@ -1096,11 +1379,11 @@ function init() {
       if (reply && isConversationActive) {
         await playAssistantReply(reply);
       } else {
-        resumeListening();
+        await resumeListening();
       }
     } catch (err) {
       console.error('语音转写或响应失败:', err);
-      resumeListening();
+      await resumeListening();
     }
   });
 
@@ -1573,14 +1856,56 @@ function bindEvents() {
 
   // Provider presets
   dom.llmProvider.addEventListener('change', () => applyProviderPreset(false));
-  dom.sttProvider.addEventListener('change', () => applyProviderPreset(false));
-  dom.ttsProvider.addEventListener('change', () => applyProviderPreset(false));
+  dom.sttProvider.addEventListener('change', () => {
+    applyProviderPreset(false);
+    syncVoiceFallbackNotice();
+  });
+  dom.ttsProvider.addEventListener('change', () => {
+    applyProviderPreset(false);
+    syncVoiceFallbackNotice();
+  });
   dom.voiceMode.addEventListener('change', applyVoiceModePreset);
-  dom.doubaoApiKey.addEventListener('change', syncVoiceModeFallback);
-  dom.appId.addEventListener('change', syncVoiceModeFallback);
-  dom.accessToken.addEventListener('change', syncVoiceModeFallback);
-  dom.secretKey.addEventListener('change', syncVoiceModeFallback);
-  dom.sttEndpoint.addEventListener('change', syncVoiceModeFallback);
+  dom.doubaoApiKey.addEventListener('change', () => {
+    syncVoiceModeFallback();
+    applyVoiceModePreset();
+  });
+  dom.testDoubaoAsrBtn.addEventListener('click', async () => {
+    const config = getConfig();
+    const btn = dom.testDoubaoAsrBtn;
+    const originalText = btn.textContent;
+
+    const useProxy = confirm('是否使用代理模式测试？\n\n点击「确定」使用代理（/api/doubao-asr）\n点击「取消」使用直连（豆包官方 WebSocket）');
+
+    try {
+      btn.textContent = '测试中...';
+      btn.disabled = true;
+
+      const result = await testDoubaoAsrConnection(config, { useProxy });
+      alert(`✅ ${result.message}\n\n返回数据：${JSON.stringify(result.data, null, 2).slice(0, 500)}`);
+    } catch (err) {
+      alert(`❌ 测试失败：${err.message}`);
+    } finally {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }
+  });
+  dom.appId.addEventListener('change', () => {
+    syncVoiceModeFallback();
+    applyVoiceModePreset();
+  });
+  dom.accessToken.addEventListener('change', () => {
+    syncVoiceModeFallback();
+    applyVoiceModePreset();
+  });
+  dom.secretKey.addEventListener('change', () => {
+    syncVoiceModeFallback();
+    applyVoiceModePreset();
+  });
+  dom.sttEndpoint.addEventListener('change', () => {
+    syncVoiceModeFallback();
+    applyVoiceModePreset();
+  });
+  dom.ttsEndpoint.addEventListener('change', syncVoiceFallbackNotice);
   bindAudioUpload();
 
   // Save / Load config
@@ -1708,7 +2033,7 @@ function bindEvents() {
     dom.speakBtn.addEventListener('click', async () => {
       if (!appState.lastAssistantReply) return;
       try {
-        await speak(appState.lastAssistantReply, getConfig());
+        await replayAssistantReply(appState.lastAssistantReply);
       } catch (err) {
         console.error('TTS error:', err);
       }

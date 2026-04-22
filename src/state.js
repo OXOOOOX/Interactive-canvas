@@ -153,7 +153,12 @@ export function loadConfig() {
   const config = JSON.parse(text);
   if (config && typeof config === 'object' && config.apiKey) {
     if (!config.llmApiKey) config.llmApiKey = config.apiKey;
-    if (!config.doubaoApiKey && config.sttProvider === 'doubao') {
+    const shouldMigrateDoubaoKey =
+      config.sttProvider === 'doubao' ||
+      config.ttsProvider === 'doubao' ||
+      config.voiceMode === 'doubao-pipeline' ||
+      config.voiceMode === 'doubao-realtime';
+    if (!config.doubaoApiKey && shouldMigrateDoubaoKey) {
       config.doubaoApiKey = config.apiKey;
     }
     delete config.apiKey;
@@ -340,7 +345,7 @@ export const ENDPOINT_PRESETS = {
   },
   doubao: {
     llm: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
-    stt: 'https://openspeech.bytedance.com/api/v1/vc/ata/submit',
+    stt: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
     tts: 'https://openspeech.bytedance.com/api/v1/tts',
     sttModel: 'doubao-asr-streaming-2.0',
     fileSttModel: 'doubao-asr-file-2.0',

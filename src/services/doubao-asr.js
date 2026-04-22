@@ -5,6 +5,7 @@
 const WS_URL = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel';
 const DEFAULT_PROXY_ROUTE = '/api/doubao-asr';
 const DEFAULT_RESOURCE_ID = 'volc.bigasr.sauc.duration';
+const ALT_RESOURCE_ID = 'volc.seedasr.sauc'; // 另一种常见资源 ID
 const SAMPLE_RATE = 16000;
 const SEGMENT_DURATION_MS = 200;
 
@@ -107,6 +108,11 @@ function downsampleBuffer(float32Array, inputRate, outputRate) {
 }
 
 function getResourceId(config) {
+  // 优先使用配置中指定的 resource ID
+  if (config.doubaoResourceId) {
+    return config.doubaoResourceId;
+  }
+
   const model = config.sttModel || '';
   if (!model || model === 'bigmodel' || model === 'doubao-asr-streaming-2.0') {
     return DEFAULT_RESOURCE_ID;
@@ -173,13 +179,21 @@ export function getDoubaoProxyHeaders(config, connectId = crypto.randomUUID()) {
     };
   }
 
-  if (config.appId && (config.accessToken || config.secretKey)) {
+  if (config.appId && config.accessToken) {
     return {
-      'X-Api-Resource-Id': resourceId,
-      'X-Api-Request-Id': crypto.randomUUID(),
       'X-Api-App-Key': config.appId,
-      ...(config.accessToken ? { 'X-Api-Access-Key': config.accessToken } : {}),
-      ...(config.secretKey ? { 'X-Api-Secret-Key': config.secretKey } : {}),
+      'X-Api-Access-Key': config.accessToken,
+      'X-Api-Resource-Id': resourceId,
+      'X-Api-Connect-Id': crypto.randomUUID(),
+    };
+  }
+
+  if (config.appId && config.secretKey) {
+    return {
+      'X-Api-App-Key': config.appId,
+      'X-Api-Secret-Key': config.secretKey,
+      'X-Api-Resource-Id': resourceId,
+      'X-Api-Connect-Id': crypto.randomUUID(),
     };
   }
 
@@ -197,12 +211,15 @@ async function buildInitPayload(config) {
       channel: 1,
     },
     request: {
-      model_name: config.sttModel || 'bigmodel',
+      // model_name 固定为 bigmodel，2.0 是通过 Resource ID 区分的
+      model_name: 'bigmodel',
       enable_itn: true,
       enable_punc: true,
       enable_ddc: true,
       show_utterances: true,
       enable_nonstream: false,
+      end_window_size: 800,
+      force_to_speech_time: 500,
     },
   };
 
@@ -290,9 +307,116 @@ function extractTranscript(data) {
   return { interim, final };
 }
 
+export async function testDoubaoAsrConnection(config, options = {}) {
+  const { useProxy = true } = options;
+
+  return new Promise((resolve, reject) => {
+    let wsUrl;
+    let wsOptions = {};
+
+    if (useProxy) {
+      wsUrl = getConnectionUrl(config);
+    } else {
+      // 直连模式：直接连接豆包官方 WebSocket
+      wsUrl = getDirectWsUrl(config);
+      const resourceId = getResourceId(config);
+      const connectId = crypto.randomUUID();
+
+      // 直连需要添加认证头
+      if (config.doubaoApiKey) {
+        wsOptions.headers = {
+          'X-Api-Key': config.doubaoApiKey,
+          'X-Api-Resource-Id': resourceId,
+          'X-Api-Connect-Id': connectId,
+        };
+      } else if (config.appId && (config.accessToken || config.secretKey)) {
+        wsOptions.headers = {
+          'X-Api-App-Key': config.appId,
+          'X-Api-Resource-Id': resourceId,
+          'X-Api-Connect-Id': connectId,
+          ...(config.accessToken ? { 'X-Api-Access-Key': config.accessToken } : {}),
+          ...(config.secretKey ? { 'X-Api-Secret-Key': config.secretKey } : {}),
+        };
+      }
+    }
+
+    console.log('[doubao-asr test] Connecting to:', wsUrl);
+    console.log('[doubao-asr test] Options:', JSON.stringify(wsOptions, null, 2));
+    console.log('[doubao-asr test] Config:', {
+      sttModel: config.sttModel,
+      resourceId: getResourceId(config),
+      hasApiKey: !!config.doubaoApiKey,
+      hasAppId: !!config.appId,
+    });
+
+    const ws = new WebSocket(wsUrl);
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error(`连接超时（5 秒）- ${useProxy ? '代理模式' : '直连模式'}`));
+    }, 5000);
+
+    ws.onopen = async () => {
+      console.log('[doubao-asr test] WebSocket connected');
+      try {
+        const initPayload = await buildInitPayload(config);
+        console.log('[doubao-asr test] Init payload size:', initPayload.length, 'bytes');
+        ws.send(initPayload);
+        console.log('[doubao-asr test] Init payload sent');
+      } catch (err) {
+        clearTimeout(timeout);
+        ws.close();
+        console.error('[doubao-asr test] Build init payload error:', err);
+        reject(err);
+      }
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        console.log('[doubao-asr test] Received message:', event.data.byteLength, 'bytes');
+        const parsed = await parseServerMessage(event.data);
+        console.log('[doubao-asr test] Parsed response:', JSON.stringify(parsed.data, null, 2).slice(0, 500));
+        clearTimeout(timeout);
+        ws.close();
+        if (parsed.data?.error) {
+          reject(new Error(`服务端错误：${parsed.data.error.message || JSON.stringify(parsed.data.error)}`));
+        } else if (parsed.data?.result || parsed.data?.utterances) {
+          resolve({ status: 'ok', message: `豆包 ASR 连通成功（${useProxy ? '代理' : '直连'}）`, data: parsed.data });
+        } else {
+          resolve({ status: 'ok', message: `WebSocket 连通但返回格式异常（${useProxy ? '代理' : '直连'}）`, data: parsed.data });
+        }
+      } catch (err) {
+        clearTimeout(timeout);
+        ws.close();
+        console.error('[doubao-asr test] Parse message error:', err);
+        reject(err);
+      }
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timeout);
+      console.error('[doubao-asr test] WebSocket error event:', err);
+      reject(new Error(`WebSocket 连接失败，检查网络或凭证（${useProxy ? '代理' : '直连'}）`));
+    };
+
+    ws.onclose = (event) => {
+      console.log('[doubao-asr test] WebSocket closed:', {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+      });
+    };
+  });
+}
+
 export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const audioContext = new AudioContext();
+
+  // 确保 AudioContext 处于运行状态
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+
   const source = audioContext.createMediaStreamSource(stream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
   const ws = new WebSocket(getConnectionUrl(config));
@@ -307,20 +431,34 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
   source.connect(processor);
   processor.connect(audioContext.destination);
 
+  console.log('[doubao-asr] AudioContext state:', audioContext.state, 'sampleRate:', audioContext.sampleRate);
+
   const stop = async () => {
-    if (stopped) return;
+    console.log('[doubao-asr] stop() called, stopped=', stopped, 'ws.readyState=', ws.readyState);
+    if (stopped) {
+      console.log('[doubao-asr] stop() already stopped, ignoring');
+      return;
+    }
     stopped = true;
 
     processor.disconnect();
     source.disconnect();
     stream.getTracks().forEach(track => track.stop());
     await audioContext.close();
+    console.log('[doubao-asr] Audio context closed');
 
     const remaining = sampleChunks.length ? concatChunks(sampleChunks.splice(0)) : new Uint8Array(0);
+    await sending.catch((error) => callbacks.onError?.(error));
     if (ws.readyState === WebSocket.OPEN) {
       const payload = await buildAudioPayload(seq, remaining, true);
       ws.send(payload);
-      setTimeout(() => ws.close(), 200);
+      console.log('[doubao-asr] Final audio payload sent');
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          console.log('[doubao-asr] Closing WebSocket');
+          ws.close();
+        }
+      }, 1200);
     } else if (ws.readyState === WebSocket.CONNECTING) {
       ws.close();
     }
@@ -329,20 +467,28 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
   const ready = new Promise((resolve, reject) => {
     ws.binaryType = 'arraybuffer';
     ws.onopen = async () => {
+      console.log('[doubao-asr] WebSocket opened');
       try {
         ws.send(await buildInitPayload(config));
+        console.log('[doubao-asr] Init payload sent');
         resolve();
       } catch (error) {
         reject(error);
       }
     };
-    ws.onerror = () => reject(new Error('豆包 ASR WebSocket 连接失败'));
+    ws.onerror = () => {
+      console.error('[doubao-asr] WebSocket error');
+      reject(new Error('豆包 ASR WebSocket 连接失败'));
+    };
   });
 
   ws.onmessage = async (event) => {
+    console.log('[doubao-asr] ws.onmessage raw data size:', event.data.byteLength);
     try {
       const parsed = await parseServerMessage(event.data);
+      console.log('[doubao-asr] ws.onmessage parsed:', JSON.stringify(parsed.data, null, 2).slice(0, 300));
       const { interim, final } = extractTranscript(parsed.data);
+      console.log('[doubao-asr] ws.onmessage:', { interim, final, isLastPackage: parsed.isLastPackage });
       if (interim) callbacks.onInterim?.(interim);
       if (final) {
         finalText += final;
@@ -352,15 +498,22 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
         callbacks.onComplete?.(finalText.trim());
       }
     } catch (error) {
+      console.error('[doubao-asr] ws.onmessage parse error:', error);
       callbacks.onError?.(error);
     }
   };
 
+  ws.onerror = (error) => {
+    console.error('[doubao-asr] WebSocket error event:', error);
+  };
+
   ws.onclose = () => {
+    console.log('[doubao-asr] WebSocket closed, finalText=', finalText);
     callbacks.onClose?.(finalText.trim());
   };
 
   processor.onaudioprocess = (event) => {
+    console.log('[doubao-asr] onaudioprocess triggered, stopped=', stopped, 'ws.readyState=', ws.readyState);
     if (stopped || ws.readyState !== WebSocket.OPEN) return;
 
     const downsampled = downsampleBuffer(event.inputBuffer.getChannelData(0), audioContext.sampleRate, SAMPLE_RATE);
@@ -376,8 +529,13 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
       const currentSeq = seq;
       seq += 1;
       sending = sending.then(async () => {
-        ws.send(await buildAudioPayload(currentSeq, current, false));
-      }).catch((error) => callbacks.onError?.(error));
+        const audioPayload = await buildAudioPayload(currentSeq, current, false);
+        ws.send(audioPayload);
+        console.log('[doubao-asr] Audio sent, seq:', currentSeq, 'size:', audioPayload.length, 'bytes');
+      }).catch((error) => {
+        console.error('[doubao-asr] Audio send error:', error);
+        callbacks.onError?.(error);
+      });
     }
   };
 

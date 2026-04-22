@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x *)",
+      "Bash(npm start *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git remote *)",
+      "Bash(gh pr *)",
+      "Bash(curl -s -I https://github.com -o /dev/null)",
+      "Bash(git config *)",
+      "Bash(git branch *)",
+      "Bash(npm run *)",
+      "Bash(head -1575 C:\\\\Users\\\\23479\\\\Documents\\\\GitHub\\\\Interactive-canvas\\\\src\\\\style.css)",
+      "Bash(echo ' *)",
+      "Bash(tail -n +1576 C:\\\\Users\\\\23479\\\\Documents\\\\GitHub\\\\Interactive-canvas\\\\src\\\\style.css)",
+      "Read(//tmp/**)",
+      "Bash(head -1575 /c/Users/23479/Documents/GitHub/Interactive-canvas/src/style.css)",
+      "Bash(tail -n +1576 /c/Users/23479/Documents/GitHub/Interactive-canvas/src/style.css)",
+      "Bash(curl -s http://localhost:5174/)",
+      "Bash(pkill -f vite)",
+      "Bash(node *)",
+      "Bash(curl *)",
+      "Bash(git reset *)",
+      "Bash(python *)",
+      "WebSearch",
+      "WebFetch(domain:www.volcengine.com)",
+      "Bash(docker build *)",
+      "Bash(netstat -ano)",
+      "Bash(findstr :8080)",
+      "Bash(taskkill *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(netstat *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(npm install *)",
+      "Bash(findstr :3001)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

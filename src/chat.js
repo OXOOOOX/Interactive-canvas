@@ -51,11 +51,15 @@ export function initChat(configGetter) {
 }
 
 /** 发送用户消息并处理 AI 响应 */
-async function sendMessage() {
-  const text = $input.value.trim();
+async function sendMessage(explicitText = null) {
+  const text = (typeof explicitText === 'string' ? explicitText : $input.value).trim();
   if (!text) return null;
 
-  $input.value = '';
+  if (typeof explicitText !== 'string') {
+    $input.value = '';
+  } else if ($input.value.trim() === text) {
+    $input.value = '';
+  }
   $input.style.height = 'auto';
 
   const welcome = $messages.querySelector('.chat-welcome');
@@ -196,8 +200,7 @@ async function generateSuggestions() {
 /** 从外部触发发送（用于语音转写后） */
 export async function sendText(text) {
   if (!text) return null;
-  $input.value = text;
-  return await sendMessage();
+  return await sendMessage(text);
 }
 
 function buildOpSummaryHtml(opSummary = []) {

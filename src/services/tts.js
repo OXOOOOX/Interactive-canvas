@@ -3,7 +3,68 @@
  */
 
 function getDoubaoResourceId(config) {
-  return config.ttsModel || 'seed-tts-2.0';
+  return config.ttsModel || 'doubao-tts-2.0';
+}
+
+function hasLegacyDoubaoCredentials(config) {
+  return !!(config.appId && (config.accessToken || config.secretKey));
+}
+
+function validateDoubaoTtsConfig(config) {
+  if (config.doubaoApiKey) return;
+  if (hasLegacyDoubaoCredentials(config)) {
+    throw new Error('当前豆包 TTS 仅支持 doubaoApiKey，现有旧版凭证只能用于豆包识别');
+  }
+  throw new Error('未配置豆包 TTS 所需的 doubaoApiKey');
+}
+
+function playBrowserTts(text, config) {
+  return new Promise((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = config.voiceLanguage || 'zh-CN';
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utterance);
+  });
+}
+
+function playAudioElement(audio) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      audio.onended = null;
+      audio.onerror = null;
+    };
+
+    audio.onended = () => {
+      cleanup();
+      resolve();
+    };
+    audio.onerror = () => {
+      cleanup();
+      reject(new Error('TTS 音频播放失败'));
+    };
+
+    audio.play().catch((error) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
+export function canUseDoubaoTts(config) {
+  return !!(config?.doubaoApiKey && config?.ttsEndpoint);
+}
+
+export function getDoubaoTtsFallbackReason(config) {
+  if (canUseDoubaoTts(config)) return '';
+  if (!config?.ttsEndpoint) {
+    return '未配置豆包 TTS endpoint';
+  }
+  if (hasLegacyDoubaoCredentials(config)) {
+    return '当前豆包 TTS 仅支持 doubaoApiKey，旧版凭证只能用于豆包识别';
+  }
+  return '未配置豆包 TTS 所需的 doubaoApiKey';
 }
 
 function extractAudioBase64(data) {
@@ -19,7 +80,7 @@ function extractAudioBase64(data) {
 }
 
 function buildDoubaoHeaders(config) {
-  if (!config.doubaoApiKey) throw new Error('未配置豆包 API Key');
+  validateDoubaoTtsConfig(config);
   return {
     'Content-Type': 'application/json',
     'X-Api-Key': config.doubaoApiKey,
@@ -41,15 +102,17 @@ function buildDoubaoBody(text, config) {
 
 export async function speak(text, config) {
   if (config.ttsProvider === 'browser') {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
-    speechSynthesis.speak(utterance);
+    await playBrowserTts(text, config);
     return;
   }
 
   if (!config.ttsEndpoint) throw new Error('未配置 TTS endpoint');
 
   const isDoubao = config.ttsProvider === 'doubao';
+  if (isDoubao) {
+    validateDoubaoTtsConfig(config);
+  }
+
   const res = await fetch(config.proxyUrl || config.ttsEndpoint, {
     method: 'POST',
     headers: isDoubao
@@ -75,7 +138,10 @@ export async function speak(text, config) {
   if (!audioBase64) throw new Error('TTS 未返回音频数据');
 
   const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`);
-  await audio.play();
+  await playAudioElement(audio);
 }
 
 export { buildDoubaoHeaders, buildDoubaoBody };
+export { validateDoubaoTtsConfig };
+export { playBrowserTts };
+export { hasLegacyDoubaoCredentials };

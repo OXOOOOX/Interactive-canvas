@@ -23,9 +23,14 @@ function createDoubaoAsrProxyPlugin() {
       })
 
       wss.on('connection', (clientSocket, req) => {
+        // 根据认证模式选择默认的 Resource ID
+        // 豆包流式语音识别模型 2.0 小时版：volc.seedasr.sauc.duration
+        // 豆包流式语音识别模型 2.0 并发版：volc.seedasr.sauc.concurrent
+        const defaultResourceId = 'volc.seedasr.sauc.duration'
+
         const requestUrl = new URL(req.url || '', 'http://localhost')
         const target = requestUrl.searchParams.get('target') || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
-        const resourceId = requestUrl.searchParams.get('resourceId') || 'volc.bigasr.sauc.duration'
+        const resourceId = requestUrl.searchParams.get('resourceId') || defaultResourceId
         const connectId = requestUrl.searchParams.get('connectId') || randomUUID()
         const mode = requestUrl.searchParams.get('mode') || 'apiKey'
         const apiKey = requestUrl.searchParams.get('apiKey') || ''
@@ -33,7 +38,19 @@ function createDoubaoAsrProxyPlugin() {
         const accessToken = requestUrl.searchParams.get('accessToken') || ''
         const secretKey = requestUrl.searchParams.get('secretKey') || ''
 
+        console.log('[doubao-proxy] Connection request:', {
+          target,
+          resourceId,
+          mode,
+          hasApiKey: !!apiKey,
+          hasAppId: !!appId,
+          hasAccessToken: !!accessToken,
+          hasSecretKey: !!secretKey,
+        })
+
+        // 构建目标 URL，可能需要添加认证参数
         const targetUrl = new URL(target)
+
         const wsOptions = {
           headers: mode === 'apiKey'
             ? {
@@ -41,41 +58,91 @@ function createDoubaoAsrProxyPlugin() {
                 'X-Api-Resource-Id': resourceId,
                 'X-Api-Connect-Id': connectId,
               }
-            : {
-                'X-Api-Resource-Id': resourceId,
-                'X-Api-Request-Id': randomUUID(),
-                'X-Api-App-Key': appId,
-                ...(accessToken ? { 'X-Api-Access-Key': accessToken } : {}),
-                ...(secretKey ? { 'X-Api-Secret-Key': secretKey } : {}),
-              },
-          agent: targetUrl.protocol === 'wss:' ? new https.Agent() : new http.Agent(),
+            // 旧版认证 (AppID + AccessToken/SecretKey) - 需要正确的头名称
+            : appId && accessToken
+              ? {
+                  'X-Api-App-Key': appId,
+                  'X-Api-Access-Key': accessToken,
+                  'X-Api-Resource-Id': resourceId,
+                  'X-Api-Connect-Id': randomUUID(),
+                }
+              : {
+                  'X-Api-App-Key': appId,
+                  'X-Api-Secret-Key': secretKey,
+                  'X-Api-Resource-Id': resourceId,
+                  'X-Api-Connect-Id': randomUUID(),
+                },
+          agent: targetUrl.protocol === 'wss:' ? new https.Agent({ rejectUnauthorized: false }) : new http.Agent(),
         }
 
-        const upstream = new WebSocket(target, wsOptions)
+        // 旧版认证需要在 URL 中添加 appId 参数
+        if (mode !== 'apiKey' && appId) {
+          targetUrl.searchParams.set('appId', appId)
+        }
+
+        console.log('[doubao-proxy] Connecting to upstream:', target)
 
         const closeBoth = () => {
           if (clientSocket.readyState === WebSocket.OPEN) clientSocket.close()
           if (upstream.readyState === WebSocket.OPEN) upstream.close()
         }
 
-        upstream.on('open', () => {
-          clientSocket.on('message', (data, isBinary) => {
-            if (upstream.readyState === WebSocket.OPEN) {
-              upstream.send(data, { binary: isBinary })
-            }
-          })
+        const upstream = new WebSocket(target, wsOptions)
 
+        upstream.on('error', (err) => {
+          console.error('[doubao-proxy] Upstream error:', err.message)
+        })
+
+        upstream.on('close', (code, reason) => {
+          console.log('[doubao-proxy] Upstream closed:', { code, reason: reason?.toString() })
+        })
+
+        // 先连接上游，成功后再绑定客户端消息处理
+        upstream.on('open', () => {
+          console.log('[doubao-proxy] Upstream connected')
+
+          // 等待 upstream 响应，监听可能的错误消息
+          let upstreamErrorReceived = false
           upstream.on('message', (data, isBinary) => {
+            console.log('[doubao-proxy] Upstream -> Client (first message):', data.byteLength, 'bytes')
+            // 尝试解析是否为错误响应
+            try {
+              const bytes = new Uint8Array(data)
+              console.log('[doubao-proxy] First message header:', Array.from(bytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '))
+            } catch (e) {}
+
             if (clientSocket.readyState === WebSocket.OPEN) {
               clientSocket.send(data, { binary: isBinary })
             }
           })
+
+          clientSocket.on('message', (data, isBinary) => {
+            if (upstream.readyState === WebSocket.OPEN) {
+              upstream.send(data, { binary: isBinary })
+              console.log('[doubao-proxy] Client -> Upstream:', data.byteLength, 'bytes, binary:', isBinary)
+            }
+          })
         })
 
-        upstream.on('error', () => closeBoth())
-        clientSocket.on('error', () => closeBoth())
-        upstream.on('close', () => closeBoth())
-        clientSocket.on('close', () => closeBoth())
+        upstream.on('error', (err) => {
+          console.error('[doubao-proxy] Upstream error:', err.message)
+          closeBoth()
+        })
+
+        upstream.on('close', (code, reason) => {
+          console.log('[doubao-proxy] Upstream closed:', { code, reason: reason?.toString() })
+          closeBoth()
+        })
+
+        clientSocket.on('error', (err) => {
+          console.error('[doubao-proxy] Client error:', err.message)
+          closeBoth()
+        })
+
+        clientSocket.on('close', () => {
+          console.log('[doubao-proxy] Client closed')
+          closeBoth()
+        })
       })
     },
   }

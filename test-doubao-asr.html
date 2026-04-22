@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>豆包 ASR 连接测试</title>
+  <style>
+    body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #1a1a2e; color: #eee; }
+    h1 { color: #7b68ee; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 6px; font-weight: 500; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #333; border-radius: 6px; background: #2a2a3e; color: #eee; box-sizing: border-box; }
+    input:focus { outline: none; border-color: #7b68ee; }
+    button { padding: 12px 24px; border: none; border-radius: 6px; background: #7b68ee; color: white; font-size: 16px; cursor: pointer; margin-right: 10px; }
+    button:hover { background: #6a5acd; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .log { margin-top: 20px; padding: 16px; background: #0d0d1a; border-radius: 8px; font-family: Consolas, monospace; font-size: 13px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; }
+    .success { color: #68d391; }
+    .error { color: #fc8181; }
+    .warn { color: #f6ad55; }
+    .info { color: #90cdf4; }
+  </style>
+</head>
+<body>
+  <h1>🎤 豆包 ASR 连接测试</h1>
+
+  <div class="form-group">
+    <label>连接模式</label>
+    <select id="connectionMode">
+      <option value="proxy">通过本地代理 (/api/doubao-asr) - 推荐</option>
+      <option value="direct">直连豆包 WebSocket (可能无法发送认证头)</option>
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label>豆包 API Key</label>
+    <input type="password" id="apiKey" placeholder="输入你的豆包 API Key" value="d4b3f17d-0ae0-4b2c-a6bb-9f46faa90e41" />
+  </div>
+
+  <div class="form-group">
+    <label>Resource ID (尝试不同的选项)</label>
+    <select id="resourceIdPreset">
+      <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration (流式 - 按量计费)</option>
+      <option value="volc.bigasr.sauc.qps">volc.bigasr.sauc.qps (流式 - 包年包月)</option>
+      <option value="volc.seedasr.sauc">volc.seedasr.sauc (流式 - 新版)</option>
+      <option value="volc.seedasr.auc">volc.seedasr.auc (文件识别 - 你的 curl 示例)</option>
+      <option value="custom">自定义</option>
+    </select>
+    <input type="text" id="resourceId" placeholder="volc.bigasr.sauc.duration" value="volc.bigasr.sauc.duration" style="margin-top:8px" />
+  </div>
+
+  <div class="form-group">
+    <label>WebSocket 端点</label>
+    <input type="text" id="endpoint" value="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" />
+  </div>
+
+  <button id="testBtn">开始测试（发送静音）</button>
+  <button id="micBtn" style="background:#28a745">🎤 使用麦克风测试</button>
+  <button id="clearBtn" style="background:#444">清空日志</button>
+
+  <div class="log" id="log">准备就绪，请点击"开始测试"</div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $('log');
+
+    function log(message, type = 'info') {
+      const time = new Date().toLocaleTimeString();
+      const prefix = type === 'success' ? '✅ ' : type === 'error' ? '❌ ' : type === 'warn' ? '⚠️ ' : '📌 ';
+      logEl.innerHTML += `[${time}] ${prefix}${message}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    $('testBtn').onclick = async function() {
+      const mode = $('connectionMode').value;
+      const apiKey = $('apiKey').value.trim();
+      const resourceId = $('resourceId').value.trim();
+      const endpoint = $('endpoint').value.trim();
+
+      if (!apiKey) { log('请输入 API Key', 'error'); return; }
+      if (!resourceId) { log('请输入 Resource ID', 'error'); return; }
+
+      $('testBtn').disabled = true;
+      logEl.innerHTML = '';
+
+      log('=== 开始测试 ===', 'info');
+      log(`连接模式：${mode === 'direct' ? '直连' : '代理'}`, 'info');
+      log(`API Key: ***${apiKey.slice(-8)}`, 'info');
+      log(`Resource ID: ${resourceId}`, 'info');
+      log(`Endpoint: ${endpoint}`, 'info');
+
+      let wsUrl;
+      if (mode === 'proxy') {
+        const connectId = crypto.randomUUID();
+        wsUrl = `ws://${location.host}/api/doubao-asr?target=${encodeURIComponent(endpoint)}&resourceId=${encodeURIComponent(resourceId)}&connectId=${connectId}&mode=apiKey&apiKey=${encodeURIComponent(apiKey)}`;
+        log(`代理 URL: ${wsUrl}`, 'info');
+      } else {
+        wsUrl = endpoint;
+        log(`直连 URL: ${wsUrl}`, 'info');
+        log('⚠️ 注意：浏览器 WebSocket 不支持自定义请求头，直连可能因无法发送认证头而失败', 'warn');
+      }
+
+      log('正在连接...', 'info');
+
+      const ws = new WebSocket(wsUrl);
+      let connectedAt = null;
+      let testDone = false;
+
+      const timeout = setTimeout(() => {
+        if (!testDone) {
+          log('⏱️ 连接超时 (5 秒)', 'error');
+          testDone = true;
+          $('testBtn').disabled = false;
+          if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          }
+        }
+      }, 5000);
+
+      ws.onopen = function() {
+        connectedAt = Date.now();
+        log(`✅ WebSocket 已连接 (耗时：${Date.now() - connectedAt}ms)`, 'success');
+      };
+
+      ws.onmessage = function(event) {
+        log(`📨 收到响应：${event.data.byteLength} bytes`, 'info');
+
+        // 简单解析响应
+        try {
+          const bytes = new Uint8Array(event.data);
+          const headerSize = (bytes[0] & 0x0f) * 4;
+          const messageType = bytes[1] >> 4;
+          const flags = bytes[1] & 0x0f;
+
+          log(`消息类型：0x${messageType.toString(16)}, 标志：0x${flags.toString(16)}`, 'info');
+
+          // 错误消息类型 0xf
+          if (messageType === 0xf) {
+            const offset = headerSize + 4; // 跳过 sequence
+            const code = new DataView(bytes.buffer).getInt32(offset, false);
+            log(`❌ 服务端错误码：${code}`, 'error');
+            testDone = true;
+            clearTimeout(timeout);
+            $('testBtn').disabled = false;
+            return;
+          }
+
+          // 尝试解析 JSON payload
+          let payloadOffset = headerSize;
+          if (flags & 0x01) payloadOffset += 4; // sequence
+          if (messageType === 0x9) payloadOffset += 4; // extra field
+
+          let payload = bytes.slice(payloadOffset);
+
+          // 解压缩
+          if ((bytes[2] & 0x0f) === 0x1 && payload.length > 0) {
+            const stream = new DecompressionStream('gzip');
+            const writer = stream.writable.getWriter();
+            writer.write(payload);
+            writer.close();
+            new Response(stream.readable).arrayBuffer().then(ab => {
+              const decompressed = new Uint8Array(ab);
+              const text = new TextDecoder().decode(decompressed);
+              log('响应内容 (已解压):', 'info');
+              logEl.innerHTML += text + '\n';
+
+              try {
+                const json = JSON.parse(text);
+                if (json.result || json.text) {
+                  log('✅ 识别成功！', 'success');
+                } else if (json.error) {
+                  log(`服务端错误：${JSON.stringify(json.error)}`, 'error');
+                }
+              } catch(e) {}
+
+              testDone = true;
+              clearTimeout(timeout);
+              $('testBtn').disabled = false;
+            });
+            return;
+          }
+
+          // 未压缩
+          const text = new TextDecoder().decode(payload);
+          log('响应内容:', 'info');
+          logEl.innerHTML += text + '\n';
+
+        } catch (err) {
+          log(`解析响应失败：${err.message}`, 'error');
+        }
+
+        testDone = true;
+        clearTimeout(timeout);
+        $('testBtn').disabled = false;
+      };
+
+      ws.onerror = function(err) {
+        log(`❌ WebSocket 错误`, 'error');
+        testDone = true;
+        clearTimeout(timeout);
+        $('testBtn').disabled = false;
+      };
+
+      ws.onclose = function(event) {
+        const duration = connectedAt ? Date.now() - connectedAt : 0;
+        let msg = `🔌 连接关闭 (代码：${event.code}`;
+        if (event.reason) msg += `, 原因：${event.reason}`;
+        msg += `, 时长：${duration}ms)`;
+        log(msg, event.code === 1000 ? 'success' : 'warn');
+
+        if (!testDone) {
+          testDone = true;
+          clearTimeout(timeout);
+          $('testBtn').disabled = false;
+        }
+      };
+
+      // 连接成功后发送初始化 payload
+      ws.addEventListener('open', async function sendInit() {
+        try {
+          log('正在构建初始化 Payload...', 'info');
+
+          // 构建 JSON payload
+          const payload = {
+            user: { uid: 'test-user' },
+            audio: {
+              format: 'raw', codec: 'raw', rate: 16000, bits: 16, channel: 1
+            },
+            request: {
+              model_name: 'bigmodel',
+              enable_itn: true, enable_punc: true, enable_ddc: true,
+              show_utterances: true, end_window_size: 800
+            }
+          };
+
+          // Gzip 压缩
+          const compressed = await new Promise((resolve) => {
+            const stream = new CompressionStream('gzip');
+            const writer = stream.writable.getWriter();
+            writer.write(new TextEncoder().encode(JSON.stringify(payload)));
+            writer.close();
+            new Response(stream.readable).arrayBuffer().then(ab => resolve(new Uint8Array(ab)));
+          });
+
+          log(`初始化 Payload 大小：${compressed.length} bytes`, 'info');
+
+          // 构建二进制消息
+          const header = new Uint8Array([
+            (0x1 << 4) | 0x1,
+            (0x1 << 4) | 0x1,
+            (0x1 << 4) | 0x1,
+            0x00
+          ]);
+
+          const sequence = new Uint8Array(4);
+          new DataView(sequence.buffer).setInt32(0, 1, false);
+
+          const payloadLen = new Uint8Array(4);
+          new DataView(payloadLen.buffer).setUint32(0, compressed.length, false);
+
+          const message = new Uint8Array(header.length + sequence.length + payloadLen.length + compressed.length);
+          message.set(header, 0);
+          message.set(sequence, header.length);
+          message.set(payloadLen, header.length + sequence.length);
+          message.set(compressed, header.length + sequence.length + payloadLen.length);
+
+          log('正在发送初始化 Payload...', 'info');
+          ws.send(message);
+          log('✅ 初始化 Payload 已发送', 'success');
+
+          // 发送一些静音音频数据（200ms 的静音）
+          log('正在发送测试音频数据（200ms 静音）...', 'info');
+
+          const SAMPLE_RATE = 16000;
+          const DURATION_MS = 200;
+          const samples = Math.floor(SAMPLE_RATE * DURATION_MS / 1000);
+          const audioBuffer = new Int16Array(samples); // 静音 = 全 0
+          const audioBytes = new Uint8Array(audioBuffer.buffer);
+
+          // 构建音频 payload
+          const audioCompressed = await new Promise((resolve) => {
+            const stream = new CompressionStream('gzip');
+            const writer = stream.writable.getWriter();
+            writer.write(audioBytes);
+            writer.close();
+            new Response(stream.readable).arrayBuffer().then(ab => resolve(new Uint8Array(ab)));
+          });
+
+          log(`音频数据大小：${audioBytes.length} bytes (压缩后：${audioCompressed.length} bytes)`, 'info');
+
+          const audioHeader = new Uint8Array([
+            (0x1 << 4) | 0x1,
+            (0x2 << 4) | 0x1,  // CLIENT_AUDIO_ONLY_REQUEST, POS_SEQUENCE
+            (0x1 << 4) | 0x1,
+            0x00
+          ]);
+
+          const audioSequence = new Uint8Array(4);
+          new DataView(audioSequence.buffer).setInt32(0, 2, false);
+
+          const audioLen = new Uint8Array(4);
+          new DataView(audioLen.buffer).setUint32(0, audioCompressed.length, false);
+
+          const audioMessage = new Uint8Array(audioHeader.length + audioSequence.length + audioLen.length + audioCompressed.length);
+          audioMessage.set(audioHeader, 0);
+          audioMessage.set(audioSequence, audioHeader.length);
+          audioMessage.set(audioLen, audioHeader.length + audioSequence.length);
+          audioMessage.set(audioCompressed, audioHeader.length + audioSequence.length + audioLen.length);
+
+          ws.send(audioMessage);
+          log('✅ 测试音频已发送（200ms 静音）...', 'success');
+
+          // 发送结束标志：NEG_WITH_SEQUENCE (flags=0x3) + 负的 sequence
+          log('正在发送结束标志...', 'info');
+
+          const endHeader = new Uint8Array([
+            (0x1 << 4) | 0x1,
+            (0x2 << 4) | 0x3,  // CLIENT_AUDIO_ONLY_REQUEST, NEG_WITH_SEQUENCE
+            (0x1 << 4) | 0x1,
+            0x00
+          ]);
+
+          const endSequence = new Uint8Array(4);
+          new DataView(endSequence.buffer).setInt32(0, -3, false); // 负的 sequence 表示结束
+
+          const endLen = new Uint8Array(4);
+          new DataView(endLen.buffer).setUint32(0, 0, false); // 空 payload
+
+          const endMessage = new Uint8Array(endHeader.length + endSequence.length + endLen.length);
+          endMessage.set(endHeader, 0);
+          endMessage.set(endSequence, endHeader.length);
+          endMessage.set(endLen, endHeader.length + endSequence.length);
+
+          setTimeout(() => {
+            ws.send(endMessage);
+            log('✅ 结束标志已发送，等待服务端识别结果...', 'success');
+          }, 100);
+
+        } catch (err) {
+          log(`❌ 发送失败：${err.message}`, 'error');
+          console.error(err);
+          ws.close();
+        }
+      });
+    };
+
+    $('clearBtn').onclick = function() {
+      logEl.innerHTML = '';
+      log('日志已清空', 'info');
+    };
+
+    $('resourceIdPreset').onchange = function() {
+      const val = this.value;
+      if (val !== 'custom') {
+        $('resourceId').value = val;
+      }
+    };
+
+    // 麦克风测试
+    $('micBtn').onclick = async function() {
+      const mode = $('connectionMode').value;
+      const apiKey = $('apiKey').value.trim();
+      const resourceId = $('resourceId').value.trim();
+      const endpoint = $('endpoint').value.trim();
+
+      if (!apiKey) { log('请输入 API Key', 'error'); return; }
+      if (!resourceId) { log('请输入 Resource ID', 'error'); return; }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        log('✅ 麦克风已启动，请说话（5 秒后自动发送结束标志）...', 'success');
+      } catch (err) {
+        log('❌ 麦克风权限被拒绝：' + err.message, 'error');
+        return;
+      }
+
+      $('micBtn').disabled = true;
+      $('testBtn').disabled = true;
+      logEl.innerHTML = '';
+
+      log('=== 麦克风测试开始 ===', 'info');
+      log(`连接模式：${mode === 'direct' ? '直连' : '代理'}`, 'info');
+      log(`API Key: ***${apiKey.slice(-8)}`, 'info');
+      log(`Resource ID: ${resourceId}`, 'info');
+
+      let wsUrl;
+      if (mode === 'proxy') {
+        const connectId = crypto.randomUUID();
+        wsUrl = `ws://${location.host}/api/doubao-asr?target=${encodeURIComponent(endpoint)}&resourceId=${encodeURIComponent(resourceId)}&connectId=${connectId}&mode=apiKey&apiKey=${encodeURIComponent(apiKey)}`;
+      } else {
+        wsUrl = endpoint;
+        log('⚠️ 直连模式可能无法发送认证头', 'warn');
+      }
+
+      const ws = new WebSocket(wsUrl);
+      let audioContext, analyser, processor;
+      let seq = 2;
+      let testDone = false;
+
+      const timeout = setTimeout(() => {
+        if (!testDone) {
+          log('⏱️ 测试超时', 'error');
+          cleanup();
+        }
+      }, 10000);
+
+      ws.onopen = async function() {
+        log('✅ WebSocket 已连接', 'success');
+
+        // 发送初始化 payload
+        const payload = {
+          user: { uid: 'test-user' },
+          audio: { format: 'raw', codec: 'raw', rate: 16000, bits: 16, channel: 1 },
+          request: {
+            model_name: 'bigmodel',
+            enable_itn: true, enable_punc: true, enable_ddc: true,
+            show_utterances: true, end_window_size: 800
+          }
+        };
+
+        const compressed = await new Promise((resolve) => {
+          const stream = new CompressionStream('gzip');
+          const writer = stream.writable.getWriter();
+          writer.write(new TextEncoder().encode(JSON.stringify(payload)));
+          writer.close();
+          new Response(stream.readable).arrayBuffer().then(ab => resolve(new Uint8Array(ab)));
+        });
+
+        const header = new Uint8Array([(0x1<<4)|0x1, (0x1<<4)|0x1, (0x1<<4)|0x1, 0x00]);
+        const sequence = new Uint8Array(4);
+        new DataView(sequence.buffer).setInt32(0, 1, false);
+        const payloadLen = new Uint8Array(4);
+        new DataView(payloadLen.buffer).setUint32(0, compressed.length, false);
+
+        const message = new Uint8Array(header.length + sequence.length + payloadLen.length + compressed.length);
+        message.set(header, 0);
+        message.set(sequence, header.length);
+        message.set(payloadLen, header.length + sequence.length);
+        message.set(compressed, header.length + sequence.length + payloadLen.length);
+
+        ws.send(message);
+        log('✅ 初始化 Payload 已发送', 'success');
+
+        // 设置音频处理
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(window.testMicStream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+        processor.connect(audioContext.destination);
+
+        const sampleChunks = [];
+        processor.onaudioprocess = function(e) {
+          const data = e.inputBuffer.getChannelData(0);
+          const pcm16 = new Int16Array(data.length);
+          for (let i = 0; i < data.length; i++) {
+            const s = Math.max(-1, Math.min(1, data[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+
+          const audioBytes = new Uint8Array(pcm16.buffer);
+          sampleChunks.push(audioBytes);
+
+          // 每累积 200ms 发送一次
+          const bytesPerChunk = Math.floor(16000 * 2 * 200 / 1000);
+          let buffered = new Uint8Array(sampleChunks.reduce((s, c) => s + c.length, 0));
+          let offset = 0;
+          for (const c of sampleChunks) { buffered.set(c, offset); offset += c.length; }
+
+          while (buffered.length >= bytesPerChunk) {
+            const current = buffered.slice(0, bytesPerChunk);
+            buffered = buffered.slice(bytesPerChunk);
+
+            sendAudio(current, seq++).catch(err => log('发送错误：' + err.message, 'error'));
+            sampleChunks.length = 0;
+            if (buffered.length > 0) sampleChunks.push(buffered);
+          }
+        };
+
+        log('🎤 请说话...（5 秒后自动结束）', 'info');
+
+        // 5 秒后发送结束标志
+        setTimeout(async function() {
+          log('⏱️ 时间到，发送结束标志...', 'info');
+
+          const endHeader = new Uint8Array([(0x1<<4)|0x1, (0x2<<4)|0x3, (0x1<<4)|0x1, 0x00]);
+          const endSeq = new Uint8Array(4);
+          new DataView(endSeq.buffer).setInt32(0, -seq, false);
+          const endLen = new Uint8Array(4);
+          new DataView(endLen.buffer).setUint32(0, 0, false);
+          const endMsg = new Uint8Array(endHeader.length + endSeq.length + endLen.length);
+          endMsg.set(endHeader, 0);
+          endMsg.set(endSeq, endHeader.length);
+          endMsg.set(endLen, endHeader.length + endSeq.length);
+
+          ws.send(endMsg);
+          log('✅ 结束标志已发送，等待结果...', 'success');
+
+          setTimeout(() => {
+            if (!testDone) {
+              log('⏱️ 等待响应超时，关闭连接', 'warn');
+              cleanup();
+            }
+          }, 3000);
+        }, 5000);
+      };
+
+      ws.onmessage = function(event) {
+        log(`📨 收到响应：${event.data.byteLength} bytes`, 'success');
+        try {
+          const bytes = new Uint8Array(event.data);
+          const headerSize = (bytes[0] & 0x0f) * 4;
+          const messageType = bytes[1] >> 4;
+          const flags = bytes[1] & 0x0f;
+          const compression = bytes[2] & 0x0f;
+
+          log(`类型：0x${messageType.toString(16)}, 标志：0x${flags.toString(16)}, 压缩：${compression}`, 'info');
+
+          if (messageType === 0xf) {
+            const code = new DataView(bytes.buffer).getInt32(headerSize, false);
+            log(`❌ 服务端错误码：${code}`, 'error');
+            return;
+          }
+
+          let payloadOffset = headerSize;
+          if (flags & 0x01) payloadOffset += 4;
+          if (messageType === 0x9) payloadOffset += 4;
+
+          let payload = bytes.slice(payloadOffset);
+          if (compression === 0x1 && payload.length > 0) {
+            const stream = new DecompressionStream('gzip');
+            const writer = stream.writable.getWriter();
+            writer.write(payload);
+            writer.close();
+            payload = new Uint8Array(await new Response(stream.readable).arrayBuffer());
+          }
+
+          const text = new TextDecoder().decode(payload);
+          log('响应内容:', 'success');
+          logEl.innerHTML += text + '\n';
+
+          try {
+            const json = JSON.parse(text);
+            if (json.result?.text || json.text) {
+              log('✅ 识别成功！文本：' + (json.result?.text || json.text), 'success');
+            } else if (json.utterances) {
+              const utterances = Array.isArray(json.utterances) ? json.utterances : (json.result?.utterances || []);
+              const transcript = utterances.map(u => u.text || u.transcript || '').join('');
+              if (transcript) log('✅ 识别文本：' + transcript, 'success');
+            }
+          } catch(e) {}
+
+        } catch (err) {
+          log('解析错误：' + err.message, 'error');
+        }
+      };
+
+      ws.onerror = function(err) { log('❌ WebSocket 错误', 'error'); };
+      ws.onclose = function(e) { log(`🔌 连接关闭 (code=${e.code})`, e.code === 1000 ? 'success' : 'warn'); };
+
+      async function sendAudio(data, sequence) {
+        const compressed = await new Promise((resolve) => {
+          const stream = new CompressionStream('gzip');
+          const writer = stream.writable.getWriter();
+          writer.write(data);
+          writer.close();
+          new Response(stream.readable).arrayBuffer().then(ab => resolve(new Uint8Array(ab)));
+        });
+
+        const header = new Uint8Array([(0x1<<4)|0x1, (0x2<<4)|0x1, (0x1<<4)|0x1, 0x00]);
+        const seq = new Uint8Array(4);
+        new DataView(seq.buffer).setInt32(0, sequence, false);
+        const len = new Uint8Array(4);
+        new DataView(len.buffer).setUint32(0, compressed.length, false);
+
+        const msg = new Uint8Array(header.length + seq.length + len.length + compressed.length);
+        msg.set(header, 0);
+        msg.set(seq, header.length);
+        msg.set(len, header.length + seq.length);
+        msg.set(compressed, header.length + seq.length + len.length);
+
+        if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      }
+
+      function cleanup() {
+        if (testDone) return;
+        testDone = true;
+        clearTimeout(timeout);
+
+        if (processor) processor.disconnect();
+        if (analyser) analyser.disconnect();
+        if (audioContext) audioContext.close();
+        if (ws.readyState === WebSocket.OPEN) ws.close();
+
+        $('micBtn').disabled = false;
+        $('testBtn').disabled = false;
+      }
+    };
+
+    // 保存麦克风流以便重用
+    async function initMic() {
+      try {
+        window.testMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        log('✅ 麦克风已初始化', 'success');
+      } catch (err) {
+        log('❌ 麦克风初始化失败：' + err.message, 'error');
+      }
+    }
+    // 页面加载时预初始化麦克风（需要用户交互）
+    document.addEventListener('click', function init() {
+      if (!window.testMicStream) initMic();
+      document.removeEventListener('click', init);
+    }, { once: true });
+  </script>
+</body>
+</html>

@@ -2469,6 +2469,9 @@ function showExportMenu() {
     <button class="export-item" data-format="markdown">
       <span class="export-icon">📝</span>Markdown 大纲
     </button>
+    <button class="export-item" data-format="pdf">
+      <span class="export-icon">📄</span>PDF 画布
+    </button>
   `;
 
   // Position below the export button
@@ -2497,6 +2500,8 @@ function showExportMenu() {
         `canvas-${Date.now()}.md`,
         'text/markdown'
       );
+    } else if (format === 'pdf') {
+      exportCanvasToPdf();
     }
   });
 
@@ -2518,6 +2523,197 @@ function downloadFile(content, filename, type) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function exportCanvasToPdf() {
+  if (appState.canvas.blocks.length === 0) {
+    alert('当前画布为空，无法导出 PDF');
+    return;
+  }
+
+  syncBlockSizes();
+  const bounds = getVisibleCanvasBounds();
+  if (!bounds) {
+    alert('当前没有可导出的画布内容');
+    return;
+  }
+
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('无法打开打印窗口，请允许浏览器弹窗后重试');
+    return;
+  }
+
+  const title = getSafeFilenameTitle();
+  const page = bounds.width >= bounds.height
+    ? { orientation: 'landscape', width: 1122, height: 794 }
+    : { orientation: 'portrait', width: 794, height: 1122 };
+  const margin = 32;
+  const targetWidth = page.width - margin * 2;
+  const targetHeight = page.height - margin * 2;
+  const scale = Math.min(1, targetWidth / bounds.width, targetHeight / bounds.height);
+  const snapshotHtml = buildPdfSnapshot(bounds);
+
+  printWindow.opener = null;
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>${escapeHtml(title)}</title>
+    ${getExportStylesHtml()}
+    <style>
+      @page { size: A4 ${page.orientation}; margin: 0; }
+      html, body {
+        margin: 0;
+        width: 100%;
+        min-height: 100%;
+        background: #fff;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      .pdf-page {
+        width: ${page.width}px;
+        height: ${page.height}px;
+        display: grid;
+        place-items: center;
+        background: #fff;
+        overflow: hidden;
+      }
+      .pdf-viewport {
+        width: ${targetWidth}px;
+        height: ${targetHeight}px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+      .pdf-export-root {
+        position: relative;
+        width: ${bounds.width}px;
+        height: ${bounds.height}px;
+        transform: scale(${scale});
+        transform-origin: center center;
+      }
+      .pdf-export-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 6000px;
+        height: 6000px;
+        transform: translate(${-bounds.x}px, ${-bounds.y}px);
+        transform-origin: 0 0;
+      }
+      @media print {
+        body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+        .pdf-page { break-after: avoid; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="pdf-page">
+      <div class="pdf-viewport">
+        ${snapshotHtml}
+      </div>
+    </main>
+  </body>
+</html>`);
+  printWindow.document.close();
+
+  const triggerPrint = async () => {
+    try {
+      await printWindow.document.fonts?.ready;
+    } catch (_) {}
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  if (printWindow.document.readyState === 'complete') {
+    setTimeout(triggerPrint, 300);
+  } else {
+    printWindow.addEventListener('load', () => setTimeout(triggerPrint, 300), { once: true });
+  }
+}
+
+function getVisibleCanvasBounds() {
+  const blocks = Array.from(document.querySelectorAll('#blockCanvas .mm-block'));
+  if (blocks.length === 0) return null;
+
+  const padding = 80;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const block of blocks) {
+    const x = parseFloat(block.style.left) || 0;
+    const y = parseFloat(block.style.top) || 0;
+    const width = block.offsetWidth || parseFloat(block.style.width) || 200;
+    const height = block.offsetHeight || parseFloat(block.style.height) || 80;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + width);
+    maxY = Math.max(maxY, y + height);
+  }
+
+  minX -= padding;
+  minY -= padding;
+  maxX += padding;
+  maxY += padding;
+
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+function buildPdfSnapshot(bounds) {
+  const linkLayer = document.getElementById('linkLayer')?.cloneNode(true);
+  const blockCanvas = document.getElementById('blockCanvas')?.cloneNode(true);
+  const root = document.createElement('div');
+  const canvas = document.createElement('div');
+
+  root.className = 'pdf-export-root';
+  root.style.width = `${bounds.width}px`;
+  root.style.height = `${bounds.height}px`;
+  canvas.className = 'pdf-export-canvas';
+
+  if (linkLayer) canvas.appendChild(linkLayer);
+  if (blockCanvas) canvas.appendChild(blockCanvas);
+  root.appendChild(canvas);
+  sanitizePdfClone(root);
+
+  return root.outerHTML;
+}
+
+function sanitizePdfClone(root) {
+  root.querySelectorAll('.selected, .selected-multi, .dragging, .resizing, .entering').forEach(el => {
+    el.classList.remove('selected', 'selected-multi', 'dragging', 'resizing', 'entering');
+  });
+  root.querySelectorAll('.mm-resize-handle, .mm-link-handle, .link-scissors-btn').forEach(el => el.remove());
+  root.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+  root.querySelectorAll('[tabindex]').forEach(el => el.removeAttribute('tabindex'));
+}
+
+function getExportStylesHtml() {
+  return Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+    .map(node => {
+      if (node.tagName === 'LINK') {
+        const href = new URL(node.getAttribute('href'), document.baseURI).href;
+        return `<link rel="stylesheet" href="${escapeHtml(href)}">`;
+      }
+      return `<style>${node.textContent}</style>`;
+    })
+    .join('\n');
+}
+
+function getSafeFilenameTitle() {
+  const title = (appState.canvas.title || 'canvas').trim() || 'canvas';
+  return `${title.replace(/[\\/:*?"<>|]+/g, '-')}-${Date.now()}`;
 }
 
 function canvasToMarkdown() {

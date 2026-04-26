@@ -2551,7 +2551,9 @@ function exportCanvasToPdf() {
   const margin = 32;
   const targetWidth = page.width - margin * 2;
   const targetHeight = page.height - margin * 2;
-  const scale = Math.min(1, targetWidth / bounds.width, targetHeight / bounds.height);
+  const scale = Math.min(targetWidth / bounds.width, targetHeight / bounds.height);
+  const scaledWidth = bounds.width * scale;
+  const scaledHeight = bounds.height * scale;
   const snapshotHtml = buildPdfSnapshot(bounds);
 
   printWindow.opener = null;
@@ -2592,18 +2594,17 @@ function exportCanvasToPdf() {
       }
       .pdf-export-root {
         position: relative;
-        width: ${bounds.width}px;
-        height: ${bounds.height}px;
-        transform: scale(${scale});
-        transform-origin: center center;
+        width: ${scaledWidth}px;
+        height: ${scaledHeight}px;
+        overflow: visible;
       }
       .pdf-export-canvas {
         position: absolute;
         top: 0;
         left: 0;
-        width: 6000px;
-        height: 6000px;
-        transform: translate(${-bounds.x}px, ${-bounds.y}px);
+        width: ${bounds.width}px;
+        height: ${bounds.height}px;
+        transform: scale(${scale}) translate(${-bounds.x}px, ${-bounds.y}px);
         transform-origin: 0 0;
       }
       @media print {

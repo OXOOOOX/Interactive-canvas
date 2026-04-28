@@ -218,12 +218,22 @@ export function dedupeConnections(canvas) {
 export function executeOperations(canvas, operations) {
   const result = { addedIds: [], updatedIds: [], removedIds: [] };
 
+  const findBlock = (id) => canvas.blocks.find(b => b.id === id);
+  const isLocked = (id) => Boolean(findBlock(id)?.locked);
+  const isPositionLocked = (id) => {
+    const block = findBlock(id);
+    return Boolean(block?.locked || block?.positionLocked);
+  };
+  const sanitizeChanges = (changes) => {
+    const { x, y, width, height, locked, positionLocked, ...safeChanges } = changes;
+    return safeChanges;
+  };
   const hasConnection = (fromId, toId) => canvas.connections.some(
     c => c.fromId === fromId && c.toId === toId
   );
 
   const addConnectionIfMissing = (fromId, toId) => {
-    if (!fromId || !toId || hasConnection(fromId, toId)) return;
+    if (!fromId || !toId || isLocked(fromId) || isLocked(toId) || hasConnection(fromId, toId)) return;
     canvas.connections.push({
       id: crypto.randomUUID(),
       fromId,
@@ -234,11 +244,11 @@ export function executeOperations(canvas, operations) {
   for (const op of operations) {
     switch (op.op) {
       case 'add': {
-        // 添加到 blocks
+        if (op.parentId && isLocked(op.parentId)) break;
+
         canvas.blocks.push(op.block);
         result.addedIds.push(op.block.id);
 
-        // 建立连接线
         if (op.parentId) {
           const parentExists = canvas.blocks.some(b => b.id === op.parentId);
           if (parentExists) {
@@ -251,7 +261,7 @@ export function executeOperations(canvas, operations) {
         const block = canvas.blocks.find(b => b.id === op.targetId);
         if (block && op.changes) {
           if (block.locked) break; // 防护盾：锁定的节点拒改
-          Object.assign(block, op.changes);
+          Object.assign(block, sanitizeChanges(op.changes));
           result.updatedIds.push(op.targetId);
         }
         break;
@@ -272,8 +282,8 @@ export function executeOperations(canvas, operations) {
         break;
       }
       case 'move': {
-        const block = canvas.blocks.find(b => b.id === op.targetId);
-        if (block) {
+        const block = findBlock(op.targetId);
+        if (block && !isPositionLocked(op.targetId)) {
           if (typeof op.x === 'number') block.x = op.x;
           if (typeof op.y === 'number') block.y = op.y;
           result.updatedIds.push(op.targetId);
@@ -287,9 +297,10 @@ export function executeOperations(canvas, operations) {
         break;
       }
       case 'removeConnection': {
-        canvas.connections = canvas.connections.filter(
-          c => !(c.fromId === op.fromId && c.toId === op.toId)
-        );
+        canvas.connections = canvas.connections.filter(c => {
+          if (c.fromId !== op.fromId || c.toId !== op.toId) return true;
+          return isLocked(c.fromId) || isLocked(c.toId);
+        });
         break;
       }
     }

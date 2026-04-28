@@ -47,6 +47,7 @@ const dom = {
   // Canvas controls
   autoLayoutBtn: $('autoLayoutBtn'),
   aiOrganizeBtn: $('aiOrganizeBtn'),
+  layoutLockBtn: $('layoutLockBtn'),
   zoomIn: $('zoomIn'),
   zoomOut: $('zoomOut'),
   fitBtn: $('fitBtn'),
@@ -478,11 +479,95 @@ function onCanvasChange(options = {}) {
   saveCurrentCanvas();
 }
 
+function isBlockPositionLocked(block) {
+  return Boolean(block.locked || block.positionLocked);
+}
+
+function isCanvasLayoutLocked() {
+  return appState.canvas.blocks.length > 0 && appState.canvas.blocks.every(isBlockPositionLocked);
+}
+
+function updateLayoutLockButton() {
+  const btn = dom.layoutLockBtn;
+  if (!btn) return;
+
+  const total = appState.canvas.blocks.length;
+  const lockedCount = appState.canvas.blocks.filter(isBlockPositionLocked).length;
+  const locked = total > 0 && lockedCount === total;
+
+  btn.disabled = total === 0;
+  btn.classList.toggle('active', locked);
+  btn.setAttribute('aria-pressed', locked ? 'true' : 'false');
+
+  if (total === 0) {
+    btn.title = '画布为空，无法锁定块位置';
+  } else if (locked) {
+    btn.title = '解锁块位置';
+  } else if (lockedCount > 0) {
+    btn.title = `锁定当前块位置（已锁定 ${lockedCount}/${total}）`;
+  } else {
+    btn.title = '锁定当前块位置';
+  }
+}
+
+function setCanvasLayoutLocked(locked) {
+  if (appState.canvas.blocks.length === 0) return;
+
+  let changed = false;
+  for (const block of appState.canvas.blocks) {
+    if (Boolean(block.positionLocked) !== locked) {
+      block.positionLocked = locked;
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+  pushHistory();
+  renderBlocks();
+  saveCurrentCanvas();
+  updateLayoutLockButton();
+}
+
+function toggleCanvasLayoutLock() {
+  setCanvasLayoutLocked(!isCanvasLayoutLocked());
+}
+
+function syncCanvasAfterRender(newIds) {
+  renderBlocks(newIds);
+  updateLayoutLockButton();
+}
+
+function snapshotLockedBlockGeometry() {
+  return appState.canvas.blocks
+    .filter(isBlockPositionLocked)
+    .map(block => ({
+      id: block.id,
+      x: block.x,
+      y: block.y,
+      width: block.width,
+      height: block.height,
+    }));
+}
+
+function restoreLockedBlockGeometry(snapshot) {
+  for (const item of snapshot) {
+    const block = appState.canvas.blocks.find(b => b.id === item.id);
+    if (!block || !isBlockPositionLocked(block)) continue;
+    block.x = item.x;
+    block.y = item.y;
+    if (item.width === undefined) delete block.width;
+    else block.width = item.width;
+    if (item.height === undefined) delete block.height;
+    else block.height = item.height;
+  }
+}
+
 function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false, changedBlockIds = [] } = {}) {
+  const lockedGeometry = snapshotLockedBlockGeometry();
   const changedIds = new Set(changedBlockIds || []);
   if (changedIds.size > 0) {
     for (const block of appState.canvas.blocks) {
-      if (!changedIds.has(block.id)) continue;
+      if (!changedIds.has(block.id) || isBlockPositionLocked(block)) continue;
       delete block.height;
     }
   }
@@ -490,17 +575,22 @@ function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false,
   renderBlocks();
   syncBlockSizes({ adaptForAutoLayout: true });
   autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+  restoreLockedBlockGeometry(lockedGeometry);
   renderBlocks();
   syncBlockSizes();
+  restoreLockedBlockGeometry(lockedGeometry);
   if (pushHistoryEntry) pushHistory();
   renderBlocks();
   if (fitView) fitToView();
   saveCurrentCanvas();
+  updateLayoutLockButton();
 }
 
 // ── Reusable node actions ──
 function handleAddChild() {
   if (!appState.selectedBlockId) return;
+  const parent = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
+  if (!parent || parent.locked) return;
   const pos = findFreePosition(appState.canvas.blocks, appState.selectedBlockId, appState.canvas.connections);
   const newBlock = {
     id: crypto.randomUUID(),
@@ -518,7 +608,7 @@ function handleAddChild() {
   });
   appState.selectedBlockId = newBlock.id;
   pushHistory();
-  renderBlocks([newBlock.id]);
+  syncCanvasAfterRender([newBlock.id]);
   saveCurrentCanvas();
   checkAutoNaming();
 }
@@ -528,7 +618,8 @@ function handleAddSibling() {
   const parentConn = appState.canvas.connections.find(c => c.toId === appState.selectedBlockId);
   const parentId = parentConn?.fromId || null;
   const selected = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
-  if (!selected) return;
+  const parent = parentId ? appState.canvas.blocks.find(b => b.id === parentId) : null;
+  if (!selected || selected.locked || parent?.locked) return;
 
   const newBlock = {
     id: crypto.randomUUID(),
@@ -604,7 +695,7 @@ function handleDeleteNode() {
   appState.selectedBlockId = null;
   appState.selectedBlockIds = [];
   pushHistory();
-  renderBlocks();
+  syncCanvasAfterRender();
   saveCurrentCanvas();
 }
 
@@ -699,7 +790,7 @@ Content: ${block.content || 'None'}`
       }
 
       pushHistory();
-      renderBlocks();
+      syncCanvasAfterRender();
       saveCurrentCanvas();
     } else {
       alert('无法拆分，请尝试手动编辑');
@@ -726,6 +817,8 @@ async function handleMergeNode() {
     return;
   }
 
+  const selectedBlocks = appState.canvas.blocks.filter(b => selectedIds.includes(b.id));
+
   const btn = $('mergeNode');
   if (btn) {
     btn.disabled = true;
@@ -733,7 +826,6 @@ async function handleMergeNode() {
   }
 
   try {
-    const selectedBlocks = appState.canvas.blocks.filter(b => selectedIds.includes(b.id));
     const config = getConfig();
 
     // 调用 LLM 进行合并
@@ -1207,7 +1299,7 @@ Content: ${block.content || 'None'}`
       });
 
       pushHistory();
-      renderBlocks();
+      syncCanvasAfterRender();
       saveCurrentCanvas();
     } else {
       alert('无法派生，请尝试手动添加子块');
@@ -1305,7 +1397,7 @@ function handleCreateBlock(x, y) {
   appState.canvas.blocks.push(newBlock);
   appState.selectedBlockId = newBlock.id;
   pushHistory();
-  renderBlocks([newBlock.id]);
+  syncCanvasAfterRender([newBlock.id]);
   saveCurrentCanvas();
   checkAutoNaming();
 }
@@ -1388,7 +1480,7 @@ function init() {
   });
 
   // 4. Render canvas
-  renderBlocks();
+  syncCanvasAfterRender();
   if (appState.canvas.blocks.length > 0) fitToView();
 
   registerLayoutDebugTools();
@@ -1487,7 +1579,7 @@ function bindEvents() {
       if (switchCanvas(id)) {
         dom.boardTitle.textContent = appState.canvas.title;
         pushHistory();
-        renderBlocks();
+        syncCanvasAfterRender();
         updateCanvasListUI();
         closeCanvasList();
       }
@@ -1509,7 +1601,7 @@ function bindEvents() {
         appState.canvas = newCanvas;
         dom.boardTitle.textContent = newCanvas.title;
         pushHistory();
-        renderBlocks();
+        syncCanvasAfterRender();
       }
     }
   }
@@ -1544,7 +1636,7 @@ function bindEvents() {
     appState.canvas = newCanvas;
     dom.boardTitle.textContent = newCanvas.title;
     pushHistory();
-    renderBlocks();
+    syncCanvasAfterRender();
     closeCanvasList();
   });
 
@@ -1554,7 +1646,7 @@ function bindEvents() {
     appState.canvas = newCanvas;
     dom.boardTitle.textContent = newCanvas.title;
     pushHistory();
-    renderBlocks();
+    syncCanvasAfterRender();
     updateCanvasListUI();
   });
 
@@ -1582,19 +1674,19 @@ function bindEvents() {
 
   // ── Undo / Redo ──
   dom.undoBtn.addEventListener('click', () => {
-    if (undo()) { renderBlocks(); saveCurrentCanvas(); }
+    if (undo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
   });
   dom.redoBtn.addEventListener('click', () => {
-    if (redo()) { renderBlocks(); saveCurrentCanvas(); }
+    if (redo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
   });
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      if (undo()) { renderBlocks(); saveCurrentCanvas(); }
+      if (undo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
     }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
       e.preventDefault();
-      if (redo()) { renderBlocks(); saveCurrentCanvas(); }
+      if (redo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
     }
   });
 
@@ -1631,13 +1723,13 @@ function bindEvents() {
         suggestGroupName(selectedIds, getConfig()).then(name => {
           if (name && name.length > 0) {
             group.name = name;
-            renderBlocks();
+            syncCanvasAfterRender();
             saveCurrentCanvas();
           }
         });
 
         pushHistory();
-        renderBlocks();
+        syncCanvasAfterRender();
         saveCurrentCanvas();
       }
     }
@@ -1662,7 +1754,7 @@ function bindEvents() {
           const groupId = uniqueGroupIds.values().next().value;
           deleteGroup(groupId);
           pushHistory();
-          renderBlocks();
+          syncCanvasAfterRender();
           saveCurrentCanvas();
         }
       }
@@ -1673,14 +1765,24 @@ function bindEvents() {
   dom.zoomIn.addEventListener('click', zoomIn);
   dom.zoomOut.addEventListener('click', zoomOut);
   dom.fitBtn.addEventListener('click', fitToView);
+  if (dom.layoutLockBtn) {
+    dom.layoutLockBtn.addEventListener('click', toggleCanvasLayoutLock);
+  }
   dom.autoLayoutBtn.addEventListener('click', () => {
+    if (isCanvasLayoutLocked()) {
+      alert('当前布局已锁定，请先解锁布局');
+      return;
+    }
+    const lockedGeometry = snapshotLockedBlockGeometry();
     renderBlocks();
     syncBlockSizes({ adaptForAutoLayout: true });
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+    restoreLockedBlockGeometry(lockedGeometry);
     pushHistory();
     renderBlocks();
     syncBlockSizes();
-    renderBlocks();
+    restoreLockedBlockGeometry(lockedGeometry);
+    syncCanvasAfterRender();
     fitToView();
     saveCurrentCanvas();
   });
@@ -1738,7 +1840,7 @@ function bindEvents() {
       if (b) {
         b.locked = !b.locked;
         pushHistory();
-        renderBlocks();
+        syncCanvasAfterRender();
         saveCurrentCanvas();
       }
     });
@@ -1777,7 +1879,7 @@ function bindEvents() {
     dom.refineNode.addEventListener('click', async () => {
       const b = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
       if (!b) return;
-      
+
       const originalLabel = b.label;
       const originalContent = b.content;
       dom.refineNode.disabled = true;
@@ -2320,7 +2422,7 @@ function handleImportJson(content) {
     // 更新 UI
     dom.boardTitle.textContent = appState.canvas.title;
     pushHistory();
-    renderBlocks();
+    syncCanvasAfterRender();
     fitToView();
     saveCurrentCanvas();
   } catch (err) {
@@ -2335,7 +2437,7 @@ function handleImportMarkdown(content) {
     appState.canvas = canvasData;
     dom.boardTitle.textContent = canvasData.title;
     pushHistory();
-    renderBlocks();
+    syncCanvasAfterRender();
     fitToView();
     saveCurrentCanvas();
   } catch (err) {
@@ -2491,13 +2593,13 @@ function showExportMenu() {
     if (format === 'json') {
       downloadFile(
         JSON.stringify(appState.canvas, null, 2),
-        `canvas-${Date.now()}.json`,
+        `${getSafeExportFilenameBase()}.json`,
         'application/json'
       );
     } else if (format === 'markdown') {
       downloadFile(
         canvasToMarkdown(),
-        `canvas-${Date.now()}.md`,
+        `${getSafeExportFilenameBase()}.md`,
         'text/markdown'
       );
     } else if (format === 'pdf') {
@@ -2544,7 +2646,7 @@ function exportCanvasToPdf() {
     return;
   }
 
-  const title = getSafeFilenameTitle();
+  const filenameBase = getSafeExportFilenameBase();
   const page = bounds.width >= bounds.height
     ? { orientation: 'landscape', width: 1122, height: 794 }
     : { orientation: 'portrait', width: 794, height: 1122 };
@@ -2562,7 +2664,7 @@ function exportCanvasToPdf() {
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <title>${escapeHtml(title)}</title>
+    <title>${escapeHtml(filenameBase)}</title>
     ${getExportStylesHtml()}
     <style>
       @page { size: A4 ${page.orientation}; margin: 0; }
@@ -2622,6 +2724,7 @@ function exportCanvasToPdf() {
   </body>
 </html>`);
   printWindow.document.close();
+  printWindow.document.title = filenameBase;
 
   const triggerPrint = async () => {
     try {
@@ -2712,7 +2815,7 @@ function getExportStylesHtml() {
     .join('\n');
 }
 
-function getSafeFilenameTitle() {
+function getSafeExportFilenameBase() {
   const title = (appState.canvas.title || 'canvas').trim() || 'canvas';
   return `${title.replace(/[\\/:*?"<>|]+/g, '-')}-${Date.now()}`;
 }

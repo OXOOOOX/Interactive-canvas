@@ -18,7 +18,7 @@ Available Operations:
 - remove: {op:"remove", targetId:"id"}
 - addConnection: {op:"addConnection", fromId:"source", toId:"target"}
 - removeConnection: {op:"removeConnection", fromId:"source", toId:"target"}
-Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
+Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Blocks with positionLocked:true may have label/content updates, but their position and size MUST NOT change. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
 }
 
 /**
@@ -272,7 +272,7 @@ export async function callChatLlmStream(config, conversation, canvas, handlers =
 export async function callCanvasLlm(config, conversation, canvas) {
   const canvasJson = JSON.stringify({
     title: canvas.title,
-    blocks: canvas.blocks.map(b => ({ id: b.id, type: b.type, label: b.label, content: b.content, locked: b.locked })),
+    blocks: canvas.blocks.map(b => ({ id: b.id, type: b.type, label: b.label, content: b.content, locked: b.locked, positionLocked: b.positionLocked })),
     connections: canvas.connections.map(c => ({ from: c.fromId, to: c.toId })),
   }, null, 2);
 
@@ -292,7 +292,7 @@ export async function callCanvasLlm(config, conversation, canvas) {
 export async function callOrganizeLlm(config, canvas) {
   const canvasJson = JSON.stringify({
     title: canvas.title,
-    blocks: canvas.blocks.map(b => ({ id: b.id, label: b.label, content: b.content })),
+    blocks: canvas.blocks.map(b => ({ id: b.id, label: b.label, content: b.content, locked: b.locked, positionLocked: b.positionLocked })),
     connections: canvas.connections.map(c => ({ from: c.fromId, to: c.toId })),
   }, null, 2);
 
@@ -304,6 +304,7 @@ ${canvasJson}
 Analyze the true relationships between these nodes. Merge them, remove redundancies, or add parent nodes to group them.
 Crucially, RETAIN useful 'content' from every node. When merging, concatenate the content.
 Do NOT translate user content into English! Output in the user's language.
+Never modify or remove locked:true nodes. Nodes with positionLocked:true may have label/content updates, but their position and size must not change.
 
 Requirements:
 Return ONLY valid JSON. Format exactly as:

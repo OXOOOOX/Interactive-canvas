@@ -485,6 +485,15 @@ html, body {
   background: var(--glass-hover);
   color: var(--text-primary);
 }
+.ctrl-btn.active,
+.ctrl-btn[aria-pressed="true"] {
+  background: var(--accent-yellow);
+  color: var(--text-primary);
+}
+.ctrl-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .ctrl-divider {
   width: 1px;
@@ -1558,6 +1567,12 @@ select.cfg-input {
 .mm-block.resizing .mm-resize-handle {
   opacity: 1;
 }
+.mm-block.position-locked {
+  cursor: default;
+}
+.mm-block.position-locked .mm-resize-handle {
+  display: none;
+}
 
 /* Right edge */
 .mm-resize-r {
@@ -2343,6 +2358,9 @@ select.cfg-input {
 .mm-block.selected .mm-link-handle {
   opacity: 1;
 }
+.mm-block.position-locked .mm-link-handle {
+  display: none;
+}
 
 .mm-link-handle:hover {
   background: var(--accent-purple);
@@ -2568,6 +2586,9 @@ select.cfg-input {
 .mm-block:hover .mm-link-handle,
 .mm-block.selected .mm-link-handle {
   opacity: 1;
+}
+.mm-block.position-locked .mm-link-handle {
+  display: none;
 }
 
 .mm-link-handle:hover {

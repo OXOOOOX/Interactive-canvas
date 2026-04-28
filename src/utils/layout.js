@@ -44,12 +44,16 @@ function getBlockHeight(block) {
   return block.height || BLOCK_H;
 }
 
+function isPositionLocked(block) {
+  return Boolean(block?.locked || block?.positionLocked);
+}
+
 function normalizeExtremePortraitBlocks(blocks) {
   const originallyTallIds = new Set();
   let changed = false;
 
   for (const block of blocks) {
-    if (!block || block.isVirtual || block.locked) continue;
+    if (!block || block.isVirtual || isPositionLocked(block)) continue;
     const width = getBlockWidth(block);
     const height = getBlockHeight(block);
     if (height > TALL_LEAF_HEIGHT_THRESHOLD) originallyTallIds.add(block.id);
@@ -292,7 +296,7 @@ function moveCluster(cluster, dx, dy, blockMap) {
   if (!dx && !dy) return;
   for (const leafId of cluster.leafIds) {
     const leaf = blockMap[leafId];
-    if (!leaf || leaf.locked || leaf.x === undefined || leaf.y === undefined) continue;
+    if (!leaf || isPositionLocked(leaf) || leaf.x === undefined || leaf.y === undefined) continue;
     leaf.x += dx;
     leaf.y += dy;
   }
@@ -424,7 +428,7 @@ function identifyLeafClusters(blocks, connections, blockMap, originallyTallIds =
     const tallLeafIds = [];
     for (const leafId of leafIds) {
       const leaf = blockMap[leafId];
-      if (!leaf) continue;
+      if (!leaf || isPositionLocked(leaf)) continue;
       const height = getBlockHeight(leaf);
       if (originallyTallIds.has(leafId) || height > TALL_LEAF_HEIGHT_THRESHOLD) {
         tallLeafIds.push(leafId);
@@ -990,7 +994,7 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
       for (let i = 0; i < c.nodes.length; i++) {
         const id = c.nodes[i];
         const block = blockMap[id];
-        if (!block.locked) {
+        if (!isPositionLocked(block)) {
           block.x = startX;
           block.y = currentY;
         }
@@ -1027,7 +1031,7 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
   if (minX < 100) {
     const offset = 100 - minX;
     for (const b of blocks) {
-      if (!b.locked && b.x !== undefined) {
+      if (!isPositionLocked(b) && b.x !== undefined) {
         b.x += offset;
       }
     }
@@ -1066,7 +1070,7 @@ function resolveHorizontalOverlaps(blocks, connections, parentMap = {}, options 
         const minRightX = leftRight + gap;
         const rightProtected = protectedIds.has(right.id);
         const leftProtected = protectedIds.has(left.id);
-        if (right.x < minRightX && !right.locked) {
+        if (right.x < minRightX && !isPositionLocked(right)) {
           if (rightProtected && !leftProtected) continue;
           right.x = minRightX;
           moved = true;
@@ -1109,7 +1113,7 @@ function buildCenteredChainProtection(blocks, connections, blockedIds = new Set(
   const CENTER_TOLERANCE = 12;
 
   for (const block of blocks) {
-    if (!block || block.isVirtual || block.locked || blockedIds.has(block.id)) continue;
+    if (!block || block.isVirtual || isPositionLocked(block) || blockedIds.has(block.id)) continue;
     if (block.x === undefined || block.y === undefined) continue;
 
     const parents = parentMap[block.id] || [];
@@ -1117,7 +1121,7 @@ function buildCenteredChainProtection(blocks, connections, blockedIds = new Set(
     if (parents.length !== 1 || children.length > 1) continue;
 
     const parent = blockMap[parents[0]];
-    if (!parent || parent.locked || blockedIds.has(parent.id)) continue;
+    if (!parent || isPositionLocked(parent) || blockedIds.has(parent.id)) continue;
 
     const targetX = parent.x + getBlockWidth(parent) / 2 - getBlockWidth(block) / 2;
     if (Math.abs(block.x - targetX) <= CENTER_TOLERANCE) {
@@ -1185,7 +1189,7 @@ function resolveResidualSkeletonOverlaps(blocks, connections) {
         if (isDirectChainPair(upper, lower)) {
           const gapY = Math.max(MIN_V_GAP, Math.round(Math.max(getSmartVGap(upper, connections), getSmartVGap(lower, connections)) * 0.35));
           const nextY = upperBottom + gapY;
-          if (!lower.locked && lower.y < nextY) {
+          if (!isPositionLocked(lower) && lower.y < nextY) {
             lower.y = nextY;
             moved = true;
           }
@@ -1195,14 +1199,14 @@ function resolveResidualSkeletonOverlaps(blocks, connections) {
         if (Math.abs(upper.y - lower.y) <= 60) {
           const gap = Math.max(getSmartHGap(upper, connections), getSmartHGap(lower, connections));
           const nextX = upperRight + gap;
-          if (!lower.locked && lower.x < nextX) {
+          if (!isPositionLocked(lower) && lower.x < nextX) {
             lower.x = nextX;
             moved = true;
           }
         } else {
           const gapY = Math.max(MIN_V_GAP, Math.round(Math.max(getSmartVGap(upper, connections), getSmartVGap(lower, connections)) * 0.35));
           const nextY = upperBottom + gapY;
-          if (!lower.locked && lower.y < nextY) {
+          if (!isPositionLocked(lower) && lower.y < nextY) {
             lower.y = nextY;
             moved = true;
           }
@@ -1478,7 +1482,7 @@ function normalizeLayoutBounds(blocks, clusters = null, blockMap = null, padding
   if (offsetX === 0 && offsetY === 0) return;
 
   for (const block of blocks) {
-    if (!block.locked && block.x !== undefined && block.y !== undefined) {
+    if (!isPositionLocked(block) && block.x !== undefined && block.y !== undefined) {
       block.x += offsetX;
       block.y += offsetY;
     }
@@ -1531,7 +1535,7 @@ function compactHorizontalBands(blocks, clusters = null) {
 
     let currentX = originalLeft + (originalWidth - compactWidth) / 2;
     for (const block of sorted) {
-      if (!block.locked) block.x = currentX;
+      if (!isPositionLocked(block)) block.x = currentX;
       currentX += getBlockWidth(block) + MIN_H_GAP;
     }
   }
@@ -1615,7 +1619,7 @@ function alignLinearChains(blocks, connections, clusters = null) {
   }
 
   for (const block of blocks) {
-    if (block.isVirtual || block.locked || blockedIds.has(block.id)) continue;
+    if (block.isVirtual || isPositionLocked(block) || blockedIds.has(block.id)) continue;
 
     const parents = parentMap[block.id] || [];
     const children = childMap[block.id] || [];
@@ -1654,7 +1658,7 @@ function runStablePass(blocks, connections, clusters, blockMap, layerMap) {
     const posMap = new Map(snapshot.map(item => [item.id, item]));
     for (const block of blocks) {
       const prev = posMap.get(block.id);
-      if (prev && !block.locked) {
+      if (prev && !isPositionLocked(block)) {
         block.x = prev.x;
         block.y = prev.y;
       }
@@ -1712,7 +1716,7 @@ function compactSkeletonLayersY(blocks, layerMap, connections = []) {
       const shift = 80 - layerTop;
       if (shift !== 0) {
         for (const block of layerBlocks) {
-          if (!block.locked) block.y += shift;
+          if (!isPositionLocked(block)) block.y += shift;
         }
       }
       processedUpperBlocks.push(...layerBlocks);
@@ -1745,7 +1749,7 @@ function compactSkeletonLayersY(blocks, layerMap, connections = []) {
         );
       }
 
-      if (!block.locked) {
+      if (!isPositionLocked(block)) {
         block.y = targetTop;
       }
     }
@@ -1902,7 +1906,7 @@ function avoidBlockCrossing(blocks, connections) {
     // 应用垂直调整
     for (const [id, offset] of Object.entries(yAdjustments)) {
       const block = blockMap[id];
-      if (block && !block.locked) {
+      if (block && !isPositionLocked(block)) {
         block.y += offset;
       }
     }
@@ -1910,7 +1914,7 @@ function avoidBlockCrossing(blocks, connections) {
     // 应用水平调整
     for (const [id, targetX] of Object.entries(xAdjustments)) {
       const block = blockMap[id];
-      if (block && !block.locked) {
+      if (block && !isPositionLocked(block)) {
         block.x = targetX;
       }
     }
@@ -2036,7 +2040,7 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
         const col = i % cols;
         const row = Math.floor(i / cols);
         const leaf = blockMap[normalLeafIds[i]];
-        if (leaf && !leaf.locked) {
+        if (leaf && !isPositionLocked(leaf)) {
           leaf.x = gridLeft + col * (maxNormalLeafW + GRID_H_GAP);
           leaf.y = gridTop + row * (maxNormalLeafH + GRID_V_GAP);
         }
@@ -2048,7 +2052,7 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
           let currentY = gridTop;
           for (const tallLeafId of tallLeafIds) {
             const leaf = blockMap[tallLeafId];
-            if (!leaf || leaf.locked) continue;
+            if (!leaf || isPositionLocked(leaf)) continue;
             leaf.x = parentCx - getBlockWidth(leaf) / 2;
             leaf.y = currentY;
             currentY += getBlockHeight(leaf) + GRID_V_GAP;
@@ -2061,7 +2065,7 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
           let currentY = gridTop;
           for (const tallLeafId of tallLeafIds) {
             const leaf = blockMap[tallLeafId];
-            if (!leaf || leaf.locked) continue;
+            if (!leaf || isPositionLocked(leaf)) continue;
             const leafW = getBlockWidth(leaf);
             leaf.x = outerDir < 0 ? tallStartX - leafW : tallStartX;
             leaf.y = currentY;
@@ -2192,7 +2196,7 @@ function translateBlocksById(blockIds, dx, dy, blockMap) {
   if (!dx && !dy) return;
   for (const blockId of blockIds) {
     const block = blockMap[blockId];
-    if (!block || block.locked || block.x === undefined || block.y === undefined) continue;
+    if (!block || isPositionLocked(block) || block.x === undefined || block.y === undefined) continue;
     block.x += dx;
     block.y += dy;
   }
@@ -2327,7 +2331,7 @@ export function autoLayout(blocks, connections, groups = []) {
         group.blockIds.forEach(id => {
           const b = blockMap[id];
           const offset = baseOffsets[id];
-          if (b && offset && b.id !== group.blockIds[0] && !b.locked) {
+          if (b && offset && b.id !== group.blockIds[0] && !isPositionLocked(b)) {
             const bWidth = getBlockWidth(b);
             b.x = repCx + offset.offsetX - bWidth / 2;
             b.y = repCy + offset.offsetY;

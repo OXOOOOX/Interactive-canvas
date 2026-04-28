@@ -147,6 +147,10 @@ function updateMultiSelectUI() {
 //  CONTEXT MENU
 // ═══════════════════════════════════════
 
+function isPositionLocked(block) {
+  return Boolean(block.locked || block.positionLocked);
+}
+
 function createContextMenu() {
   $ctxMenu = document.createElement('div');
   $ctxMenu.className = 'ctx-menu';
@@ -1699,6 +1703,8 @@ export function renderBlocks(newIds = []) {
     const el = document.createElement('article');
     el.className = 'mm-block';
     el.dataset.id = block.id;
+    if (block.locked) el.classList.add('locked');
+    if (isPositionLocked(block)) el.classList.add('position-locked');
 
     // 根节点
     const isRoot = !appState.canvas.connections.some(c => c.toId === block.id);
@@ -1753,8 +1759,10 @@ export function renderBlocks(newIds = []) {
       : '';
 
     const lockIcon = block.locked
-      ? `<div class="mm-lock-icon" title="已锁定">🔒</div>`
-      : '';
+      ? `<div class="mm-lock-icon" title="已锁定内容和位置">🔒</div>`
+      : block.positionLocked
+        ? `<div class="mm-lock-icon" title="已锁定位置">🔒</div>`
+        : '';
 
     // 组标识圆点（支持多组，显示多个圆点）
     const groupIndicators = block.groupIds && block.groupIds.length > 0
@@ -1914,7 +1922,7 @@ function setupDrag(el, block) {
 
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || e.target.isContentEditable) return;
-    if (block.locked) return; // 已锁定无法拖拽
+    if (isPositionLocked(block)) return;
     // Don't drag from resize handles
     if (e.target.closest('.mm-resize-handle')) return;
 
@@ -1935,12 +1943,14 @@ function setupDrag(el, block) {
     if (block.groupIds && block.groupIds.length === 1) {
       const groupId = block.groupIds[0];
       const groupBlocks = getGroupBlocks(groupId);
-      initialPositions = groupBlocks.map(b => ({
-        id: b.id,
-        x: b.x,
-        y: b.y,
-        el: $blockCanvas.querySelector(`[data-id="${b.id}"]`)
-      }));
+      initialPositions = groupBlocks
+        .filter(b => b.id === block.id || !isPositionLocked(b))
+        .map(b => ({
+          id: b.id,
+          x: b.x,
+          y: b.y,
+          el: $blockCanvas.querySelector(`[data-id="${b.id}"]`)
+        }));
     }
   });
 
@@ -1989,11 +1999,13 @@ function setupDrag(el, block) {
         initialPositions.forEach(p => {
           if (p.id !== block.id) {
             const b = appState.canvas.blocks.find(b => b.id === p.id);
-            if (b) {
+            if (b && !isPositionLocked(b)) {
               b.x = p.x + dx;
               b.y = p.y + dy;
-              p.el.style.left = `${b.x}px`;
-              p.el.style.top = `${b.y}px`;
+              if (p.el) {
+                p.el.style.left = `${b.x}px`;
+                p.el.style.top = `${b.y}px`;
+              }
             }
           }
         });
@@ -2031,7 +2043,7 @@ function setupResize(el, block) {
     const direction = handle.dataset.resize; // 'r', 'b', or 'br'
 
     handle.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || isPositionLocked(block)) return;
       e.stopPropagation();
       e.preventDefault();
       resizing = true;
@@ -2047,6 +2059,11 @@ function setupResize(el, block) {
 
     handle.addEventListener('pointermove', (e) => {
       if (!resizing) return;
+      if (isPositionLocked(block)) {
+        resizing = false;
+        el.classList.remove('resizing');
+        return;
+      }
       const zoom = appState.viewport.zoom;
       const dx = (e.clientX - startScreenX) / zoom;
       const dy = (e.clientY - startScreenY) / zoom;
@@ -2087,7 +2104,7 @@ function setupLinkHandle(el, block) {
   let tempPath = null;
 
   handle.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || isPositionLocked(block)) return;
     e.stopPropagation();
     e.preventDefault();
     linking = true;
@@ -2289,16 +2306,18 @@ export function syncBlockSizes(options = {}) {
     const measuredWidth = computedWidth || el.offsetWidth || 0;
     const measuredHeight = el.offsetHeight || 0;
 
-    if (measuredWidth > 0) {
-      const currentWidth = block.width || BLOCK_DEFAULT_W;
-      block.width = Math.max(BLOCK_MIN_W, currentWidth, Math.round(measuredWidth));
+    if (!isPositionLocked(block)) {
+      if (measuredWidth > 0) {
+        const currentWidth = block.width || BLOCK_DEFAULT_W;
+        block.width = Math.max(BLOCK_MIN_W, currentWidth, Math.round(measuredWidth));
+      }
+
+      if (measuredHeight > 0) {
+        block.height = Math.max(BLOCK_MIN_H, Math.round(measuredHeight));
+      }
     }
 
-    if (measuredHeight > 0) {
-      block.height = Math.max(BLOCK_MIN_H, Math.round(measuredHeight));
-    }
-
-    if (!adaptForAutoLayout || block.locked || block.isVirtual) continue;
+    if (!adaptForAutoLayout || isPositionLocked(block) || block.isVirtual) continue;
     const adapted = getAutoLayoutSize(el, block, measuredWidth, measuredHeight);
     if (!adapted) continue;
     block.width = Math.max(block.width || BLOCK_DEFAULT_W, adapted.width);
@@ -2797,7 +2816,7 @@ function arrangeGroupBlocks(groupId, layout) {
   if (layout === 'horizontal') {
     // 横向排列：所有块水平排列，以代表块为起点
     blocks.forEach((block, index) => {
-      if (!block.locked) {
+      if (!isPositionLocked(block)) {
         block.x = anchorX + index * (BLOCK_WIDTH + H_GAP);
         block.y = anchorY;
       }
@@ -2805,7 +2824,7 @@ function arrangeGroupBlocks(groupId, layout) {
   } else if (layout === 'vertical') {
     // 纵向排列：所有块垂直排列，以代表块为起点
     blocks.forEach((block, index) => {
-      if (!block.locked) {
+      if (!isPositionLocked(block)) {
         block.x = anchorX;
         block.y = anchorY + index * (BLOCK_HEIGHT + V_GAP);
       }
@@ -2818,7 +2837,7 @@ function arrangeGroupBlocks(groupId, layout) {
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols && index < blocks.length; col++) {
         const block = blocks[index];
-        if (!block.locked) {
+        if (!isPositionLocked(block)) {
           block.x = anchorX + col * (BLOCK_WIDTH + H_GAP);
           block.y = anchorY + row * (BLOCK_HEIGHT + V_GAP);
         }

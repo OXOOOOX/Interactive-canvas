@@ -1,5 +1,11 @@
 local.config.js
 public/local.config.js
+.env
+.env.*
+!.env.example
+.claude/worktrees/
+testcanvas/canvas-*.json
+vite-dev*.log
 node_modules/
 dist/
 .vite/

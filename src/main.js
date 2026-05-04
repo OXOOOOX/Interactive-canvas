@@ -562,6 +562,44 @@ function restoreLockedBlockGeometry(snapshot) {
   }
 }
 
+function snapshotPositionLocks() {
+  return appState.canvas.blocks
+    .filter(block => block.positionLocked)
+    .map(block => block.id);
+}
+
+function restorePositionLocks(lockedIds) {
+  const lockedIdSet = new Set(lockedIds);
+  for (const block of appState.canvas.blocks) {
+    block.positionLocked = lockedIdSet.has(block.id);
+  }
+}
+
+function runManualAutoLayout() {
+  const positionLockedIds = snapshotPositionLocks();
+  let layoutCompleted = false;
+
+  try {
+    for (const block of appState.canvas.blocks) {
+      if (block.positionLocked) block.positionLocked = false;
+    }
+
+    renderBlocks();
+    syncBlockSizes({ adaptForAutoLayout: true });
+    autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+    renderBlocks();
+    syncBlockSizes();
+    renderBlocks();
+    fitToView();
+    layoutCompleted = true;
+  } finally {
+    restorePositionLocks(positionLockedIds);
+    if (layoutCompleted) pushHistory();
+    syncCanvasAfterRender();
+    saveCurrentCanvas();
+  }
+}
+
 function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false, changedBlockIds = [] } = {}) {
   const lockedGeometry = snapshotLockedBlockGeometry();
   const changedIds = new Set(changedBlockIds || []);
@@ -1769,22 +1807,7 @@ function bindEvents() {
     dom.layoutLockBtn.addEventListener('click', toggleCanvasLayoutLock);
   }
   dom.autoLayoutBtn.addEventListener('click', () => {
-    if (isCanvasLayoutLocked()) {
-      alert('当前布局已锁定，请先解锁布局');
-      return;
-    }
-    const lockedGeometry = snapshotLockedBlockGeometry();
-    renderBlocks();
-    syncBlockSizes({ adaptForAutoLayout: true });
-    autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
-    restoreLockedBlockGeometry(lockedGeometry);
-    pushHistory();
-    renderBlocks();
-    syncBlockSizes();
-    restoreLockedBlockGeometry(lockedGeometry);
-    syncCanvasAfterRender();
-    fitToView();
-    saveCurrentCanvas();
+    runManualAutoLayout();
   });
   
   if (dom.aiOrganizeBtn) {

@@ -1104,6 +1104,21 @@ function getBlockWidth(block) {
   return block.width || BLOCK_DEFAULT_W;
 }
 
+function getSourceJunctionY(parentBottom, minChildY) {
+  const railToChildGap = 96;
+  const parentToRailMinGap = 36;
+  const railToChildMinGap = 18;
+  const availableGap = minChildY - parentBottom;
+  if (availableGap <= railToChildMinGap * 2) {
+    return parentBottom + Math.max(8, availableGap / 2);
+  }
+
+  const proportionalY = parentBottom + (minChildY - parentBottom) * 0.35;
+  const childAnchoredY = minChildY - railToChildGap;
+  const preferredY = Math.max(parentBottom + parentToRailMinGap, proportionalY, childAnchoredY);
+  return Math.min(preferredY, minChildY - railToChildMinGap);
+}
+
 function renderLinks() {
   // 清除旧的连线和剪刀按钮
   $linkLayer.innerHTML = '';
@@ -1253,6 +1268,12 @@ function renderLinks() {
     return path;
   }
 
+  function buildStructuralSegmentPath(sx, sy, ex, ey, fromId = null, toId = null) {
+    const obstacles = findObstacles(sx, sy, ex, ey, fromId, toId, { strict: true });
+    if (obstacles.length === 0) return `M ${sx} ${sy} L ${ex} ${ey}`;
+    return buildDetourPath(sx, sy, ex, ey, obstacles);
+  }
+
   function isNearlyVerticalPath(sx, sy, ex, ey) {
     return Math.abs(sx - ex) <= 24 && ey > sy;
   }
@@ -1360,7 +1381,12 @@ function renderLinks() {
       if (child) minChildY = Math.min(minChildY, child.y);
     }
 
-    const junctionY = parentBottom + (minChildY - parentBottom) * 0.35;
+    let junctionY = getSourceJunctionY(parentBottom, minChildY);
+    const trunkObstacles = findObstacles(parentCx, parentBottom, parentCx, junctionY, from.id, null, { strict: true });
+    if (trunkObstacles.length > 0) {
+      const firstTop = Math.min(...trunkObstacles.map(obs => obs.top));
+      junctionY = Math.max(parentBottom + 18, Math.min(junctionY, firstTop - 24));
+    }
     junctionYMap[fromId] = junctionY;
     bundledFromSet.add(fromId);
 
@@ -1379,7 +1405,7 @@ function renderLinks() {
       // 梳状布线 — 先画粗背景，再画细结构线
       const bundleColor = from.color || '#000';
       createBundleBgPath(
-        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
         'bundle-trunk'
       );
@@ -1397,7 +1423,7 @@ function renderLinks() {
         );
       }
       createStructuralPath(
-        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
         'bundle-trunk'
       );
@@ -1417,12 +1443,12 @@ function renderLinks() {
     } else {
       const bundleColor = from.color || '#000';
       createBundleBgPath(
-        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
         'bundle-trunk'
       );
       createStructuralPath(
-        `M ${parentCx} ${parentBottom} L ${parentCx} ${junctionY}`,
+        buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
         'bundle-trunk'
       );

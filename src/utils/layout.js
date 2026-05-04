@@ -23,6 +23,9 @@ const GRID_V_GAP = 30;           // 叶子网格内垂直间距
 const GRID_MAX_COLS = 3;         // 网格每行最大列数
 const GRID_PARENT_OFFSET = 40;   // 网格与父节点底部的垂直偏移
 const LEAF_CLUSTER_MIN = 3;      // 叶子聚类最小数量阈值
+const ROUTING_RAIL_TO_CHILD_GAP = 96;
+const ROUTING_PARENT_TO_RAIL_MIN_GAP = 36;
+const ROUTING_RAIL_TO_CHILD_MIN_GAP = 18;
 const TALL_LEAF_HEIGHT_THRESHOLD = 500;
 const TALL_LEAF_OFFSET = 60;
 const LEAF_DIMENSION_SIMILARITY_THRESHOLD = 1.2;
@@ -42,6 +45,27 @@ function getBlockWidth(block) {
  */
 function getBlockHeight(block) {
   return block.height || BLOCK_H;
+}
+
+function getSourceJunctionY(parentBottom, minChildY) {
+  const availableGap = minChildY - parentBottom;
+  if (availableGap <= ROUTING_RAIL_TO_CHILD_MIN_GAP * 2) {
+    return parentBottom + Math.max(8, availableGap / 2);
+  }
+
+  const proportionalY = parentBottom + (minChildY - parentBottom) * 0.35;
+  const childAnchoredY = minChildY - ROUTING_RAIL_TO_CHILD_GAP;
+  const preferredY = Math.max(parentBottom + ROUTING_PARENT_TO_RAIL_MIN_GAP, proportionalY, childAnchoredY);
+  return Math.min(preferredY, minChildY - ROUTING_RAIL_TO_CHILD_MIN_GAP);
+}
+
+function getSourceJunctionMoveRatio(parentBottom, minChildY) {
+  if (minChildY - parentBottom <= ROUTING_RAIL_TO_CHILD_MIN_GAP * 2) return 0.5;
+  const proportionalY = parentBottom + (minChildY - parentBottom) * 0.35;
+  const childAnchoredY = minChildY - ROUTING_RAIL_TO_CHILD_GAP;
+  if (childAnchoredY >= proportionalY && childAnchoredY >= parentBottom + ROUTING_PARENT_TO_RAIL_MIN_GAP) return 1;
+  if (proportionalY >= parentBottom + ROUTING_PARENT_TO_RAIL_MIN_GAP) return 0.35;
+  return 0;
 }
 
 function isPositionLocked(block) {
@@ -885,6 +909,45 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
     if (parentMap[c.toId]) parentMap[c.toId].push(c.fromId);
   });
 
+  const childMap = {};
+  blocks.forEach(b => { childMap[b.id] = []; });
+  connections.forEach(c => {
+    if (childMap[c.fromId] && blockMap[c.toId]) childMap[c.fromId].push(c.toId);
+  });
+
+  const subtreeFootprintMemo = new Map();
+  function getSubtreeFootprintWidth(id, visiting = new Set()) {
+    if (subtreeFootprintMemo.has(id)) return subtreeFootprintMemo.get(id);
+    if (visiting.has(id)) return getBlockWidth(blockMap[id]);
+
+    const block = blockMap[id];
+    const ownWidth = getBlockWidth(block);
+    visiting.add(id);
+    const children = (childMap[id] || [])
+      .filter(childId => blockMap[childId] && layerMap[childId] > layerMap[id]);
+
+    if (children.length === 0) {
+      visiting.delete(id);
+      subtreeFootprintMemo.set(id, ownWidth);
+      return ownWidth;
+    }
+
+    let width = 0;
+    for (let i = 0; i < children.length; i++) {
+      const child = blockMap[children[i]];
+      width += getSubtreeFootprintWidth(children[i], visiting);
+      if (i < children.length - 1) {
+        const next = blockMap[children[i + 1]];
+        width += Math.max(getSmartHGap(child, connections), getSmartHGap(next, connections));
+      }
+    }
+
+    visiting.delete(id);
+    const footprint = Math.max(ownWidth, Math.round(width * LAYOUT_BREATHING));
+    subtreeFootprintMemo.set(id, footprint);
+    return footprint;
+  }
+
   function getTargetInfo(id) {
     const parents = parentMap[id] || [];
     let sumCx = 0; let counted = 0;
@@ -909,6 +972,46 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
     };
   }
 
+  function getParentLayerAverageCenter(parentId) {
+    const parentLayer = layerMap[parentId];
+    if (parentLayer === undefined) return null;
+
+    let sum = 0;
+    let count = 0;
+    for (const block of blocks) {
+      if (block.isVirtual || layerMap[block.id] !== parentLayer || block.x === undefined) continue;
+      sum += block.x + getBlockWidth(block) / 2;
+      count++;
+    }
+
+    return count > 1 ? sum / count : null;
+  }
+
+  function getOutwardLeafClusterStartX(cluster, fallbackStartX) {
+    if (!cluster || cluster.parentIds.size !== 1) return fallbackStartX;
+    if (!cluster.nodes.every(id => (childMap[id] || []).length === 0)) return fallbackStartX;
+
+    const parentId = [...cluster.parentIds][0];
+    const parent = blockMap[parentId];
+    const parentLayerCenter = getParentLayerAverageCenter(parentId);
+    if (!parent || parent.x === undefined || parentLayerCenter === null) return fallbackStartX;
+
+    const parentWidth = getBlockWidth(parent);
+    const parentCx = parent.x + parentWidth / 2;
+
+    if (parentCx < parentLayerCenter - 1) {
+      return Math.min(fallbackStartX, parent.x + parentWidth - cluster.width);
+    }
+    if (parentCx > parentLayerCenter + 1) {
+      return Math.max(fallbackStartX, parent.x);
+    }
+    return fallbackStartX;
+  }
+
+  function getClusterStartX(cluster) {
+    return getOutwardLeafClusterStartX(cluster, cluster.targetCx - cluster.width / 2);
+  }
+
   for (const l of layerNumbers) {
     const blockIds = orderedLayers[l];
     const realBlockIds = blockIds.filter(id => blockMap[id]);
@@ -929,10 +1032,11 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
     }
 
     let clusters = realBlockIds.map(id => {
-      const w = getBlockWidth(blockMap[id]);
+      const w = getSubtreeFootprintWidth(id);
       const info = getTargetInfo(id);
       return {
         nodes: [id],
+        slotWidths: [w],
         width: w,
         targetCx: info.targetCx,
         parentIds: info.parentIds
@@ -958,8 +1062,8 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
         const c1 = clusters[i];
         const c2 = clusters[i + 1];
 
-        const right1 = c1.targetCx + c1.width / 2;
-        const left2 = c2.targetCx - c2.width / 2;
+        const right1 = getClusterStartX(c1) + c1.width;
+        const left2 = getClusterStartX(c2);
 
         const lastNodeId = c1.nodes[c1.nodes.length - 1];
         const firstNodeId = c2.nodes[0];
@@ -978,6 +1082,7 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
 
           clusters.splice(i, 2, {
             nodes: [...c1.nodes, ...c2.nodes],
+            slotWidths: [...(c1.slotWidths || []), ...(c2.slotWidths || [])],
             width: totalWidth,
             targetCx: newTargetCx,
             parentIds: mergedParents
@@ -990,15 +1095,17 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
     }
 
     for (const c of clusters) {
-      let startX = c.targetCx - c.width / 2;
+      let startX = getClusterStartX(c);
       for (let i = 0; i < c.nodes.length; i++) {
         const id = c.nodes[i];
         const block = blockMap[id];
+        const blockWidth = getBlockWidth(block);
+        const slotWidth = c.slotWidths?.[i] || blockWidth;
         if (!isPositionLocked(block)) {
-          block.x = startX;
+          block.x = startX + Math.max(0, (slotWidth - blockWidth) / 2);
           block.y = currentY;
         }
-        startX += getBlockWidth(block);
+        startX += slotWidth;
         if (i < c.nodes.length - 1) {
           const nextId = c.nodes[i + 1];
           let gap = Math.max(getSmartHGap(block, connections), getSmartHGap(blockMap[nextId], connections));
@@ -1643,6 +1750,7 @@ function runStablePass(blocks, connections, clusters, blockMap, layerMap) {
   stabilizeLeafClusters(clusters, blockMap);
   compactHorizontalBands(blocks, clusters);
   resolveAllOverlaps(blocks, connections, clusters, blockMap);
+  reserveClusterRoutingCorridors(blocks, clusters, blockMap);
   const blockedIds = clusters ? getClusterLeafIdsSet(clusters) : new Set();
   const stableBlocks = blocks.filter(block => !block.isVirtual);
   const stableChainProtection = buildCenteredChainProtection(stableBlocks, connections, blockedIds);
@@ -1665,6 +1773,7 @@ function runStablePass(blocks, connections, clusters, blockMap, layerMap) {
     }
     stabilizeLeafClusters(clusters, blockMap);
     resolveAllOverlaps(blocks, connections, clusters, blockMap);
+    reserveClusterRoutingCorridors(blocks, clusters, blockMap);
     alignLinearChains(blocks, connections, clusters);
     normalizeLayoutBounds(blocks, clusters, blockMap);
   }
@@ -1958,6 +2067,45 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
   }
   if (skelCount > 0) graphCenterX /= skelCount;
 
+  const skeletonBlocks = allBlocks.filter(block => !strippedIds.has(block.id) && !block.isVirtual && block.x !== undefined);
+
+  function shiftGridAwayFromSiblingCenters(parentId, gridCx, gridW) {
+    const parent = blockMap[parentId];
+    if (!parent) return gridCx;
+
+    let left = gridCx - gridW / 2;
+    let right = gridCx + gridW / 2;
+    const parentCx = parent.x + getBlockWidth(parent) / 2;
+    const padding = MIN_H_GAP;
+
+    for (const other of skeletonBlocks) {
+      if (other.id === parentId || other.y !== parent.y) continue;
+      const otherCx = other.x + getBlockWidth(other) / 2;
+      if (otherCx <= left - padding || otherCx >= right + padding) continue;
+
+      const shiftRight = otherCx < parentCx;
+      const shift = shiftRight
+        ? otherCx + padding - left
+        : right - otherCx + padding;
+      gridCx += shiftRight ? shift : -shift;
+      left = gridCx - gridW / 2;
+      right = gridCx + gridW / 2;
+    }
+
+    return gridCx;
+  }
+
+  function getSiblingLayerCenterX(parent) {
+    const sameLayer = skeletonBlocks.filter(block => block.id !== parent.id && Math.abs(block.y - parent.y) <= 30);
+    if (sameLayer.length === 0) return null;
+
+    const centers = [
+      parent.x + getBlockWidth(parent) / 2,
+      ...sameLayer.map(block => block.x + getBlockWidth(block) / 2),
+    ];
+    return centers.reduce((sum, center) => sum + center, 0) / centers.length;
+  }
+
   const clustersByParent = new Map();
   for (const [, cluster] of getClusterEntries(clusters)) {
     const parentId = getClusterParentId(cluster);
@@ -2011,8 +2159,14 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
       let placementMode = 'outer';
 
       if (coreChildren.length === 0) {
-        placementMode = 'center';
-        gridCx = parentCx;
+        const siblingLayerCenterX = getSiblingLayerCenterX(parent);
+        if (siblingLayerCenterX === null || Math.abs(parentCx - siblingLayerCenterX) <= 30) {
+          placementMode = 'center';
+          gridCx = parentCx;
+        } else {
+          outerDir = parentCx < siblingLayerCenterX ? -1 : 1;
+          gridCx = parentCx + outerDir * outerOffset;
+        }
       } else if (parentCx < graphCenterX - 30) {
         outerDir = -1;
         gridCx = parentCx - outerOffset;
@@ -2031,6 +2185,7 @@ function placeLeafGrids(allBlocks, originalConnections, clusters, blockMap) {
           gridCx = coreMaxX + gridW / 2 + 40;
         }
       }
+      gridCx = shiftGridAwayFromSiblingCenters(parentId, gridCx, gridW);
       setClusterOuterDir(cluster, outerDir);
       setClusterPlacementMode(cluster, placementMode);
 
@@ -2207,24 +2362,148 @@ function packFloatingRootCards(floatingRootIds, allBlocks, blockMap) {
 
   const floatingRoots = floatingRootIds
     .map(id => blockMap[id])
-    .filter(block => block && block.x !== undefined && block.y !== undefined)
-    .sort((a, b) => (getBlockHeight(b) - getBlockHeight(a)) || (getBlockWidth(b) - getBlockWidth(a)));
+    .filter(block => block && block.x !== undefined && block.y !== undefined);
   if (floatingRoots.length === 0) return;
 
   const nonFloatingBlocks = allBlocks.filter(block => !floatingRootIds.includes(block.id));
   const primaryBounds = getBoundsForBlocks(nonFloatingBlocks.length > 0 ? nonFloatingBlocks : allBlocks);
 
   const FLOATING_GAP_X = 60;
-  const SIDE_MARGIN = 40;
+  const FLOATING_GAP_Y = 30;
+  const FLOATING_TOP_GAP = 80;
+  const maxWidth = Math.max(primaryBounds.width, 3 * BLOCK_W + 2 * FLOATING_GAP_X);
   let currentX = primaryBounds.minX;
-  let currentY = primaryBounds.minY;
+  let currentY = primaryBounds.maxY + FLOATING_TOP_GAP;
+  let rowHeight = 0;
 
   for (const block of floatingRoots) {
     const width = getBlockWidth(block);
-    const dx = currentX - width - SIDE_MARGIN - block.x;
+    const height = getBlockHeight(block);
+    if (currentX > primaryBounds.minX && currentX + width > primaryBounds.minX + maxWidth) {
+      currentX = primaryBounds.minX;
+      currentY += rowHeight + FLOATING_GAP_Y;
+      rowHeight = 0;
+    }
+
+    const dx = currentX - block.x;
     const dy = currentY - block.y;
     translateBlocksById([block.id], dx, dy, blockMap);
-    currentX -= width + FLOATING_GAP_X;
+    currentX += width + FLOATING_GAP_X;
+    rowHeight = Math.max(rowHeight, height);
+  }
+}
+
+function getBlockBounds(block, padding = 0) {
+  return {
+    minX: block.x - padding,
+    minY: block.y - padding,
+    maxX: block.x + getBlockWidth(block) + padding,
+    maxY: block.y + getBlockHeight(block) + padding,
+  };
+}
+
+function buildRoutingCorridorsForCluster(cluster, blockMap) {
+  const parent = blockMap[cluster.parentId];
+  if (!parent || !cluster?.bbox) return [];
+
+  const childCenters = cluster.leafIds
+    .map(id => blockMap[id])
+    .filter(block => block && block.x !== undefined && block.y !== undefined)
+    .map(block => block.x + getBlockWidth(block) / 2)
+    .sort((a, b) => a - b);
+  if (childCenters.length < 2) return [];
+
+  const parentCx = parent.x + getBlockWidth(parent) / 2;
+  const parentBottom = parent.y + getBlockHeight(parent);
+  const minChildY = cluster.bbox.minY;
+  if (minChildY <= parentBottom) return [];
+
+  const junctionY = getSourceJunctionY(parentBottom, minChildY);
+  const junctionMoveRatio = getSourceJunctionMoveRatio(parentBottom, minChildY);
+  const leftmost = childCenters[0];
+  const rightmost = childCenters[childCenters.length - 1];
+  const spread = rightmost - leftmost;
+  const padding = 24;
+  const corridors = [
+    {
+      minX: parentCx - padding,
+      minY: parentBottom,
+      maxX: parentCx + padding,
+      maxY: junctionY,
+      role: 'trunk',
+      centerY: (parentBottom + junctionY) / 2,
+    },
+  ];
+
+  if (childCenters.length >= 4 && spread > 200) {
+    corridors.push({
+      minX: leftmost - padding,
+      minY: junctionY - padding,
+      maxX: rightmost + padding,
+      maxY: junctionY + padding,
+      role: 'rail',
+      centerY: junctionY,
+      moveRatio: junctionMoveRatio,
+    });
+    for (const childCx of childCenters) {
+      corridors.push({
+        minX: childCx - padding,
+        minY: junctionY,
+        maxX: childCx + padding,
+        maxY: minChildY,
+        role: 'drop',
+        centerY: (junctionY + minChildY) / 2,
+      });
+    }
+  }
+
+  return corridors;
+}
+
+function getRoutingCorridorShift(cluster, blocks, blockMap) {
+  const corridors = buildRoutingCorridorsForCluster(cluster, blockMap);
+  if (corridors.length === 0) return 0;
+
+  const ignoredIds = new Set([cluster.parentId, ...cluster.leafIds]);
+  let neededDy = 0;
+  for (const corridor of corridors) {
+    for (const block of blocks) {
+      if (!block || block.isVirtual || ignoredIds.has(block.id)) continue;
+      if (block.x === undefined || block.y === undefined) continue;
+      const bounds = getBlockBounds(block, 18);
+      if (!overlapsBox(corridor, bounds)) continue;
+
+      const movesWithCluster = corridor.role === 'drop';
+      const junctionMovesPartially = corridor.role === 'rail';
+      const moveRatio = movesWithCluster ? 1 : (junctionMovesPartially ? corridor.moveRatio : 0);
+      if (moveRatio <= 0) continue;
+
+      const corridorReferenceY = corridor.role === 'rail' ? corridor.centerY : corridor.minY;
+      neededDy = Math.max(
+        neededDy,
+        Math.ceil((bounds.maxY + 12 - corridorReferenceY) / moveRatio)
+      );
+    }
+  }
+
+  return Math.min(Math.max(0, neededDy), 220);
+}
+
+function reserveClusterRoutingCorridors(blocks, clusters, blockMap) {
+  if (!clusters || !hasClusters(clusters)) return;
+  const clusterList = Object.values(clusters);
+
+  refreshAllClusterBounds(clusters, blockMap);
+  for (let pass = 0; pass < 3; pass++) {
+    let moved = false;
+    for (const cluster of clusterList) {
+      updateClusterBoundingBox(cluster, blockMap);
+      const dy = getRoutingCorridorShift(cluster, blocks, blockMap);
+      if (dy <= 0) continue;
+      moveClusterVertically(cluster, dy, blockMap);
+      moved = true;
+    }
+    if (!moved) break;
   }
 }
 
@@ -2254,6 +2533,7 @@ function layoutSingleComponent(blocks, connections, blockMap, originallyTallIds 
     console.log(`=== Pass 2: 安置 ${getLeafCount(leafClusters)} 个叶子到网格 ===`);
     placeLeafGrids(blocks, connections, leafClusters, blockMap);
     resolveGridCollisions(blocks, leafClusters, blockMap);
+    reserveClusterRoutingCorridors(blocks, leafClusters, blockMap);
   }
 
   runStablePass(blocks, connections, leafClusters, blockMap, layer);

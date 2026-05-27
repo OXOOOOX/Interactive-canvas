@@ -22,6 +22,8 @@ import { testDoubaoAsrConnection } from './services/doubao-asr.js';
 import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
 import { callOrganizeLlm, callRefineLlm, callNamingLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections } from './utils/parser.js';
+import { createCopyAttachment, createMappedAttachment, getAttachmentFile, listAttachments, supportsMappedFiles, updateAttachmentBlob } from './services/file-store.js';
+import { PDFDocument } from 'pdf-lib';
 
 // ── DOM References ──
 const $ = (id) => document.getElementById(id);
@@ -48,6 +50,7 @@ const dom = {
   autoLayoutBtn: $('autoLayoutBtn'),
   aiOrganizeBtn: $('aiOrganizeBtn'),
   layoutLockBtn: $('layoutLockBtn'),
+  fileUploadBtn: $('fileUploadBtn'),
   zoomIn: $('zoomIn'),
   zoomOut: $('zoomOut'),
   fitBtn: $('fitBtn'),
@@ -685,6 +688,315 @@ function handleAddSibling() {
   renderBlocks();
   saveCurrentCanvas();
   checkAutoNaming();
+}
+
+function getNewFileBlockPosition() {
+  const view = document.getElementById('mindmapView');
+  if (!view) {
+    return { x: 120, y: 120 };
+  }
+  const rect = view.getBoundingClientRect();
+  return {
+    x: Math.round((rect.width / 2 - appState.viewport.panX) / appState.viewport.zoom - 170),
+    y: Math.round((rect.height / 2 - appState.viewport.panY) / appState.viewport.zoom - 120),
+  };
+}
+
+function createFileBlockFromAttachment(meta) {
+  const pos = getNewFileBlockPosition();
+  const isPdf = meta.type === 'application/pdf' || /\.pdf$/i.test(meta.name || '');
+  const isImage = (meta.type || '').startsWith('image/');
+  const block = {
+    id: crypto.randomUUID(),
+    type: 'file',
+    label: meta.name || '文件附件',
+    content: '',
+    x: pos.x,
+    y: pos.y,
+    width: isPdf || isImage ? 360 : 260,
+    file: {
+      attachmentId: meta.id,
+      name: meta.name,
+      type: meta.type,
+      size: meta.size,
+      mode: meta.mode,
+      status: meta.status || 'ready',
+      pathLabel: meta.pathLabel || meta.name,
+      pages: isPdf ? [1] : [1],
+      annotations: {},
+    },
+  };
+  appState.canvas.blocks.push(block);
+  appState.selectedBlockId = block.id;
+  appState.selectedBlockIds = [block.id];
+  pushHistory();
+  syncCanvasAfterRender([block.id]);
+  saveCurrentCanvas();
+}
+
+function chooseCopyAttachment() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,image/*,.pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg,.txt,.md,.csv';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const meta = await createCopyAttachment(file);
+      createFileBlockFromAttachment(meta);
+    } catch (err) {
+      alert('上传失败：' + err.message);
+    }
+  }, { once: true });
+  input.click();
+}
+
+async function chooseMappedAttachment() {
+  try {
+    const meta = await createMappedAttachment();
+    createFileBlockFromAttachment(meta);
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+    alert('映射失败：浏览器当前不允许读取该文件。你可以改用「保存副本」，或在浏览器授权后重试。');
+  }
+}
+
+function getAttachmentStatusText(item) {
+  if (item.status === 'permission-blocked') return '需授权';
+  if (item.status === 'broken-copy') return '映射断裂，已转副本';
+  if (item.mode === 'mapped') return '映射，含副本';
+  return '副本';
+}
+
+function formatAttachmentSize(size) {
+  const n = Number(size) || 0;
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return n > 0 ? `${n} B` : '未知大小';
+}
+
+function isPdfAttachment(item) {
+  return item.type === 'application/pdf' || /\.pdf$/i.test(item.name || '');
+}
+
+function parsePdfPagesText(text) {
+  return [...new Set(String(text || '')
+    .split(/[,，\s]+/)
+    .map(part => Number(part.trim()))
+    .filter(page => Number.isInteger(page) && page > 0))];
+}
+
+function getUsedPdfPages(attachmentId) {
+  const pages = new Set();
+  const blockPageOverrides = new Map();
+
+  document.querySelectorAll('.mm-block-file').forEach(el => {
+    const blockId = el.dataset.id;
+    const preview = el.querySelector('.file-preview');
+    if (!blockId || preview?.dataset.attachmentId !== attachmentId) return;
+
+    const inputPages = parsePdfPagesText(el.querySelector('.file-page-input')?.value);
+    if (inputPages.length > 0) {
+      blockPageOverrides.set(blockId, inputPages);
+      inputPages.forEach(page => pages.add(page));
+    }
+  });
+
+  for (const block of appState.canvas.blocks) {
+    if (block.type !== 'file' || block.file?.attachmentId !== attachmentId) continue;
+    const blockPages = blockPageOverrides.get(block.id) || (Array.isArray(block.file.pages) ? block.file.pages : [1]);
+    if (blockPageOverrides.has(block.id)) {
+      block.file.pages = [...blockPages];
+    }
+    blockPages.forEach(page => {
+      const n = Number(page);
+      if (Number.isInteger(n) && n > 0) pages.add(n);
+    });
+  }
+  return [...pages].sort((a, b) => a - b);
+}
+
+function remapPdfBlocks(attachmentId, pageMap, pageCount) {
+  for (const block of appState.canvas.blocks) {
+    if (block.type !== 'file' || block.file?.attachmentId !== attachmentId) continue;
+    const pages = Array.isArray(block.file.pages) ? block.file.pages : [1];
+    block.file.pages = [...new Set(pages
+      .map(page => pageMap.get(Number(page)))
+      .filter(page => Number.isInteger(page) && page > 0))];
+    if (block.file.pages.length === 0) block.file.pages = [1];
+
+    const nextAnnotations = {};
+    Object.entries(block.file.annotations || {}).forEach(([page, rects]) => {
+      const nextPage = pageMap.get(Number(page));
+      if (!nextPage || !Array.isArray(rects)) return;
+      const key = String(nextPage);
+      nextAnnotations[key] = [...(nextAnnotations[key] || []), ...rects];
+    });
+    block.file.annotations = nextAnnotations;
+    block.file.pageCount = pageCount;
+    block.file.activePageIndex = 0;
+    block.file.mode = 'copy';
+    block.file.status = 'ready';
+    block.file.pathLabel = block.file.name;
+  }
+}
+
+async function compactPdfAttachment(item) {
+  const usedPages = getUsedPdfPages(item.id);
+  if (usedPages.length === 0) {
+    alert('当前画布中没有使用这个 PDF 的页面');
+    return;
+  }
+
+  const result = await getAttachmentFile(item.id);
+  if (!result.file) {
+    alert('无法读取 PDF 文件，请先重新上传或选择副本');
+    return;
+  }
+
+  const sourcePdf = await PDFDocument.load(await result.file.arrayBuffer());
+  const totalPages = sourcePdf.getPageCount();
+  const safePages = [...new Set(usedPages.map(page => Math.min(Math.max(1, page), totalPages)))].sort((a, b) => a - b);
+  if (safePages.length === 0) {
+    alert('没有可保留的有效页码');
+    return;
+  }
+
+  const nextPdf = await PDFDocument.create();
+  const copiedPages = await nextPdf.copyPages(sourcePdf, safePages.map(page => page - 1));
+  copiedPages.forEach(page => nextPdf.addPage(page));
+  const bytes = await nextPdf.save();
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const pageMap = new Map(safePages.map((page, index) => [page, index + 1]));
+  const suffix = safePages.length === totalPages ? '' : '-used-pages';
+  const baseName = (item.name || 'document.pdf').replace(/\.pdf$/i, '');
+  const nextName = `${baseName}${suffix}.pdf`;
+
+  await updateAttachmentBlob(item.id, blob, {
+    name: nextName,
+    type: 'application/pdf',
+    mode: 'copy',
+    status: 'ready',
+    pathLabel: nextName,
+    pageCount: safePages.length,
+  });
+
+  remapPdfBlocks(item.id, pageMap, safePages.length);
+  pushHistory();
+  syncCanvasAfterRender();
+  saveCurrentCanvas();
+}
+
+function renderAttachmentList(items) {
+  if (!items.length) {
+    return '<div class="file-list-empty">暂无附件</div>';
+  }
+
+  return items.map(item => `
+    <div class="file-list-item" data-attachment-id="${item.id}">
+      <div class="file-list-main">
+        <div class="file-list-name" title="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '未命名文件')}</div>
+        <div class="file-list-path" title="${escapeHtml(item.pathLabel || item.name || '')}">${escapeHtml(item.pathLabel || item.name || '浏览器未开放完整路径')}</div>
+        <div class="file-list-meta">
+          <span class="file-list-status ${item.status === 'permission-blocked' ? 'needs-auth' : ''}">${getAttachmentStatusText(item)}</span>
+          <span>${formatAttachmentSize(item.size)}</span>
+        </div>
+      </div>
+      <div class="file-list-actions">
+        ${isPdfAttachment(item) ? `<button class="file-list-compact" data-compact-pdf="${item.id}" type="button">只留使用页</button>` : ''}
+        <button class="file-list-use" data-use-attachment="${item.id}" type="button">插入</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function showFileUploadMenu() {
+  let menu = document.getElementById('fileUploadMenu');
+  if (menu) {
+    menu.remove();
+    return;
+  }
+
+  const attachments = await listAttachments();
+
+  menu = document.createElement('div');
+  menu.id = 'fileUploadMenu';
+  menu.className = 'import-menu file-upload-menu';
+  menu.innerHTML = `
+    <div class="file-upload-actions">
+      <button class="import-item" data-mode="mapped" ${supportsMappedFiles() ? '' : 'disabled'}>
+        <span class="import-icon">↻</span>
+        <span class="import-text">
+          <strong>映射文件</strong>
+          <small>上传副本，每次刷新</small>
+        </span>
+      </button>
+      <button class="import-item" data-mode="copy">
+        <span class="import-icon">＋</span>
+        <span class="import-text">
+          <strong>保存副本</strong>
+          <small>不随本地文件修改</small>
+        </span>
+      </button>
+    </div>
+    <div class="file-list-panel">
+      <div class="file-list-title">附件列表</div>
+      ${renderAttachmentList(attachments)}
+    </div>
+  `;
+
+  const rect = dom.fileUploadBtn.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = `${rect.bottom + 6}px`;
+  menu.style.left = `${rect.left}px`;
+  document.body.appendChild(menu);
+
+  menu.addEventListener('click', (e) => {
+    const compactBtn = e.target.closest('[data-compact-pdf]');
+    if (compactBtn) {
+      const attachment = attachments.find(item => item.id === compactBtn.dataset.compactPdf);
+      if (attachment) {
+        compactBtn.disabled = true;
+        compactBtn.textContent = '处理中';
+        compactPdfAttachment(attachment)
+          .then(() => {
+            menu.remove();
+          })
+          .catch(err => {
+            compactBtn.disabled = false;
+            compactBtn.textContent = '只留使用页';
+            alert('处理失败：' + err.message);
+          });
+      }
+      return;
+    }
+
+    const reuseBtn = e.target.closest('[data-use-attachment]');
+    if (reuseBtn) {
+      const attachment = attachments.find(item => item.id === reuseBtn.dataset.useAttachment);
+      if (attachment) {
+        createFileBlockFromAttachment(attachment);
+        menu.remove();
+      }
+      return;
+    }
+
+    const item = e.target.closest('[data-mode]');
+    if (!item || item.disabled) return;
+    const mode = item.dataset.mode;
+    menu.remove();
+    if (mode === 'mapped') chooseMappedAttachment();
+    else chooseCopyAttachment();
+  });
+
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function closer(e) {
+      if (!menu.contains(e.target) && e.target !== dom.fileUploadBtn) {
+        menu.remove();
+        document.removeEventListener('pointerdown', closer);
+      }
+    });
+  }, 10);
 }
 
 function handleDeleteNode() {
@@ -1805,6 +2117,9 @@ function bindEvents() {
   dom.fitBtn.addEventListener('click', fitToView);
   if (dom.layoutLockBtn) {
     dom.layoutLockBtn.addEventListener('click', toggleCanvasLayoutLock);
+  }
+  if (dom.fileUploadBtn) {
+    dom.fileUploadBtn.addEventListener('click', showFileUploadMenu);
   }
   dom.autoLayoutBtn.addEventListener('click', () => {
     runManualAutoLayout();

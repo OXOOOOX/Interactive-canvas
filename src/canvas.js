@@ -5,6 +5,11 @@
 import { appState, pushHistory, createGroup, deleteGroup, getGroupBlocks, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName, saveCurrentCanvas, toggleGroupFold, addBlocksToGroup, removeBlocksFromGroup, loadConfig } from './state.js';
 import { getBoundingBox, exportCanvasData } from './utils/layout.js';
 import { renderMarkdown } from './utils/parser.js';
+import { getAttachmentFile } from './services/file-store.js';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const BLOCK_DEFAULT_W = 200;
 const BLOCK_MIN_W = 120;
@@ -18,6 +23,8 @@ const DRAG_THRESHOLD = 5;
 const SNAP_GRID = 20;
 const BACKGROUND_LONG_PRESS_MS = 180;
 const BACKGROUND_TAP_TOLERANCE = 8;
+const PDF_RENDER_QUALITY = 1.5;
+const PDF_RENDER_MAX_DPR = 3;
 
 /** 预设节点颜色 */
 const NODE_COLORS = [
@@ -680,6 +687,11 @@ function applyTransform() {
   const { zoom, panX, panY } = appState.viewport;
   $transform.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   $zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+  const gridSize = 24 * zoom;
+  const gridDot = Math.max(0.6, 1.5 * zoom);
+  $view.style.setProperty('--canvas-grid-size', `${gridSize}px`);
+  $view.style.setProperty('--canvas-grid-dot', `${gridDot}px`);
+  $view.style.backgroundPosition = `${panX % gridSize}px ${panY % gridSize}px`;
   updateMinimap();
 }
 
@@ -1687,6 +1699,374 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function isFileBlock(block) {
+  return block.type === 'file' && block.file;
+}
+
+function normalizePdfPages(value, maxPage = null) {
+  const pages = Array.isArray(value) && value.length > 0 ? value : [1];
+  const upper = Number.isInteger(maxPage) && maxPage > 0 ? maxPage : null;
+  return [...new Set(pages
+    .map(n => Number(n))
+    .filter(n => Number.isInteger(n) && n > 0)
+    .map(n => upper ? Math.min(n, upper) : n))]
+    .slice(0, 24);
+}
+
+function parsePageList(text, maxPage = null) {
+  return normalizePdfPages(String(text || '')
+    .split(/[,，\s]+/)
+    .map(part => Number(part.trim()))
+    .filter(Boolean), maxPage);
+}
+
+function getPageAnnotations(block, page) {
+  if (!block.file) block.file = {};
+  if (!block.file.annotations) block.file.annotations = {};
+  const key = String(page);
+  if (!Array.isArray(block.file.annotations[key])) block.file.annotations[key] = [];
+  return block.file.annotations[key];
+}
+
+function buildAnnotationHtml(block, page) {
+  return getPageAnnotations(block, page).map((rect, index) => `
+    <div class="file-annotation"
+      data-annotation-index="${index}"
+      style="left:${rect.x}%; top:${rect.y}%; width:${rect.w}%; height:${rect.h}%;"></div>
+  `).join('');
+}
+
+function buildFileBlockContent(block) {
+  const file = block.file || {};
+  const pages = normalizePdfPages(file.pages);
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+  const isImage = (file.type || '').startsWith('image/');
+  const pageCount = Number.isInteger(file.pageCount) && file.pageCount > 0 ? file.pageCount : null;
+  const pdfViewMode = file.viewMode === 'pager' ? 'pager' : 'matrix';
+  const activePageIndex = Math.max(0, Math.min(Number(file.activePageIndex) || 0, Math.max(0, pages.length - 1)));
+  const visiblePdfPages = isPdf && pdfViewMode === 'pager' ? [pages[activePageIndex] || pages[0] || 1] : pages;
+  const pdfColumns = isPdf && pdfViewMode === 'matrix' ? Math.max(1, Math.ceil(Math.sqrt(pages.length || 1))) : 1;
+  const statusText = file.mode === 'mapped' ? '映射，含副本' : '副本';
+  const broken = file.status === 'broken-copy';
+  const blocked = file.status === 'permission-blocked';
+  const finalStatusText = blocked ? '需要重新授权读取' : broken ? '映射断裂，已转为副本' : statusText;
+
+  return `
+    <div class="file-card" data-file-kind="${isPdf ? 'pdf' : isImage ? 'image' : 'file'}">
+      <div class="file-card-header">
+        <div class="file-card-icon">${isPdf ? 'PDF' : isImage ? 'IMG' : 'FILE'}</div>
+        <div class="file-card-meta">
+          <div class="file-name" title="${escapeHtml(file.name || '')}">${escapeHtml(file.name || '未命名文件')}</div>
+          <div class="file-status ${broken || blocked ? 'is-broken' : ''}">${finalStatusText}</div>
+          <div class="file-path" title="${escapeHtml(file.pathLabel || file.name || '')}">${escapeHtml(file.pathLabel || file.name || '浏览器未开放完整路径')}</div>
+        </div>
+      </div>
+      ${isPdf ? `
+        <div class="file-page-picker">
+          <input class="file-page-input" type="text" value="${escapeHtml(pages.join(', '))}" aria-label="PDF 展示页码" />
+          <button class="file-page-apply" type="button">显示页</button>
+        </div>
+        <div class="file-view-controls">
+          <div class="file-view-mode" role="group" aria-label="PDF 查看模式">
+            <button class="file-view-mode-btn ${pdfViewMode === 'pager' ? 'active' : ''}" data-pdf-view-mode="pager" type="button">翻页</button>
+            <button class="file-view-mode-btn ${pdfViewMode === 'matrix' ? 'active' : ''}" data-pdf-view-mode="matrix" type="button">矩阵</button>
+          </div>
+          ${pdfViewMode === 'pager' ? `
+            <div class="file-page-nav">
+              <button class="file-page-nav-btn" data-page-step="-1" type="button" ${pages.length <= 1 ? 'disabled' : ''}>上一页</button>
+              <span class="file-page-nav-label">${activePageIndex + 1} / ${pages.length || 1}</span>
+              <button class="file-page-nav-btn" data-page-step="1" type="button" ${pages.length <= 1 ? 'disabled' : ''}>下一页</button>
+            </div>
+          ` : ''}
+        </div>
+        <div class="file-page-count">${pageCount ? `共 ${pageCount} 页` : '正在读取页数'}</div>
+      ` : ''}
+      <div class="file-preview ${isPdf ? `file-preview-pdf-grid file-preview-${pdfViewMode}` : ''}" data-attachment-id="${escapeHtml(file.attachmentId || '')}" style="${isPdf ? `--pdf-page-columns:${pdfColumns}` : ''}">
+        ${isPdf
+          ? visiblePdfPages.map(page => `
+              <div class="file-preview-page" data-page="${page}">
+                <div class="file-page-title">第 ${page} 页${pageCount ? ` / 共 ${pageCount} 页` : ''}</div>
+                <div class="file-preview-frame" data-page="${page}">${buildAnnotationHtml(block, page)}</div>
+              </div>
+            `).join('')
+          : isImage
+            ? `<div class="file-preview-page" data-page="1"><div class="file-preview-frame" data-page="1">${buildAnnotationHtml(block, 1)}</div></div>`
+            : `<div class="file-generic-preview">暂无内嵌预览</div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+async function renderPdfPageToFrame(pdf, frame, pageNumber) {
+  if (frame.dataset.rendering === 'true') return;
+  frame.dataset.rendering = 'true';
+
+  try {
+    let canvas = frame.querySelector('.file-pdf-canvas');
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.className = 'file-pdf-canvas';
+      frame.insertAdjacentElement('afterbegin', canvas);
+    }
+
+    const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
+    const page = await pdf.getPage(safePage);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const frameWidth = Math.max(240, Math.floor(frame.clientWidth || 320));
+    const scale = frameWidth / baseViewport.width;
+    const viewport = page.getViewport({ scale });
+    const dpr = Math.min(PDF_RENDER_MAX_DPR, (window.devicePixelRatio || 1) * PDF_RENDER_QUALITY);
+    const context = canvas.getContext('2d');
+
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    frame.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    await page.render({ canvasContext: context, viewport }).promise;
+    frame.dataset.renderedPage = String(safePage);
+    return safePage;
+  } finally {
+    delete frame.dataset.rendering;
+  }
+}
+
+function syncFileBlockHeight(el, block) {
+  if (!isFileBlock(block)) return;
+  const measure = () => {
+    const fileCard = el.querySelector('.file-card');
+    if (!fileCard) return;
+    const style = getComputedStyle(el);
+    const borderExtra = Math.max(0, el.offsetHeight - el.clientHeight);
+    const paddingBottom = parseFloat(style.paddingBottom) || 0;
+    const nextHeight = Math.ceil(fileCard.offsetTop + fileCard.offsetHeight + paddingBottom + borderExtra + 8);
+    if (!nextHeight || Math.abs(el.offsetHeight - nextHeight) <= 2) return;
+    block.height = Math.max(BLOCK_MIN_H, nextHeight);
+    el.style.height = `${block.height}px`;
+    renderLinks();
+    updateMinimap();
+    saveCurrentCanvas();
+    if (appState.selectedBlockId === block.id) showNodeToolbar(block);
+  };
+  requestAnimationFrame(() => {
+    requestAnimationFrame(measure);
+  });
+  setTimeout(measure, 250);
+}
+
+async function hydrateFilePreview(el, block) {
+  if (!isFileBlock(block) || !block.file?.attachmentId) return;
+
+  const preview = el.querySelector('.file-preview');
+  if (!preview) return;
+
+  try {
+    const result = await getAttachmentFile(block.file.attachmentId);
+    if (result.status === 'broken-copy' && block.file.status !== 'broken-copy') {
+      block.file.status = 'broken-copy';
+      block.file.mode = 'copy';
+      saveCurrentCanvas();
+      renderBlocks();
+      return;
+    }
+
+    if (result.status === 'permission-blocked' && block.file.status !== 'permission-blocked') {
+      block.file.status = 'permission-blocked';
+      saveCurrentCanvas();
+      renderBlocks();
+      return;
+    }
+
+    if (!result.file && result.status === 'permission-blocked') {
+      preview.classList.add('is-missing');
+      preview.textContent = '浏览器当前不允许读取映射文件，请重新上传或改用副本';
+      return;
+    }
+
+    if (!result.file) {
+      preview.classList.add('is-missing');
+      preview.textContent = '文件副本缺失';
+      return;
+    }
+
+    const isPdf = block.file.type === 'application/pdf' || /\.pdf$/i.test(block.file.name || '');
+    const isImage = (block.file.type || '').startsWith('image/');
+
+    if (isPdf) {
+      const buffer = await result.file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+      const clampedPages = normalizePdfPages(block.file.pages, pdf.numPages);
+    const needsMetadataUpdate =
+      block.file.pageCount !== pdf.numPages ||
+      JSON.stringify(clampedPages) !== JSON.stringify(normalizePdfPages(block.file.pages));
+
+    if (needsMetadataUpdate) {
+      block.file.pageCount = pdf.numPages;
+      block.file.pages = clampedPages.length ? clampedPages : [pdf.numPages];
+      block.file.size = result.record?.size || block.file.size;
+      block.file.name = result.record?.name || block.file.name;
+      block.file.pathLabel = result.record?.pathLabel || block.file.pathLabel;
+      saveCurrentCanvas();
+      renderBlocks();
+      return;
+      }
+
+      preview.querySelectorAll('.file-preview-frame').forEach(async frame => {
+        const requestedPage = Number(frame.dataset.page) || 1;
+        const page = Math.max(1, Math.min(requestedPage, pdf.numPages));
+        if (frame.dataset.renderedPage !== String(page)) {
+          try {
+            await renderPdfPageToFrame(pdf, frame, page);
+            syncFileBlockHeight(el, block);
+          } catch (err) {
+            frame.classList.add('is-missing');
+            frame.textContent = `第 ${page} 页渲染失败`;
+          }
+        }
+      });
+    } else if (isImage) {
+      const url = URL.createObjectURL(result.file);
+      const frame = preview.querySelector('.file-preview-frame');
+      if (frame && !frame.querySelector('img')) {
+        frame.insertAdjacentHTML('afterbegin', `<img class="file-image-preview" src="${url}" alt="${escapeHtml(block.file.name || '图片预览')}" />`);
+        frame.querySelector('img')?.addEventListener('load', () => syncFileBlockHeight(el, block), { once: true });
+      }
+    }
+  } catch (err) {
+    preview.classList.add('is-missing');
+    preview.textContent = `预览失败：${err.message}`;
+  }
+}
+
+function setupFileBlockInteractions(el, block) {
+  if (!isFileBlock(block)) return;
+
+  el.querySelectorAll('.file-card button, .file-card input').forEach(control => {
+    control.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+  });
+
+  el.querySelector('.file-page-apply')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const input = el.querySelector('.file-page-input');
+    const maxPage = Number.isInteger(block.file?.pageCount) ? block.file.pageCount : null;
+    const pages = parsePageList(input?.value, maxPage);
+    block.file.pages = pages.length ? pages : [1];
+    block.file.activePageIndex = 0;
+    pushHistory();
+    renderBlocks();
+    onCanvasChange();
+  });
+
+  el.querySelectorAll('[data-pdf-view-mode]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      block.file.viewMode = btn.dataset.pdfViewMode === 'pager' ? 'pager' : 'matrix';
+      if (!Number.isInteger(block.file.activePageIndex)) block.file.activePageIndex = 0;
+      pushHistory();
+      renderBlocks();
+      onCanvasChange();
+    });
+  });
+
+  el.querySelectorAll('[data-page-step]').forEach(btn => {
+    const handlePageStep = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const pages = normalizePdfPages(block.file?.pages);
+      if (pages.length <= 1) return;
+      const step = Number(btn.dataset.pageStep) || 0;
+      const current = Math.max(0, Math.min(Number(block.file.activePageIndex) || 0, pages.length - 1));
+      block.file.activePageIndex = (current + step + pages.length) % pages.length;
+      pushHistory();
+      renderBlocks();
+      onCanvasChange();
+    };
+    btn.addEventListener('pointerup', handlePageStep);
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') handlePageStep(e);
+    });
+  });
+
+  el.querySelectorAll('.file-preview-frame').forEach(frame => {
+    let start = null;
+    let draft = null;
+
+    frame.querySelectorAll('.file-annotation:not(.is-drafting)').forEach(annotation => {
+      annotation.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const page = Number(frame.dataset.page) || 1;
+        const index = Number(annotation.dataset.annotationIndex);
+        const annotations = getPageAnnotations(block, page);
+        if (Number.isInteger(index) && index >= 0 && index < annotations.length) {
+          annotations.splice(index, 1);
+          pushHistory();
+          renderBlocks();
+          onCanvasChange();
+        }
+      });
+    });
+
+    frame.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest('.file-annotation')) return;
+      e.stopPropagation();
+      const rect = frame.getBoundingClientRect();
+      start = {
+        x: ((e.clientX - rect.left) / rect.width) * 100,
+        y: ((e.clientY - rect.top) / rect.height) * 100,
+      };
+      draft = document.createElement('div');
+      draft.className = 'file-annotation is-drafting';
+      frame.appendChild(draft);
+      frame.setPointerCapture(e.pointerId);
+    });
+
+    frame.addEventListener('pointermove', (e) => {
+      if (!start || !draft) return;
+      const rect = frame.getBoundingClientRect();
+      const x2 = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+      const y2 = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+      const x = Math.min(start.x, x2);
+      const y = Math.min(start.y, y2);
+      const w = Math.abs(x2 - start.x);
+      const h = Math.abs(y2 - start.y);
+      draft.style.left = `${x}%`;
+      draft.style.top = `${y}%`;
+      draft.style.width = `${w}%`;
+      draft.style.height = `${h}%`;
+    });
+
+    frame.addEventListener('pointerup', (e) => {
+      if (!start || !draft) return;
+      const rect = frame.getBoundingClientRect();
+      const x2 = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+      const y2 = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+      const next = {
+        x: Math.round(Math.min(start.x, x2) * 10) / 10,
+        y: Math.round(Math.min(start.y, y2) * 10) / 10,
+        w: Math.round(Math.abs(x2 - start.x) * 10) / 10,
+        h: Math.round(Math.abs(y2 - start.y) * 10) / 10,
+      };
+      draft.remove();
+      draft = null;
+      start = null;
+      if (next.w >= 2 && next.h >= 2) {
+        const page = Number(frame.dataset.page) || 1;
+        getPageAnnotations(block, page).push(next);
+        pushHistory();
+        renderBlocks();
+        onCanvasChange();
+      }
+    });
+  });
+}
+
 /** 渲染所有块 */
 export function renderBlocks(newIds = []) {
   if (!appState.selectedBlockId && appState.selectedBlockIds.length === 0) hideNodeToolbar();
@@ -1814,18 +2194,29 @@ export function renderBlocks(newIds = []) {
       });
     }
 
+    const blockBodyHtml = isFileBlock(block)
+      ? buildFileBlockContent(block)
+      : `<div class="mm-content ${block.content ? '' : 'mm-content-placeholder'}">${block.content ? renderMarkdown(block.content) : '点击添加内容…'}</div>`;
+
+    if (isFileBlock(block)) {
+      el.classList.add('mm-block-file');
+    }
+
     el.innerHTML = `
       ${colorBar}
       ${lockIcon}
       ${groupIndicators}
       ${foldedBadge}
       <div class="mm-label">${escapeHtml(block.label)}</div>
-      <div class="mm-content ${block.content ? '' : 'mm-content-placeholder'}">${block.content ? renderMarkdown(block.content) : '点击添加内容…'}</div>
+      ${blockBodyHtml}
       <div class="mm-resize-handle mm-resize-r" data-resize="r"></div>
       <div class="mm-resize-handle mm-resize-b" data-resize="b"></div>
       <div class="mm-resize-handle mm-resize-br" data-resize="br"></div>
       <div class="mm-link-handle" title="连线到其他块"></div>
     `;
+
+    setupFileBlockInteractions(el, block);
+    hydrateFilePreview(el, block);
 
     // 为折叠指示器添加点击展开事件
     el.querySelectorAll('.mm-group-indicator.folded').forEach(indicator => {
@@ -1887,6 +2278,7 @@ export function renderBlocks(newIds = []) {
     // 双击 → 内联编辑（点击 label 编辑标题，点击 content 编辑内容）
     el.addEventListener('dblclick', (e) => {
       e.stopPropagation();
+      if (e.target.closest('.file-card')) return;
       const target = e.target.closest('.mm-content');
       if (target) {
         startInlineEdit(block, 'content');
@@ -1948,6 +2340,7 @@ function setupDrag(el, block) {
 
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || e.target.isContentEditable) return;
+    if (e.target.closest('.file-card input, .file-card button, .file-preview-frame')) return;
     if (isPositionLocked(block)) return;
     // Don't drag from resize handles
     if (e.target.closest('.mm-resize-handle')) return;
@@ -2062,6 +2455,7 @@ function setupDrag(el, block) {
 
 function setupResize(el, block) {
   const handles = el.querySelectorAll('.mm-resize-handle');
+  let rerenderFilePreview = null;
 
   handles.forEach(handle => {
     let resizing = false;
@@ -2097,6 +2491,14 @@ function setupResize(el, block) {
       if (direction === 'r' || direction === 'br') {
         block.width = Math.max(BLOCK_MIN_W, startW + dx);
         el.style.width = `${block.width}px`;
+        if (isFileBlock(block)) {
+          el.querySelectorAll('.file-preview-frame').forEach(frame => {
+            delete frame.dataset.renderedPage;
+            frame.querySelector('.file-pdf-canvas')?.remove();
+          });
+          clearTimeout(rerenderFilePreview);
+          rerenderFilePreview = setTimeout(() => hydrateFilePreview(el, block), 120);
+        }
       }
       if (direction === 'b' || direction === 'br') {
         block.height = Math.max(BLOCK_MIN_H, startH + dy);

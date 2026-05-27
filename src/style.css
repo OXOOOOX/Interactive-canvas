@@ -417,8 +417,11 @@ html, body {
   overflow: hidden;
   cursor: grab;
   touch-action: none;
-  background-image: radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px);
-  background-size: 24px 24px;
+  --canvas-grid-size: 24px;
+  --canvas-grid-dot: 1.5px;
+  background-image: radial-gradient(circle, rgba(0,0,0,0.15) var(--canvas-grid-dot), transparent var(--canvas-grid-dot));
+  background-size: var(--canvas-grid-size) var(--canvas-grid-size);
+  background-position: 0 0;
 }
 .mindmap-view.grabbing { cursor: grabbing; }
 
@@ -616,6 +619,234 @@ html, body {
   font-style: italic;
   opacity: 0.5;
   border-top-color: transparent;
+}
+
+.mm-block-file {
+  padding: 12px;
+  overflow: visible;
+}
+
+.mm-block-file .mm-label {
+  margin-bottom: 8px;
+}
+
+.file-card {
+  border-top: 1px dashed #000;
+  padding-top: 8px;
+}
+
+.file-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-card-icon {
+  width: 34px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #000;
+  background: #FFD600;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.file-card-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-name {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-status {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.file-path {
+  max-width: 100%;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-status.is-broken {
+  color: var(--accent-red);
+  font-weight: 700;
+}
+
+.file-page-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.file-page-input {
+  min-width: 0;
+  flex: 1;
+  height: 28px;
+  border: 2px solid #000;
+  padding: 0 8px;
+  font: 12px var(--font-body);
+  background: #fff;
+}
+
+.file-page-apply {
+  height: 28px;
+  padding: 0 8px;
+  border: 2px solid #000;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.file-page-apply:hover {
+  background: var(--grad-brand-soft);
+}
+
+.file-view-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.file-view-mode,
+.file-page-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-view-mode-btn,
+.file-page-nav-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: 2px solid #000;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.file-view-mode-btn.active {
+  background: var(--grad-brand);
+}
+
+.file-page-nav-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.file-page-nav-label {
+  min-width: 42px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.file-page-count {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.file-preview {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.file-preview-pdf-grid {
+  grid-template-columns: repeat(var(--pdf-page-columns, 1), minmax(0, 1fr));
+  align-items: start;
+}
+
+.file-preview-pager {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.file-preview-page {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.file-page-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.file-preview-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  min-height: 120px;
+  overflow: hidden;
+  border: 2px solid #000;
+  background: #f8f9fa;
+  cursor: crosshair;
+}
+
+.file-pdf-canvas,
+.file-image-preview {
+  width: 100%;
+  display: block;
+  border: 0;
+  pointer-events: none;
+}
+
+.file-pdf-canvas {
+  height: auto;
+  background: #fff;
+}
+
+.file-image-preview {
+  height: 100%;
+  object-fit: contain;
+  background: #fff;
+}
+
+.file-annotation {
+  position: absolute;
+  z-index: 2;
+  border: 3px solid #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.file-annotation.is-drafting {
+  border-style: dashed;
+  pointer-events: none;
+}
+
+.file-generic-preview,
+.file-preview.is-missing {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  border: 2px dashed #000;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* Block entrance animation */
@@ -1770,11 +2001,148 @@ select.cfg-input {
   background: var(--glass-hover);
   color: var(--text-primary);
 }
+.import-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .import-icon {
   font-size: 14px;
   width: 20px;
   text-align: center;
   opacity: 0.7;
+}
+
+.import-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  line-height: 1.2;
+}
+
+.import-text strong {
+  font-size: 13px;
+}
+
+.import-text small {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.file-upload-menu {
+  width: 360px;
+}
+
+.file-upload-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.file-list-panel {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 2px solid #000;
+}
+
+.file-list-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.file-list-empty {
+  padding: 12px;
+  border: 2px dashed #000;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.file-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 2px solid #000;
+  background: #fff;
+}
+
+.file-list-item + .file-list-item {
+  margin-top: 6px;
+}
+
+.file-list-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-list-name {
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-path {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.file-list-status {
+  font-weight: 800;
+  color: #000;
+}
+
+.file-list-status.needs-auth {
+  color: var(--accent-red);
+}
+
+.file-list-actions {
+  display: grid;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-list-use,
+.file-list-compact {
+  height: 28px;
+  padding: 0 10px;
+  border: 2px solid #000;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.file-list-use {
+  background: var(--grad-brand);
+}
+
+.file-list-compact {
+  background: #fff;
+}
+
+.file-list-compact:hover {
+  background: var(--grad-brand-soft);
+}
+
+.file-list-compact:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 

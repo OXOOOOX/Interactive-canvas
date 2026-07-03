@@ -9,7 +9,7 @@
 - 🧩 **交互式块画布（Canvas）**：每个节点是可拖拽块，连线会实时跟随
 - ✍️ 双击可编辑节点标题、导图标题、附注
 - ➕ 支持对选中块新增子块/同级块、删除块
-- 🔌 可切换通义千问 / 豆包 / 自定义 API（LLM、STT、TTS 分离配置）
+- 🔌 可切换通义千问 / 豆包 / DeepSeek V4 Pro/Flash / 自定义 API（LLM、STT、TTS 分离配置）
 - ⚙️ 选择供应商后会自动填充 Endpoint，你只需要选择供应商 + 输入 API Key（选自定义时可手动改 Endpoint）
 - 🔐 提供 OAuth 配置位（支持 CODEX / antigravity / 自定义）与 code 换 token 示例流程
 

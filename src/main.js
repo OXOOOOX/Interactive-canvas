@@ -1400,6 +1400,11 @@ function setPresetInputValue(input, value, preserveExisting = false) {
   }
 }
 
+function setLlmProviderModel(provider, preserveExisting = false) {
+  const preset = ENDPOINT_PRESETS[provider] || {};
+  setPresetInputValue(dom.llmModel, preset.llmModel, preserveExisting);
+}
+
 function setSttProviderModels(provider, preserveExisting = false) {
   const preset = ENDPOINT_PRESETS[provider] || {};
   setPresetInputValue(dom.sttModel, preset.sttModel, preserveExisting);
@@ -1472,6 +1477,7 @@ function applyProviderPreset(preserveExistingModels = true) {
   if (!sttCustom) dom.sttEndpoint.value = sttPreset;
   if (!ttsCustom) dom.ttsEndpoint.value = ttsPreset;
 
+  setLlmProviderModel(dom.llmProvider.value, preserveExistingModels);
   setSttProviderModels(dom.sttProvider.value, preserveExistingModels);
   setTtsProviderModels(dom.ttsProvider.value, preserveExistingModels);
   syncVoiceModeFallback();

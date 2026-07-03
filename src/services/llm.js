@@ -81,10 +81,20 @@ function getEndpoint(config) {
   return endpoint;
 }
 
+const DEFAULT_LLM_MODELS = {
+  tongyi: 'qwen-max-latest',
+  doubao: 'doubao-1.5-pro',
+  deepseekV4Pro: 'deepseek-v4-pro',
+  deepseekV4Flash: 'deepseek-v4-flash',
+};
+
+function getDefaultModel(config) {
+  return DEFAULT_LLM_MODELS[config.llmProvider] || 'qwen-max-latest';
+}
+
 function buildPayload(config, messages, isCanvas = false, stream = false) {
-  const defaultModel = config.llmProvider === 'doubao' ? 'doubao-1.5-pro' : 'qwen-max-latest';
   const payload = {
-    model: config.llmModel || defaultModel,
+    model: config.llmModel || getDefaultModel(config),
     messages,
   };
 
@@ -92,7 +102,10 @@ function buildPayload(config, messages, isCanvas = false, stream = false) {
     payload.temperature = 0.2;
   } else {
     payload.temperature = 0.7;
-    payload.enable_search = true;
+    if (config.llmProvider === 'tongyi') {
+      payload.enable_search = true;
+    }
+
     if (stream) payload.stream = true;
   }
 

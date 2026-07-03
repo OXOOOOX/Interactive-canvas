@@ -248,7 +248,13 @@
             <h3 class="cfg-title">大语言模型 (LLM)</h3>
             <div class="cfg-grid">
               <label class="cfg-label">供应商
-                <select id="llmProvider" class="cfg-input"><option value="tongyi" selected>通义千问</option><option value="doubao">豆包</option><option value="custom">自定义</option></select>
+                <select id="llmProvider" class="cfg-input">
+                  <option value="tongyi" selected>通义千问</option>
+                  <option value="doubao">豆包</option>
+                  <option value="deepseekV4Pro">DeepSeek V4 Pro</option>
+                  <option value="deepseekV4Flash">DeepSeek V4 Flash</option>
+                  <option value="custom">自定义</option>
+                </select>
               </label>
               <label class="cfg-label full">Endpoint
                 <input id="llmEndpoint" type="url" class="cfg-input" placeholder="https://..." />

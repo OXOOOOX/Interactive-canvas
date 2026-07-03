@@ -336,6 +336,7 @@ export function renameCanvas(id, title) {
 export const ENDPOINT_PRESETS = {
   tongyi: {
     llm: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    llmModel: 'qwen-max-latest',
     stt: 'https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions',
     tts: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
     sttModel: 'sensevoice-v1',
@@ -345,12 +346,21 @@ export const ENDPOINT_PRESETS = {
   },
   doubao: {
     llm: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+    llmModel: 'doubao-1.5-pro',
     stt: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
     tts: 'https://openspeech.bytedance.com/api/v1/tts',
     sttModel: 'doubao-asr-streaming-2.0',
     fileSttModel: 'doubao-asr-file-2.0',
     ttsModel: 'doubao-tts-2.0',
     realtimeVoiceModel: 'doubao-realtime-voice',
+  },
+  deepseekV4Pro: {
+    llm: 'https://api.deepseek.com/chat/completions',
+    llmModel: 'deepseek-v4-pro',
+  },
+  deepseekV4Flash: {
+    llm: 'https://api.deepseek.com/chat/completions',
+    llmModel: 'deepseek-v4-flash',
   },
 };
 // ═══════════════════════════════════════

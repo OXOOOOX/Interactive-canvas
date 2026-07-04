@@ -17,6 +17,7 @@ const BLOCK_MIN_H = 60;
 const AUTO_LAYOUT_TARGET_RATIO = 1.5;
 const AUTO_LAYOUT_RATIO_TOLERANCE = 0.2;
 const AUTO_LAYOUT_MAX_WIDTH = 640;
+const TABLE_BLOCK_MAX_WIDTH = 960;
 const AUTO_LAYOUT_WIDTH_STEP = 24;
 const AUTO_LAYOUT_MIN_HEIGHT_GAIN = 24;
 const DRAG_THRESHOLD = 5;
@@ -2679,7 +2680,12 @@ function measureBlockAtWidth(el, width) {
   const prevHeight = el.style.height;
   el.style.width = `${width}px`;
   el.style.height = 'auto';
-  const measuredWidth = parseFloat(getComputedStyle(el).width) || el.offsetWidth || width;
+  const measuredWidth = Math.max(
+    parseFloat(getComputedStyle(el).width) || 0,
+    el.offsetWidth || 0,
+    getNaturalBlockWidth(el),
+    width,
+  );
   const measuredHeight = el.offsetHeight || 0;
   el.style.width = prevWidth;
   el.style.height = prevHeight;
@@ -2687,6 +2693,30 @@ function measureBlockAtWidth(el, width) {
     width: Math.max(BLOCK_MIN_W, Math.round(measuredWidth)),
     height: Math.max(BLOCK_MIN_H, Math.round(measuredHeight)),
   };
+}
+
+function getNaturalBlockWidth(el) {
+  const tableWraps = Array.from(el.querySelectorAll('.markdown-table-wrap'));
+  if (!tableWraps.length) return el.scrollWidth || 0;
+
+  const style = getComputedStyle(el);
+  const horizontalChrome =
+    (parseFloat(style.paddingLeft) || 0) +
+    (parseFloat(style.paddingRight) || 0) +
+    (parseFloat(style.borderLeftWidth) || 0) +
+    (parseFloat(style.borderRightWidth) || 0);
+
+  const contentWidth = tableWraps.reduce((maxWidth, tableWrap) => {
+    const table = tableWrap.querySelector('.markdown-table');
+    const tableWidth = Math.max(
+      tableWrap.scrollWidth || 0,
+      table?.scrollWidth || 0,
+      table?.offsetWidth || 0,
+    );
+    return Math.max(maxWidth, tableWidth);
+  }, 0);
+
+  return Math.min(TABLE_BLOCK_MAX_WIDTH, Math.ceil(contentWidth + horizontalChrome));
 }
 
 function getAutoLayoutSize(el, block, measuredWidth, measuredHeight) {
@@ -2731,7 +2761,8 @@ export function syncBlockSizes(options = {}) {
     if (!el) continue;
 
     const computedWidth = parseFloat(getComputedStyle(el).width) || 0;
-    const measuredWidth = computedWidth || el.offsetWidth || 0;
+    const naturalWidth = getNaturalBlockWidth(el);
+    const measuredWidth = Math.max(computedWidth, el.offsetWidth || 0, naturalWidth);
     const measuredHeight = el.offsetHeight || 0;
 
     if (!isPositionLocked(block)) {

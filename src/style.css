@@ -1008,6 +1008,8 @@ html, body {
 .chat-panel {
   position: relative;  /* 作为剪刀模式按钮的定位容器 */
   width: var(--chat-width);
+  min-width: 300px;
+  max-width: min(900px, calc(100vw - 260px));
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
@@ -1017,9 +1019,46 @@ html, body {
   overflow: hidden;
 }
 .chat-panel.collapsed {
+  min-width: 0;
   width: 0;
   opacity: 0;
   border-left: none;
+}
+
+.chat-panel.resizing {
+  transition: none;
+}
+
+.chat-resize-handle {
+  position: absolute;
+  left: -5px;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 20;
+  touch-action: none;
+}
+
+.chat-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background var(--duration-fast);
+}
+
+.chat-resize-handle:hover::after,
+.chat-panel.resizing .chat-resize-handle::after {
+  background: #000;
+}
+
+body.chat-resizing {
+  cursor: ew-resize;
+  user-select: none;
 }
 
 .chat-panel-header {
@@ -1147,6 +1186,10 @@ html, body {
   line-height: 1.55;
   word-break: break-word;
 }
+
+.chat-msg-bubble:has(.markdown-table) {
+  max-width: 100%;
+}
 .chat-msg.user .chat-msg-bubble {
   background: var(--grad-brand);
   border: 2px solid #000;
@@ -1194,6 +1237,9 @@ html, body {
   text-align: left;
   vertical-align: top;
   white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  max-width: 280px;
 }
 
 .markdown-table th {
@@ -1208,6 +1254,7 @@ html, body {
 .mm-content .markdown-table th,
 .mm-content .markdown-table td {
   padding: 4px 6px;
+  max-width: 220px;
 }
 
 /* Operation badge */
@@ -1718,11 +1765,14 @@ select.cfg-input {
 
   .chat-panel {
     width: 100%;
+    min-width: 0;
+    max-width: none;
     height: 45%;
     border-left: none;
     border-top: 2px solid #000;
   }
   .chat-panel.collapsed { height: 0; }
+  .chat-resize-handle { display: none; }
 
   /* 聊天面板横板时隐藏灯泡图标 */
   .chat-welcome-icon { display: none; }

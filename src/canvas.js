@@ -37,6 +37,25 @@ const NODE_COLORS = [
   { name: '橙色',   value: '#FF9100' },
 ];
 
+function getSharedExplicitBlockColor(blockIds) {
+  if (!Array.isArray(blockIds) || blockIds.length === 0) return null;
+
+  const selectedBlocks = blockIds
+    .map(id => appState.canvas.blocks.find(block => block.id === id))
+    .filter(Boolean);
+  if (selectedBlocks.length !== blockIds.length) return null;
+
+  const firstColor = selectedBlocks[0].color;
+  if (!firstColor) return null;
+
+  const normalizedColor = String(firstColor).trim().toLowerCase();
+  const hasSameColor = selectedBlocks.every(block =>
+    block.color && String(block.color).trim().toLowerCase() === normalizedColor
+  );
+
+  return hasSameColor ? firstColor : null;
+}
+
 /** DOM 引用 */
 let $view, $transform, $blockCanvas, $linkLayer, $zoomLabel, $nodeToolbar, $ctxMenu, $linkScissorsModeBtn, $scissorsLayer;
 
@@ -432,7 +451,7 @@ async function handleCreateGroupFromMenu() {
     { name: '橙色', value: '#FF9100' },
   ];
   const colorIndex = appState.canvas.groups.length % GROUP_COLORS_LOCAL.length;
-  const color = GROUP_COLORS_LOCAL[colorIndex].value;
+  const color = getSharedExplicitBlockColor(selectedIds) || GROUP_COLORS_LOCAL[colorIndex].value;
 
   // 先创建组（默认名称）
   const group = createGroup(selectedIds, color);
@@ -3143,6 +3162,9 @@ function showGroupColorPicker(groupId, anchorEl) {
       e.stopPropagation();
       const color = option.dataset.color === '' ? null : option.dataset.color;
       group.color = color;
+      pushHistory();
+      renderBlocks();
+      renderGroupList();
       updateGroupSelector();
       saveCurrentCanvas();
       picker.remove();

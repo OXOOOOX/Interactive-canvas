@@ -17,6 +17,7 @@ const BLOCK_MIN_H = 60;
 const AUTO_LAYOUT_TARGET_RATIO = 1.5;
 const AUTO_LAYOUT_RATIO_TOLERANCE = 0.2;
 const AUTO_LAYOUT_MAX_WIDTH = 640;
+const TABLE_BLOCK_MAX_WIDTH = 960;
 const AUTO_LAYOUT_WIDTH_STEP = 24;
 const AUTO_LAYOUT_MIN_HEIGHT_GAIN = 24;
 const DRAG_THRESHOLD = 5;
@@ -36,6 +37,25 @@ const NODE_COLORS = [
   { name: '紫色',   value: '#D500F9' },
   { name: '橙色',   value: '#FF9100' },
 ];
+
+function getSharedExplicitBlockColor(blockIds) {
+  if (!Array.isArray(blockIds) || blockIds.length === 0) return null;
+
+  const selectedBlocks = blockIds
+    .map(id => appState.canvas.blocks.find(block => block.id === id))
+    .filter(Boolean);
+  if (selectedBlocks.length !== blockIds.length) return null;
+
+  const firstColor = selectedBlocks[0].color;
+  if (!firstColor) return null;
+
+  const normalizedColor = String(firstColor).trim().toLowerCase();
+  const hasSameColor = selectedBlocks.every(block =>
+    block.color && String(block.color).trim().toLowerCase() === normalizedColor
+  );
+
+  return hasSameColor ? firstColor : null;
+}
 
 /** DOM 引用 */
 let $view, $transform, $blockCanvas, $linkLayer, $zoomLabel, $nodeToolbar, $ctxMenu, $linkScissorsModeBtn, $scissorsLayer;
@@ -432,7 +452,7 @@ async function handleCreateGroupFromMenu() {
     { name: '橙色', value: '#FF9100' },
   ];
   const colorIndex = appState.canvas.groups.length % GROUP_COLORS_LOCAL.length;
-  const color = GROUP_COLORS_LOCAL[colorIndex].value;
+  const color = getSharedExplicitBlockColor(selectedIds) || GROUP_COLORS_LOCAL[colorIndex].value;
 
   // 先创建组（默认名称）
   const group = createGroup(selectedIds, color);
@@ -2679,7 +2699,12 @@ function measureBlockAtWidth(el, width) {
   const prevHeight = el.style.height;
   el.style.width = `${width}px`;
   el.style.height = 'auto';
-  const measuredWidth = parseFloat(getComputedStyle(el).width) || el.offsetWidth || width;
+  const measuredWidth = Math.max(
+    parseFloat(getComputedStyle(el).width) || 0,
+    el.offsetWidth || 0,
+    getNaturalBlockWidth(el),
+    width,
+  );
   const measuredHeight = el.offsetHeight || 0;
   el.style.width = prevWidth;
   el.style.height = prevHeight;
@@ -2687,6 +2712,30 @@ function measureBlockAtWidth(el, width) {
     width: Math.max(BLOCK_MIN_W, Math.round(measuredWidth)),
     height: Math.max(BLOCK_MIN_H, Math.round(measuredHeight)),
   };
+}
+
+function getNaturalBlockWidth(el) {
+  const tableWraps = Array.from(el.querySelectorAll('.markdown-table-wrap'));
+  if (!tableWraps.length) return el.scrollWidth || 0;
+
+  const style = getComputedStyle(el);
+  const horizontalChrome =
+    (parseFloat(style.paddingLeft) || 0) +
+    (parseFloat(style.paddingRight) || 0) +
+    (parseFloat(style.borderLeftWidth) || 0) +
+    (parseFloat(style.borderRightWidth) || 0);
+
+  const contentWidth = tableWraps.reduce((maxWidth, tableWrap) => {
+    const table = tableWrap.querySelector('.markdown-table');
+    const tableWidth = Math.max(
+      tableWrap.scrollWidth || 0,
+      table?.scrollWidth || 0,
+      table?.offsetWidth || 0,
+    );
+    return Math.max(maxWidth, tableWidth);
+  }, 0);
+
+  return Math.min(TABLE_BLOCK_MAX_WIDTH, Math.ceil(contentWidth + horizontalChrome));
 }
 
 function getAutoLayoutSize(el, block, measuredWidth, measuredHeight) {
@@ -2731,7 +2780,8 @@ export function syncBlockSizes(options = {}) {
     if (!el) continue;
 
     const computedWidth = parseFloat(getComputedStyle(el).width) || 0;
-    const measuredWidth = computedWidth || el.offsetWidth || 0;
+    const naturalWidth = getNaturalBlockWidth(el);
+    const measuredWidth = Math.max(computedWidth, el.offsetWidth || 0, naturalWidth);
     const measuredHeight = el.offsetHeight || 0;
 
     if (!isPositionLocked(block)) {
@@ -3143,6 +3193,9 @@ function showGroupColorPicker(groupId, anchorEl) {
       e.stopPropagation();
       const color = option.dataset.color === '' ? null : option.dataset.color;
       group.color = color;
+      pushHistory();
+      renderBlocks();
+      renderGroupList();
       updateGroupSelector();
       saveCurrentCanvas();
       picker.remove();

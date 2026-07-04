@@ -42,6 +42,71 @@ docker run --rm -p 8080:8080 interactive-canvas
 # 浏览器打开 Browser to http://localhost:8080
 ```
 
+## Zeabur 部署 / Zeabur Deployment
+
+生产部署不要把任何 API Key 提交到 GitHub。仓库里只保留 `.env.example` 作为变量名参考，真实 Key 在 Zeabur 控制台配置。
+
+推荐使用仓库内 `Dockerfile` 部署。当前镜像会先执行 `npm run build`，再用 `node server/index.js` 托管静态页面和 `/api/chat/stream` 服务端代理。
+
+部署步骤：
+
+1. 将代码推送到 GitHub。
+2. 在 Zeabur 中 `Add Service -> GitHub`，选择这个仓库。
+3. 使用 Dockerfile 部署；如果改用 Node preset，请把 Build Command 设为 `npm run build`，Start Command 设为 `npm run serve`。
+4. 在 Zeabur Service 的 `Variables` tab 添加服务端环境变量。不要创建或上传包含真实 Key 的 `.env` 文件。
+5. 部署完成后绑定域名并启用 HTTPS。
+
+建议的 Zeabur Variables：
+
+```env
+NODE_ENV=production
+
+# LLM free-trial fallback. User-provided keys in Settings take priority.
+LLM_PROVIDER=deepseekV4Pro
+LLM_ENDPOINT=https://api.deepseek.com/chat/completions
+LLM_MODEL=deepseek-v4-pro
+LLM_API_KEY=your-server-side-llm-key
+FREE_LLM_QUOTA_LIMIT=5
+FREE_LLM_QUOTA_WINDOW_MS=86400000
+FREE_LLM_MAX_OUTPUT_TOKENS=2000
+
+# Server fallback search key. Users can still enter their own key in Settings.
+SEARCH_PROVIDER=tavily
+SEARCH_API_KEY=your-server-side-tavily-key
+SEARCH_MAX_RESULTS=5
+
+# Free fallback quota for users without their own Search API Key.
+# Example: each client IP can use server search 30 times per hour.
+SEARCH_FREE_QUOTA_LIMIT=30
+SEARCH_FREE_QUOTA_WINDOW_MS=3600000
+
+# Only enable this when a reverse proxy can inject x-api-auth-key.
+REQUIRE_API_AUTH_KEY=0
+API_AUTH_KEY=replace-with-a-long-random-secret-if-needed
+```
+
+关于搜索 Key：
+
+- 如果用户没有填写自己的搜索 Key，服务端会使用 `SEARCH_PROVIDER + SEARCH_API_KEY` 作为兜底，并按 `SEARCH_FREE_QUOTA_*` 限额。
+- 如果用户在设置里填写了自己的 Tavily / Serper / Bing Key，则优先使用用户自己的 Key，不消耗服务器免费额度。
+- 两三个内测用户通常可以把 `SEARCH_FREE_QUOTA_LIMIT` 设得宽松一些，例如每 IP 每小时 30 次；最终上限仍取决于搜索平台账号本身的免费额度。
+
+关于 LLM Key：
+
+- 如果用户在设置里填写了自己的 LLM Key，优先使用用户自己的 Key，不消耗服务器免费体验额度。
+- 如果用户没有填写 LLM Key，服务端会使用 `LLM_API_KEY` 作为免费试用兜底，并按 `FREE_LLM_QUOTA_*` 限额。
+- 推荐初始免费额度是每 IP 每天 5 轮主聊天，每轮服务器兜底输出最多 2000 tokens。后台白板整理和智能记忆会跟随这 5 轮体验，但主聊天额度用完后不会继续触发后台 Agent。
+
+关于 `API_AUTH_KEY`：
+
+- Zeabur 直连公网时不要开启 `REQUIRE_API_AUTH_KEY=1`，因为浏览器不能安全持有服务器总密钥。
+- 如果前面接了 Cloudflare Worker、Nginx、Caddy 或业务网关，并且网关能给后端注入 `x-api-auth-key`，再设置 `REQUIRE_API_AUTH_KEY=1`。
+
+参考文档：
+
+- [Zeabur Environment Variables](https://zeabur.com/docs/en-US/deploy/config/environment-variables)
+- [Zeabur Best Practices](https://zeabur.com/docs/en-US/get-started/best-practices)
+
 ## 页面能力 / Features
 
 1. **配置区 / Configuration**

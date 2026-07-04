@@ -3,12 +3,15 @@
  */
 
 import { appState, pushHistory, saveCanvas } from './state.js';
-import { callChatLlmStream, callCanvasLlm, callSuggestLlm } from './services/llm.js';
+import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callSuggestLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
 import { renderBlocks, syncBlockSizes } from './canvas.js';
 
-let $messages, $input, $sendBtn;
+const DRAFT_STORAGE_KEY = 'canvas-studio-markdown-draft-v1';
+const DRAFT_AUTO_APPEND_KEY = 'canvas-studio-draft-auto-append-v1';
+
+let $messages, $input, $sendBtn, $draftPanel, $draftToggle, $markdownDraft, $draftAutoAppend;
 let getConfig = () => ({});
 
 /** 初始化聊天面板 */
@@ -16,7 +19,13 @@ export function initChat(configGetter) {
   $messages = document.getElementById('chatMessages');
   $input = document.getElementById('chatInput');
   $sendBtn = document.getElementById('sendBtn');
+  $draftPanel = document.getElementById('draftPanel');
+  $draftToggle = document.getElementById('draftToggle');
+  $markdownDraft = document.getElementById('markdownDraft');
+  $draftAutoAppend = document.getElementById('draftAutoAppend');
   getConfig = configGetter;
+
+  initDraftPanel();
 
   $sendBtn.addEventListener('click', () => sendMessage());
 
@@ -50,6 +59,57 @@ export function initChat(configGetter) {
   });
 }
 
+function initDraftPanel() {
+  if (!$markdownDraft) return;
+
+  $markdownDraft.value = localStorage.getItem(DRAFT_STORAGE_KEY) || '';
+  if ($draftAutoAppend) {
+    $draftAutoAppend.checked = localStorage.getItem(DRAFT_AUTO_APPEND_KEY) !== '0';
+    $draftAutoAppend.addEventListener('change', () => {
+      localStorage.setItem(DRAFT_AUTO_APPEND_KEY, $draftAutoAppend.checked ? '1' : '0');
+    });
+  }
+
+  $markdownDraft.addEventListener('input', () => {
+    localStorage.setItem(DRAFT_STORAGE_KEY, $markdownDraft.value);
+  });
+
+  $draftToggle?.addEventListener('click', () => {
+    const nextOpen = !$draftPanel?.classList.contains('open');
+    setDraftPanelOpen(nextOpen);
+  });
+
+  document.getElementById('draftCopyBtn')?.addEventListener('click', async () => {
+    const text = getMarkdownDraft();
+    if (!text) return;
+    await navigator.clipboard?.writeText(text);
+  });
+
+  document.getElementById('draftClearBtn')?.addEventListener('click', () => {
+    $markdownDraft.value = '';
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  });
+}
+
+function setDraftPanelOpen(open) {
+  if (!$draftPanel || !$draftToggle) return;
+  $draftPanel.classList.toggle('open', open);
+  $draftPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
+  $draftToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function getMarkdownDraft() {
+  return ($markdownDraft?.value || '').trim();
+}
+
+async function updateDraftMemory(config, userText, assistantText) {
+  if (!$markdownDraft || !$draftAutoAppend?.checked) return;
+  const updated = (await callDraftMemoryLlm(config, getMarkdownDraft(), userText, assistantText, appState.canvas)).trim();
+  if (!updated) return;
+  $markdownDraft.value = updated;
+  localStorage.setItem(DRAFT_STORAGE_KEY, updated);
+}
+
 /** 发送用户消息并处理 AI 响应 */
 async function sendMessage(explicitText = null) {
   const text = (typeof explicitText === 'string' ? explicitText : $input.value).trim();
@@ -72,8 +132,7 @@ async function sendMessage(explicitText = null) {
   let assistantMessage = null;
 
   try {
-    const config = getConfig();
-    const canvasPromise = callCanvasLlm(config, appState.conversation, appState.canvas);
+    const config = { ...getConfig(), markdownDraft: getMarkdownDraft() };
     let hasStreamText = false;
 
     const ensureAssistantMessage = () => {
@@ -102,8 +161,11 @@ async function sendMessage(explicitText = null) {
 
     appState.lastAssistantReply = chatReply;
     appState.conversation.push({ role: 'assistant', content: chatReply });
+    const draftPromise = updateDraftMemory(config, text, chatReply).catch((error) => {
+      console.warn('Draft memory update failed:', error);
+    });
 
-    const canvasRaw = await canvasPromise;
+    const canvasRaw = await callCanvasLlm(config, appState.conversation, appState.canvas);
     const parsed = parseAiResponse(canvasRaw);
     const parsedReply = parsed.reply || '';
 
@@ -158,6 +220,7 @@ async function sendMessage(explicitText = null) {
       message.setSummary([]);
     }
 
+    await draftPromise;
     document.dispatchEvent(new CustomEvent('boardChanged'));
     generateSuggestions();
     return appState.lastAssistantReply;

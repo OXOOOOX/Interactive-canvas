@@ -73,8 +73,12 @@ const dom = {
 
   // Chat panel
   chatPanel: $('chatPanel'),
+  chatResizeHandle: $('chatResizeHandle'),
   chatToggleBtn: $('chatToggleBtn'),
   chatExpandBtn: $('chatExpandBtn'),
+  searchMode: $('searchMode'),
+  preferBuiltinSearch: $('preferBuiltinSearch'),
+  tongyiSearchControl: $('tongyiSearchControl'),
 
   // Settings modal
   settingsOverlay: $('settingsOverlay'),
@@ -87,6 +91,8 @@ const dom = {
   ttsEndpoint: $('ttsEndpoint'),
   llmApiKey: $('llmApiKey'),
   doubaoApiKey: $('doubaoApiKey'),
+  searchProvider: $('searchProvider'),
+  searchApiKey: $('searchApiKey'),
   testDoubaoAsrBtn: $('testDoubaoAsrBtn'),
   appId: $('appId'),
   accessToken: $('accessToken'),
@@ -95,8 +101,11 @@ const dom = {
   saveConfig: $('saveConfig'),
   loadConfig: $('loadConfig'),
   llmModel: $('llmModel'),
+  llmKeyNotice: $('llmKeyNotice'),
   modelDropdown: $('modelDropdown'),
   fetchModelsBtn: $('fetchModelsBtn'),
+  openLlmKeyPageBtn: $('openLlmKeyPageBtn'),
+  openSearchKeyPageBtn: $('openSearchKeyPageBtn'),
 
   // OAuth
   oauthProvider: $('oauthProvider'),
@@ -150,10 +159,14 @@ function getConfig() {
     llmApiKey: dom.llmApiKey.value,
     llmApiKeys: getStoredLlmApiKeys(),
     doubaoApiKey: dom.doubaoApiKey.value,
+    searchProvider: dom.searchProvider?.value || 'tavily',
+    searchApiKey: dom.searchApiKey?.value || '',
     appId: dom.appId.value,
     accessToken: dom.accessToken.value,
     secretKey: dom.secretKey.value,
     proxyUrl: dom.proxyUrl?.value || '',
+    searchMode: getSearchModeValue(),
+    preferBuiltinSearch: Boolean(dom.preferBuiltinSearch?.checked),
     oauthProvider: dom.oauthProvider.value,
     oauthClientId: dom.oauthClientId.value,
     oauthAuthUrl: dom.oauthAuthUrl.value,
@@ -172,6 +185,9 @@ function applyConfigDefaults(config = {}) {
     doubaoResourceId: 'volc.seedasr.sauc.duration',
     ttsModel: ENDPOINT_PRESETS.doubao?.ttsModel || '',
     realtimeVoiceModel: ENDPOINT_PRESETS.doubao?.realtimeVoiceModel || '',
+    searchMode: 'auto',
+    preferBuiltinSearch: false,
+    searchProvider: 'tavily',
     ...config,
   };
 }
@@ -219,7 +235,66 @@ function handleLlmProviderChange() {
   rememberCurrentLlmKey(lastLlmProvider);
   applyProviderPreset(false);
   loadLlmProviderKey(dom.llmProvider.value);
+  updateTongyiSearchVisibility();
   apiKeyMissingPromptShown = false;
+}
+
+function getSearchModeValue() {
+  return dom.searchMode?.dataset?.value || dom.searchMode?.value || 'auto';
+}
+
+function setSearchModeValue(value = 'auto') {
+  if (!dom.searchMode) return;
+  const normalized = value === 'off' ? 'off' : 'auto';
+  dom.searchMode.dataset.value = normalized;
+  dom.searchMode.textContent = normalized === 'off' ? '关' : '开';
+  dom.searchMode.classList.toggle('active', normalized !== 'off');
+  dom.searchMode.setAttribute('aria-pressed', normalized !== 'off' ? 'true' : 'false');
+}
+
+function toggleSearchMode() {
+  setSearchModeValue(getSearchModeValue() === 'off' ? 'auto' : 'off');
+}
+
+function updateTongyiSearchVisibility() {
+  if (!dom.tongyiSearchControl) return;
+  const visible = dom.llmProvider?.value === 'tongyi';
+  dom.tongyiSearchControl.classList.toggle('visible', visible);
+  dom.tongyiSearchControl.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
+const LLM_KEY_URLS = {
+  tongyi: 'https://bailian.console.aliyun.com/?apiKey=1',
+  doubao: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
+  deepseekV4Pro: 'https://platform.deepseek.com/api_keys',
+  deepseekV4Flash: 'https://platform.deepseek.com/api_keys',
+  custom: 'https://platform.openai.com/api-keys',
+};
+
+const SEARCH_KEY_URLS = {
+  tavily: 'https://app.tavily.com/home',
+  serper: 'https://serper.dev/',
+  bing: 'https://portal.azure.com/#create/Microsoft.BingSearch',
+};
+
+function openExternalKeyPage(url) {
+  if (!url) return;
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function openCurrentLlmKeyPage() {
+  openExternalKeyPage(LLM_KEY_URLS[dom.llmProvider?.value] || LLM_KEY_URLS.custom);
+}
+
+function openCurrentSearchKeyPage() {
+  openExternalKeyPage(SEARCH_KEY_URLS[dom.searchProvider?.value] || SEARCH_KEY_URLS.tavily);
 }
 
 function hasDoubaoAsrCredentials(config = getConfig()) {
@@ -683,6 +758,57 @@ function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false,
 }
 
 // ── Reusable node actions ──
+function initChatPanelResize() {
+  if (!dom.chatPanel || !dom.chatResizeHandle) return;
+
+  const storageKey = 'canvas-studio-chat-width-v1';
+  const minWidth = 300;
+  const maxWidth = () => Math.max(minWidth, Math.min(900, window.innerWidth - 260));
+  const clampWidth = width => Math.max(minWidth, Math.min(maxWidth(), Math.round(width)));
+  const storedWidth = Number(localStorage.getItem(storageKey));
+
+  if (Number.isFinite(storedWidth) && storedWidth > 0) {
+    document.documentElement.style.setProperty('--chat-width', `${clampWidth(storedWidth)}px`);
+  }
+
+  dom.chatResizeHandle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || dom.chatPanel.classList.contains('collapsed')) return;
+    e.preventDefault();
+
+    const startX = e.clientX;
+    const startWidth = dom.chatPanel.getBoundingClientRect().width;
+
+    dom.chatPanel.classList.add('resizing');
+    document.body.classList.add('chat-resizing');
+    dom.chatResizeHandle.setPointerCapture?.(e.pointerId);
+
+    const handlePointerMove = (moveEvent) => {
+      const nextWidth = clampWidth(startWidth + startX - moveEvent.clientX);
+      document.documentElement.style.setProperty('--chat-width', `${nextWidth}px`);
+      localStorage.setItem(storageKey, String(nextWidth));
+    };
+
+    const handlePointerUp = (upEvent) => {
+      dom.chatPanel.classList.remove('resizing');
+      document.body.classList.remove('chat-resizing');
+      dom.chatResizeHandle.releasePointerCapture?.(upEvent.pointerId);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
+  });
+
+  window.addEventListener('resize', () => {
+    const currentWidth = dom.chatPanel.getBoundingClientRect().width;
+    if (currentWidth <= 0) return;
+    document.documentElement.style.setProperty('--chat-width', `${clampWidth(currentWidth)}px`);
+  });
+}
+
 function handleAddChild() {
   if (!appState.selectedBlockId) return;
   const parent = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -1475,9 +1601,18 @@ function setTtsProviderModels(provider, preserveExisting = false) {
 function setConfig(config) {
   const finalConfig = applyConfigDefaults(config);
   for (const [key, value] of Object.entries(finalConfig)) {
+    if (key === 'searchMode') {
+      setSearchModeValue(value);
+      continue;
+    }
+    if (key === 'preferBuiltinSearch') {
+      if (dom.preferBuiltinSearch) dom.preferBuiltinSearch.checked = Boolean(value);
+      continue;
+    }
     if (dom[key] && typeof value === 'string') dom[key].value = value;
   }
   applyLlmKeyConfig(finalConfig);
+  updateTongyiSearchVisibility();
   syncVoiceModeFallback();
 }
 
@@ -2384,6 +2519,8 @@ function bindEvents() {
   }
 
   // ── Chat panel toggle ──
+  initChatPanelResize();
+
   dom.chatToggleBtn.addEventListener('click', () => {
     dom.chatPanel.classList.add('collapsed');
     dom.chatExpandBtn.classList.add('visible');
@@ -2412,9 +2549,13 @@ function bindEvents() {
 
   // Provider presets
   dom.llmProvider.addEventListener('change', handleLlmProviderChange);
+  dom.openLlmKeyPageBtn?.addEventListener('click', openCurrentLlmKeyPage);
+  dom.openSearchKeyPageBtn?.addEventListener('click', openCurrentSearchKeyPage);
+  dom.searchMode?.addEventListener('click', toggleSearchMode);
   dom.llmApiKey.addEventListener('input', () => {
     rememberCurrentLlmKey();
     if (dom.llmApiKey.value.trim()) apiKeyMissingPromptShown = false;
+    if (dom.llmApiKey.value.trim() && dom.llmKeyNotice) dom.llmKeyNotice.hidden = true;
   });
   dom.sttProvider.addEventListener('change', () => {
     applyProviderPreset(false);
@@ -2583,10 +2724,20 @@ function bindEvents() {
   window.addEventListener('api:key-missing', (e) => {
     if (apiKeyMissingPromptShown) return;
     apiKeyMissingPromptShown = true;
+    const detail = e.detail || {};
+    const rawMessage = String(detail.message || '');
+    const isQuota = detail.status === 429 || rawMessage.toLowerCase().includes('quota');
+    const noticeText = isQuota
+      ? '免费试用额度已用完。你可以填写自己的 LLM API Key 继续使用，或者稍后再试。'
+      : '当前没有可用的模型 Key。可以先使用服务器免费试用；如果服务端未配置或你想长期使用，请填写自己的 LLM API Key。';
 
     // 打开设置面板
     dom.settingsOverlay.classList.add('open');
     dom.settingsOverlay.setAttribute('aria-hidden', 'false');
+    if (dom.llmKeyNotice) {
+      dom.llmKeyNotice.textContent = noticeText;
+      dom.llmKeyNotice.hidden = false;
+    }
 
     // 给设置按钮添加闪动动画
     dom.settingsBtn.classList.add('api-key-alert');

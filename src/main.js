@@ -95,6 +95,7 @@ const dom = {
   saveConfig: $('saveConfig'),
   loadConfig: $('loadConfig'),
   llmModel: $('llmModel'),
+  modelDropdown: $('modelDropdown'),
   fetchModelsBtn: $('fetchModelsBtn'),
 
   // OAuth
@@ -124,6 +125,11 @@ const dom = {
 };
 
 // ── Config Helper ──
+let llmApiKeys = {};
+let lastLlmProvider = 'tongyi';
+let modelOptions = [];
+let apiKeyMissingPromptShown = false;
+
 function getConfig() {
   return {
     llmProvider: dom.llmProvider.value,
@@ -142,6 +148,7 @@ function getConfig() {
     ttsVoice: dom.ttsVoice.value,
     realtimeVoiceModel: dom.realtimeVoiceModel.value,
     llmApiKey: dom.llmApiKey.value,
+    llmApiKeys: getStoredLlmApiKeys(),
     doubaoApiKey: dom.doubaoApiKey.value,
     appId: dom.appId.value,
     accessToken: dom.accessToken.value,
@@ -167,6 +174,52 @@ function applyConfigDefaults(config = {}) {
     realtimeVoiceModel: ENDPOINT_PRESETS.doubao?.realtimeVoiceModel || '',
     ...config,
   };
+}
+
+function normalizeLlmApiKeys(value) {
+  if (!value || typeof value !== 'object') return {};
+
+  return Object.fromEntries(Object.entries(value).map(([provider, key]) => {
+    if (typeof key === 'string') return [provider, key];
+    if (key && typeof key === 'object' && typeof key.slot1 === 'string') return [provider, key.slot1];
+    return [provider, ''];
+  }));
+}
+
+function getStoredLlmApiKeys() {
+  return JSON.parse(JSON.stringify(llmApiKeys));
+}
+
+function rememberCurrentLlmKey(provider = dom.llmProvider?.value) {
+  if (!provider || !dom.llmApiKey) return;
+
+  llmApiKeys[provider] = dom.llmApiKey.value;
+}
+
+function loadLlmProviderKey(provider = dom.llmProvider?.value) {
+  if (!dom.llmApiKey || !provider) return;
+
+  dom.llmApiKey.value = llmApiKeys[provider] || '';
+  lastLlmProvider = provider;
+}
+
+function applyLlmKeyConfig(config = {}) {
+  llmApiKeys = normalizeLlmApiKeys(config.llmApiKeys);
+
+  const provider = config.llmProvider || dom.llmProvider?.value || 'tongyi';
+
+  if (config.llmApiKey && !llmApiKeys[provider]) {
+    llmApiKeys[provider] = config.llmApiKey;
+  }
+
+  loadLlmProviderKey(provider);
+}
+
+function handleLlmProviderChange() {
+  rememberCurrentLlmKey(lastLlmProvider);
+  applyProviderPreset(false);
+  loadLlmProviderKey(dom.llmProvider.value);
+  apiKeyMissingPromptShown = false;
 }
 
 function hasDoubaoAsrCredentials(config = getConfig()) {
@@ -415,8 +468,10 @@ function applyLocalConfig() {
 
   if (finalLlmApiKey) {
     dom.llmApiKey.value = finalLlmApiKey;
+    rememberCurrentLlmKey();
   } else if (!dom.llmApiKey.value && typeof finalLlmApiKey === 'string') {
     dom.llmApiKey.value = finalLlmApiKey;
+    rememberCurrentLlmKey();
   }
 
   if (finalDoubaoApiKey) {
@@ -1422,6 +1477,7 @@ function setConfig(config) {
   for (const [key, value] of Object.entries(finalConfig)) {
     if (dom[key] && typeof value === 'string') dom[key].value = value;
   }
+  applyLlmKeyConfig(finalConfig);
   syncVoiceModeFallback();
 }
 
@@ -1481,6 +1537,60 @@ function applyProviderPreset(preserveExistingModels = true) {
   setSttProviderModels(dom.sttProvider.value, preserveExistingModels);
   setTtsProviderModels(dom.ttsProvider.value, preserveExistingModels);
   syncVoiceModeFallback();
+}
+
+function closeModelDropdown() {
+  if (!dom.modelDropdown) return;
+  dom.modelDropdown.classList.remove('open');
+  dom.modelDropdown.setAttribute('aria-hidden', 'true');
+}
+
+function renderModelDropdown(models = modelOptions) {
+  if (!dom.modelDropdown) return;
+
+  dom.modelDropdown.innerHTML = '';
+  if (!models.length) {
+    closeModelDropdown();
+    return;
+  }
+
+  models.forEach((modelId) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'model-option';
+    item.textContent = modelId;
+    item.addEventListener('click', () => {
+      dom.llmModel.value = modelId;
+      closeModelDropdown();
+      dom.llmModel.focus();
+    });
+    dom.modelDropdown.appendChild(item);
+  });
+}
+
+function openModelDropdown() {
+  if (!dom.modelDropdown || !modelOptions.length) return;
+
+  renderModelDropdown();
+  dom.modelDropdown.classList.add('open');
+  dom.modelDropdown.setAttribute('aria-hidden', 'false');
+}
+
+function updateModelOptions(models) {
+  modelOptions = [...new Set(models.filter(Boolean))];
+
+  const datalist = document.getElementById('modelDataList');
+  if (datalist) {
+    datalist.innerHTML = '';
+    modelOptions.forEach((modelId) => {
+      const option = document.createElement('option');
+      option.value = modelId;
+      datalist.appendChild(option);
+    });
+  }
+
+  renderModelDropdown();
+  openModelDropdown();
 }
 
 function applyVoiceModePreset() {
@@ -2301,7 +2411,11 @@ function bindEvents() {
   }
 
   // Provider presets
-  dom.llmProvider.addEventListener('change', () => applyProviderPreset(false));
+  dom.llmProvider.addEventListener('change', handleLlmProviderChange);
+  dom.llmApiKey.addEventListener('input', () => {
+    rememberCurrentLlmKey();
+    if (dom.llmApiKey.value.trim()) apiKeyMissingPromptShown = false;
+  });
   dom.sttProvider.addEventListener('change', () => {
     applyProviderPreset(false);
     syncVoiceFallbackNotice();
@@ -2356,6 +2470,7 @@ function bindEvents() {
 
   // Save / Load config
   dom.saveConfig.addEventListener('click', () => {
+    rememberCurrentLlmKey();
     saveConfig(getConfig());
   });
   dom.loadConfig.addEventListener('click', () => {
@@ -2363,6 +2478,7 @@ function bindEvents() {
     if (cfg) {
       setConfig(cfg);
       applyProviderPreset();
+      loadLlmProviderKey(dom.llmProvider.value);
     }
   });
 
@@ -2391,14 +2507,8 @@ function bindEvents() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         
-        const datalist = document.getElementById('modelDataList');
-        if (datalist && data && data.data) {
-          datalist.innerHTML = '';
-          data.data.forEach(m => {
-            const option = document.createElement('option');
-            option.value = m.id;
-            datalist.appendChild(option);
-          });
+        if (data && Array.isArray(data.data)) {
+          updateModelOptions(data.data.map(m => m.id));
           alert(`成功获取 ${data.data.length} 个模型！请在左侧输入框下拉选择`);
         } else {
           throw new Error('返回格式不包含 data 字段');
@@ -2413,6 +2523,24 @@ function bindEvents() {
   }
 
   // ── Import ──
+  if (dom.llmModel) {
+    dom.llmModel.addEventListener('focus', openModelDropdown);
+    dom.llmModel.addEventListener('click', openModelDropdown);
+    dom.llmModel.addEventListener('input', () => {
+      const query = dom.llmModel.value.trim().toLowerCase();
+      const filtered = query
+        ? modelOptions.filter(modelId => modelId.toLowerCase().includes(query))
+        : modelOptions;
+      renderModelDropdown(filtered);
+      if (filtered.length) openModelDropdown();
+    });
+  }
+  document.addEventListener('click', (event) => {
+    if (!dom.modelDropdown?.contains(event.target) && event.target !== dom.llmModel && event.target !== dom.fetchModelsBtn) {
+      closeModelDropdown();
+    }
+  });
+
   dom.importJson.addEventListener('click', () => {
     showImportMenu();
   });
@@ -2453,6 +2581,9 @@ function bindEvents() {
 
   // ── API Key Missing Alert ──
   window.addEventListener('api:key-missing', (e) => {
+    if (apiKeyMissingPromptShown) return;
+    apiKeyMissingPromptShown = true;
+
     // 打开设置面板
     dom.settingsOverlay.classList.add('open');
     dom.settingsOverlay.setAttribute('aria-hidden', 'false');

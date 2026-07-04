@@ -260,9 +260,10 @@
                 <input id="llmEndpoint" type="url" class="cfg-input" placeholder="https://..." />
               </label>
               <label class="cfg-label full">模型 (Model)
-                <div style="display:flex; gap:8px;">
+                <div class="model-picker">
                   <input id="llmModel" type="text" list="modelDataList" class="cfg-input" style="flex:1" placeholder="例如: qwen-max-latest" />
                   <datalist id="modelDataList"></datalist>
+                  <div id="modelDropdown" class="model-dropdown" aria-hidden="true"></div>
                   <button type="button" class="btn btn-ghost btn-sm" id="fetchModelsBtn">获取列表</button>
                 </div>
               </label>
@@ -332,6 +333,7 @@
             <div class="cfg-grid">
               <label class="cfg-label full">LLM API Key
                 <input id="llmApiKey" type="password" class="cfg-input" placeholder="LLM API Key" />
+                <span class="cfg-hint">不同大模型供应商的 Key 会分开保存，切换供应商时会自动恢复对应 Key。</span>
               </label>
               <label class="cfg-label full">豆包 API Key
                 <div style="display:flex;gap:8px;align-items:center">

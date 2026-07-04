@@ -8,6 +8,7 @@ import {
   extractAssistantText,
   extractJson,
   parseAiResponse,
+  renderMarkdown,
 } from '../src/utils/parser.js';
 
 test('extractJson parses JSON wrapped in markdown fences', () => {
@@ -56,6 +57,21 @@ test('parseAiResponse normalizes operation responses', () => {
   assert.equal(result.operations[0].block.id, 'child');
   assert.equal(result.operations[0].block.content, '');
   assert.equal(result.operations[0].block.type, 'text');
+});
+
+test('renderMarkdown renders pipe tables with escaped cell content', () => {
+  const html = renderMarkdown([
+    '| 项目 | Pocket 4 | Pocket 4 Pro |',
+    '|------|-----------|---------------|',
+    '| 传感器 | 1英寸堆栈式 BSI CMOS | M43 (4/3英寸) CMOS，双原生ISO |',
+    '| 编码格式 | **H.265** | <script>alert(1)</script> |',
+  ].join('\n'));
+
+  assert.match(html, /<table class="markdown-table">/);
+  assert.match(html, /<th>项目<\/th>/);
+  assert.match(html, /<td><strong>H\.265<\/strong><\/td>/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
 });
 
 test('executeOperations adds blocks, connections, updates, and removes safely', () => {

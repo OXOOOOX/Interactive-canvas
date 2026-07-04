@@ -305,8 +305,13 @@ function saveCurrentConfig() {
 
 function useFreeTrialLlm() {
   if (!dom.llmApiKey) return;
-  dom.llmApiKey.value = '';
-  rememberCurrentLlmKey();
+  if (dom.llmApiKey.value.trim()) {
+    if (dom.llmKeyNotice) {
+      dom.llmKeyNotice.textContent = '当前已填写 LLM API Key，系统会优先使用你的 Key，不消耗服务器免费试用额度。';
+      dom.llmKeyNotice.hidden = false;
+    }
+    return;
+  }
   apiKeyMissingPromptShown = false;
   if (dom.llmKeyNotice) {
     dom.llmKeyNotice.textContent = '已切换为服务器免费试用。额度用完后，可以回来填写自己的 LLM API Key。';

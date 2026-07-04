@@ -73,6 +73,7 @@ const dom = {
 
   // Chat panel
   chatPanel: $('chatPanel'),
+  chatResizeHandle: $('chatResizeHandle'),
   chatToggleBtn: $('chatToggleBtn'),
   chatExpandBtn: $('chatExpandBtn'),
 
@@ -683,6 +684,57 @@ function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false,
 }
 
 // ── Reusable node actions ──
+function initChatPanelResize() {
+  if (!dom.chatPanel || !dom.chatResizeHandle) return;
+
+  const storageKey = 'canvas-studio-chat-width-v1';
+  const minWidth = 300;
+  const maxWidth = () => Math.max(minWidth, Math.min(900, window.innerWidth - 260));
+  const clampWidth = width => Math.max(minWidth, Math.min(maxWidth(), Math.round(width)));
+  const storedWidth = Number(localStorage.getItem(storageKey));
+
+  if (Number.isFinite(storedWidth) && storedWidth > 0) {
+    document.documentElement.style.setProperty('--chat-width', `${clampWidth(storedWidth)}px`);
+  }
+
+  dom.chatResizeHandle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || dom.chatPanel.classList.contains('collapsed')) return;
+    e.preventDefault();
+
+    const startX = e.clientX;
+    const startWidth = dom.chatPanel.getBoundingClientRect().width;
+
+    dom.chatPanel.classList.add('resizing');
+    document.body.classList.add('chat-resizing');
+    dom.chatResizeHandle.setPointerCapture?.(e.pointerId);
+
+    const handlePointerMove = (moveEvent) => {
+      const nextWidth = clampWidth(startWidth + startX - moveEvent.clientX);
+      document.documentElement.style.setProperty('--chat-width', `${nextWidth}px`);
+      localStorage.setItem(storageKey, String(nextWidth));
+    };
+
+    const handlePointerUp = (upEvent) => {
+      dom.chatPanel.classList.remove('resizing');
+      document.body.classList.remove('chat-resizing');
+      dom.chatResizeHandle.releasePointerCapture?.(upEvent.pointerId);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
+  });
+
+  window.addEventListener('resize', () => {
+    const currentWidth = dom.chatPanel.getBoundingClientRect().width;
+    if (currentWidth <= 0) return;
+    document.documentElement.style.setProperty('--chat-width', `${clampWidth(currentWidth)}px`);
+  });
+}
+
 function handleAddChild() {
   if (!appState.selectedBlockId) return;
   const parent = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -2384,6 +2436,8 @@ function bindEvents() {
   }
 
   // ── Chat panel toggle ──
+  initChatPanelResize();
+
   dom.chatToggleBtn.addEventListener('click', () => {
     dom.chatPanel.classList.add('collapsed');
     dom.chatExpandBtn.classList.add('visible');

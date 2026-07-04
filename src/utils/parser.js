@@ -50,17 +50,12 @@ export function extractAssistantText(payload) {
  * 将普通文本中的 `**` 转为加粗并安全渲染
  */
 function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-export function renderMarkdown(text) {
-  if (!text) return '';
-  let html = escapeHtml(text);
-  // 加粗
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  return html;
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -307,4 +302,89 @@ export function executeOperations(canvas, operations) {
   }
 
   return result;
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+}
+
+function splitTableRow(line) {
+  const trimmed = line.trim();
+  const body = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed;
+  const normalized = body.endsWith('|') ? body.slice(0, -1) : body;
+  return normalized.split('|').map(cell => cell.trim());
+}
+
+function isTableDivider(line) {
+  const cells = splitTableRow(line);
+  if (cells.length < 2) return false;
+  return cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function isTableHeader(line, dividerLine) {
+  return line?.includes('|') && dividerLine?.includes('|') && isTableDivider(dividerLine);
+}
+
+function renderTable(lines, startIndex) {
+  const header = splitTableRow(lines[startIndex]);
+  const rows = [];
+  let index = startIndex + 2;
+
+  while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+    rows.push(splitTableRow(lines[index]));
+    index += 1;
+  }
+
+  const columnCount = header.length;
+  const normalizeCells = cells => Array.from({ length: columnCount }, (_, cellIndex) => cells[cellIndex] || '');
+  const headHtml = normalizeCells(header)
+    .map(cell => `<th>${renderInlineMarkdown(cell)}</th>`)
+    .join('');
+  const bodyHtml = rows
+    .map(row => `<tr>${normalizeCells(row).map(cell => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`)
+    .join('');
+
+  return {
+    html: `<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`,
+    nextIndex: index,
+  };
+}
+
+export function renderMarkdown(text) {
+  if (!text) return '';
+
+  const lines = String(text).split(/\r?\n/);
+  const blocks = [];
+  let paragraph = [];
+  let index = 0;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(paragraph.map(line => renderInlineMarkdown(line)).join('<br>'));
+    paragraph = [];
+  };
+
+  while (index < lines.length) {
+    if (isTableHeader(lines[index], lines[index + 1])) {
+      flushParagraph();
+      const table = renderTable(lines, index);
+      blocks.push(table.html);
+      index = table.nextIndex;
+      continue;
+    }
+
+    if (!lines[index].trim()) {
+      flushParagraph();
+      blocks.push('');
+      index += 1;
+      continue;
+    }
+
+    paragraph.push(lines[index]);
+    index += 1;
+  }
+
+  flushParagraph();
+
+  return blocks.join('<br>');
 }

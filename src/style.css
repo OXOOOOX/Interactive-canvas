@@ -1170,6 +1170,46 @@ html, body {
   text-align: center;
 }
 
+.markdown-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 6px 0;
+  white-space: normal;
+}
+
+.markdown-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.markdown-table th,
+.markdown-table td {
+  border: 1px solid #000;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.markdown-table th {
+  background: rgba(0, 0, 0, 0.06);
+  font-weight: 800;
+}
+
+.mm-content .markdown-table {
+  font-size: 11px;
+}
+
+.mm-content .markdown-table th,
+.mm-content .markdown-table td {
+  padding: 4px 6px;
+}
+
 /* Operation badge */
 .op-badge {
   display: inline-flex;

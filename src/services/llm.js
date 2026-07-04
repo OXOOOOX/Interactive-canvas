@@ -60,17 +60,43 @@ ${outline}`;
 /**
  * 聊天主力 Agent 的 System Prompt
  */
-function buildChatSystemPrompt(canvasOutline) {
+function getConversationStage(conversation = [], markdownDraft = '') {
+  const userTurns = conversation.filter(message => message.role === 'user').length;
+  if (userTurns <= 1 && !markdownDraft) return 'discovery';
+  if (userTurns <= 3) return 'clarifying';
+  return 'working';
+}
+
+function buildChatSystemPrompt(canvasOutline, markdownDraft = '', conversation = []) {
+  const draftSection = markdownDraft
+    ? `\nCurrent Markdown Draft:\n${markdownDraft}\n`
+    : '';
+  const stage = getConversationStage(conversation, markdownDraft);
   return `You are a highly professional and friendly 'Voice Chat Copilot'.
 The user is brainstorming and exploring ideas with you via voice.
 Please note:
-1. Your responses must be logical and insightful. Use search capabilities to provide deep answers while maintaining a conversational pacing.
+1. Your responses must be logical and insightful, but do not jump into long essays too early.
 2. There is a separate Canvas Agent handling whiteboard drawing, so DO NOT output any layout or drawing JSON commands.
 3. Output pure text responses only.
 4. Respond in the same language as the user.
+5. When a Markdown draft is provided, treat it as the user's editable working draft. Continue from it instead of repeating it wholesale, and suggest precise incremental edits when useful.
+6. Use search capabilities only when the user asks for current facts, market/news/policy/source-backed claims, or when you explicitly propose and the user accepts a research step.
+
+Conversation Stage: ${stage}
+
+Stage behavior:
+- discovery: The user is probably still defining the task. Do NOT produce a comprehensive answer. Ask 2-4 targeted questions or offer 2-3 concrete directions. Keep the reply short.
+- clarifying: Synthesize what you understand, identify missing constraints, and ask the next most important question. If the task would benefit from outside information, say you can do a web collection/deep integration next.
+- working: Provide useful structure and actionable output. For research-heavy tasks, propose or perform an online collection/deep integration when the user's request implies current information is needed.
+
+Default response shape:
+- Prefer concise paragraphs or bullets.
+- Avoid dumping background knowledge unless the user directly asks for a full explanation.
+- End with one clear next step or one focused question when the task is still ambiguous.
 
 Current Whiteboard Outline:
 ${canvasOutline}
+${draftSection}
 
 If the outline is helpful, integrate the current whiteboard state into your response to provide more contextually relevant replies.`;
 }
@@ -79,6 +105,16 @@ function getEndpoint(config) {
   const endpoint = config.proxyUrl || config.llmEndpoint;
   if (!endpoint) throw new Error('未配置 LLM endpoint');
   return endpoint;
+}
+
+function shouldUseServerProxy(config) {
+  if (config.forceDirectLlm) return false;
+  if (config.proxyUrl) return false;
+  return !import.meta.env.DEV;
+}
+
+function getServerProxyEndpoint(config) {
+  return config.agentProxyUrl || `${window.location.origin}/api/chat/stream`;
 }
 
 const DEFAULT_LLM_MODELS = {
@@ -102,7 +138,7 @@ function buildPayload(config, messages, isCanvas = false, stream = false) {
     payload.temperature = 0.2;
   } else {
     payload.temperature = 0.7;
-    if (config.llmProvider === 'tongyi') {
+    if (config.llmProvider === 'tongyi' && config.searchMode !== 'off') {
       payload.enable_search = true;
     }
 
@@ -110,6 +146,27 @@ function buildPayload(config, messages, isCanvas = false, stream = false) {
   }
 
   return payload;
+}
+
+function buildProxyBody(config, messages, isCanvas = false, stream = false) {
+  const lastUserMessage = [...messages].reverse().find(message => message.role === 'user');
+  return {
+    messages,
+    isCanvas,
+    stream,
+    temperature: isCanvas ? 0.2 : 0.7,
+    searchMode: isCanvas ? 'off' : (config.searchMode || 'off'),
+    searchQuery: lastUserMessage?.content || '',
+    config: {
+      llmProvider: config.llmProvider,
+      llmEndpoint: config.llmEndpoint,
+      llmModel: config.llmModel,
+      llmApiKey: config.llmApiKey,
+      preferBuiltinSearch: config.preferBuiltinSearch,
+      searchProvider: config.searchProvider,
+      searchApiKey: config.searchApiKey,
+    },
+  };
 }
 
 function buildHeaders(config) {
@@ -122,7 +179,7 @@ function buildHeaders(config) {
 async function handleErrorResponse(res) {
   const text = await res.text().catch(() => '');
 
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401 || res.status === 403 || res.status === 429) {
     window.dispatchEvent(new CustomEvent('api:key-missing', {
       detail: { status: res.status, message: text.slice(0, 200) }
     }));
@@ -182,6 +239,21 @@ function consumeSseBuffer(buffer, onEvent) {
 }
 
 async function sendRequest(config, messages, isCanvas = false) {
+  if (shouldUseServerProxy(config)) {
+    const res = await fetch(getServerProxyEndpoint(config), {
+      method: 'POST',
+      headers: buildHeaders({}),
+      body: JSON.stringify(buildProxyBody(config, messages, isCanvas, false)),
+    });
+
+    if (!res.ok) {
+      await handleErrorResponse(res);
+    }
+
+    const data = await res.json();
+    return extractAssistantText(data);
+  }
+
   const endpoint = getEndpoint(config);
   const payload = buildPayload(config, messages, isCanvas, false);
 
@@ -200,6 +272,20 @@ async function sendRequest(config, messages, isCanvas = false) {
 }
 
 async function sendStreamingChatRequest(config, messages, onDelta) {
+  if (shouldUseServerProxy(config)) {
+    const res = await fetch(getServerProxyEndpoint(config), {
+      method: 'POST',
+      headers: buildHeaders({}),
+      body: JSON.stringify(buildProxyBody(config, messages, false, true)),
+    });
+
+    if (!res.ok) {
+      await handleErrorResponse(res);
+    }
+
+    return await consumeStreamingResponse(res, onDelta);
+  }
+
   const endpoint = getEndpoint(config);
   const payload = buildPayload(config, messages, false, true);
 
@@ -213,6 +299,10 @@ async function sendStreamingChatRequest(config, messages, onDelta) {
     await handleErrorResponse(res);
   }
 
+  return await consumeStreamingResponse(res, onDelta);
+}
+
+async function consumeStreamingResponse(res, onDelta) {
   if (!res.body) {
     const data = await res.json();
     const text = extractAssistantText(data);
@@ -224,12 +314,17 @@ async function sendStreamingChatRequest(config, messages, onDelta) {
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let fullText = '';
+  let streamError = null;
 
   const handleEvent = (dataLine) => {
     if (!dataLine || dataLine === '[DONE]') return;
 
     try {
       const payload = JSON.parse(dataLine);
+      if (payload?.error) {
+        streamError = new Error(payload.error);
+        return;
+      }
       const delta = extractStreamDelta(payload);
       if (!delta) return;
       fullText += delta;
@@ -245,12 +340,14 @@ async function sendStreamingChatRequest(config, messages, onDelta) {
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     buffer = consumeSseBuffer(buffer, handleEvent);
+    if (streamError) throw streamError;
   }
 
   buffer += decoder.decode();
   buffer = consumeSseBuffer(buffer, handleEvent);
   const trailing = buffer.trim().replace(/^data:/, '').trim();
   if (trailing) handleEvent(trailing);
+  if (streamError) throw streamError;
 
   return fullText;
 }
@@ -260,7 +357,7 @@ async function sendStreamingChatRequest(config, messages, onDelta) {
  */
 export async function callChatLlm(config, conversation, canvas) {
   const outline = buildCanvasOutline(canvas);
-  const systemPrompt = buildChatSystemPrompt(outline);
+  const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation);
   const messages = [
     { role: 'system', content: systemPrompt },
     ...conversation,
@@ -271,12 +368,56 @@ export async function callChatLlm(config, conversation, canvas) {
 
 export async function callChatLlmStream(config, conversation, canvas, handlers = {}) {
   const outline = buildCanvasOutline(canvas);
-  const systemPrompt = buildChatSystemPrompt(outline);
+  const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation);
   const messages = [
     { role: 'system', content: systemPrompt },
     ...conversation,
   ];
   return await sendStreamingChatRequest(config, messages, handlers.onDelta);
+}
+
+export async function callDraftMemoryLlm(config, currentDraft, userText, assistantText, canvas) {
+  if (!assistantText?.trim()) return currentDraft || '';
+
+  const outline = buildCanvasOutline(canvas);
+  const systemPrompt = `You are a concise project memory agent.
+Maintain a Markdown working memory for an interactive whiteboard session.
+This memory is NOT a chat log. It should be a compact, deduplicated, editable brief that helps future turns use fewer tokens.
+
+Rules:
+- Preserve important user intent, decisions, constraints, facts, open questions, and next actions.
+- Merge repeated ideas instead of appending messages.
+- Remove stale chatter, greetings, and transient wording.
+- Keep the same primary language as the user.
+- Use Markdown headings and bullets.
+- Keep it under 900 Chinese characters or 600 English words unless the existing draft is already longer.
+- Output ONLY the updated Markdown memory.`;
+
+  const userPrompt = `Current whiteboard outline:
+${outline}
+
+Current Markdown memory:
+${currentDraft || '(empty)'}
+
+Latest user message:
+${userText}
+
+Latest assistant response:
+${assistantText}
+
+Rewrite the Markdown memory now.`;
+
+  return await sendRequest(
+    {
+      ...config,
+      searchMode: 'off',
+    },
+    [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    true
+  );
 }
 
 /**

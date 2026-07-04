@@ -1282,6 +1282,132 @@ body.chat-resizing {
   flex-direction: column;
 }
 
+.agent-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.agent-search-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.agent-search-toggle {
+  height: 28px;
+  min-width: 48px;
+  border: 2px solid #000;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.agent-search-toggle.active {
+  background: var(--grad-brand);
+}
+
+.tongyi-search-control {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  cursor: help;
+  white-space: nowrap;
+}
+
+.tongyi-search-control.visible {
+  display: inline-flex;
+}
+
+.tongyi-search-control input {
+  width: 14px;
+  height: 14px;
+}
+
+.agent-draft-toggle,
+.draft-toolbar button {
+  height: 28px;
+  border: 2px solid #000;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.agent-draft-toggle[aria-expanded="true"] {
+  background: var(--grad-brand);
+}
+
+.draft-panel {
+  display: none;
+  margin-bottom: 8px;
+  border: 2px solid #000;
+  border-radius: 8px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.draft-panel.open {
+  display: block;
+}
+
+.draft-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-bottom: 2px solid #000;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.draft-toolbar span {
+  flex: 1;
+  min-width: 0;
+}
+
+.draft-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.draft-textarea {
+  width: 100%;
+  min-height: 112px;
+  max-height: 220px;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  padding: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .chat-suggestions {
   display: flex;
   flex-wrap: wrap;
@@ -1548,6 +1674,21 @@ body.chat-resizing {
   transition: transform var(--duration-fast);
 }
 details[open] > .cfg-summary::before { transform: rotate(90deg); }
+
+.key-notice {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid rgba(239,68,68,0.22);
+  border-radius: 6px;
+  background: rgba(239,68,68,0.08);
+  color: var(--accent-red);
+  font-weight: 600;
+}
+
+.key-notice[hidden] {
+  display: none;
+}
 
 .cfg-grid {
   display: grid;

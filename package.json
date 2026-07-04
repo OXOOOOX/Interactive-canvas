@@ -8,6 +8,7 @@
     "dev": "vite --host 0.0.0.0 --port 8080",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 8080",
+    "serve": "node server/index.js",
     "test": "node --test",
     "replay:layout": "node scripts/replay-layout.js"
   },

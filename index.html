@@ -195,7 +195,7 @@
           <div class="chat-welcome">
             <div class="chat-welcome-icon">💡</div>
             <p>你好！我是你的白板助手。</p>
-            <p>开始聊天，我会在白板上帮你整理内容。</p>
+            <p>可以先免费试用；额度用完或长期使用时，再在设置里填写自己的模型 Key。</p>
             <div class="chat-welcome-hints">
               <button class="hint-chip" data-hint="总结近期AI大模型的最新突破与应用方向">科技前沿探索</button>
               <button class="hint-chip" data-hint="帮我梳理大语言模型底层的核心原理">学习技术原理</button>
@@ -205,6 +205,29 @@
         </div>
 
         <div class="chat-input-area" id="chatInputArea">
+          <div class="agent-controls" id="agentControls">
+            <label class="agent-search-control" title="搜索只作用于聊天回答，白板结构更新默认不搜索">
+              <span>搜索</span>
+              <button type="button" class="agent-search-toggle active" id="searchMode" data-value="auto" aria-pressed="true">开</button>
+            </label>
+            <label class="tongyi-search-control" id="tongyiSearchControl" title="通义大模型配备有内置搜索功能。开启后，当前 LLM 为通义时优先使用通义自己的联网搜索，不消耗 Tavily / Serper / Bing 额度。">
+              <input id="preferBuiltinSearch" type="checkbox" />
+              通义内置
+            </label>
+            <button type="button" class="agent-draft-toggle" id="draftToggle" aria-expanded="false">记忆</button>
+          </div>
+          <div class="draft-panel" id="draftPanel" aria-hidden="true">
+            <div class="draft-toolbar">
+              <span>智能记忆</span>
+              <label class="draft-auto">
+                <input id="draftAutoAppend" type="checkbox" checked />
+                自动整理
+              </label>
+              <button type="button" id="draftCopyBtn">复制</button>
+              <button type="button" id="draftClearBtn">清空</button>
+            </div>
+            <textarea id="markdownDraft" class="draft-textarea" rows="5" placeholder="这里保存 Agent 自动整理后的任务记忆、关键结论、待办和背景约束..."></textarea>
+          </div>
           <div class="chat-suggestions" id="chatSuggestions" aria-live="polite"></div>
           <div class="waveform-bar" id="waveformBar" aria-hidden="true">
             <canvas id="waveformCanvas" width="300" height="32"></canvas>
@@ -333,14 +356,32 @@
             <h3 class="cfg-title">认证</h3>
             <div class="cfg-grid">
               <label class="cfg-label full">LLM API Key
-                <input id="llmApiKey" type="password" class="cfg-input" placeholder="LLM API Key" />
-                <span class="cfg-hint">不同大模型供应商的 Key 会分开保存，切换供应商时会自动恢复对应 Key。</span>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input id="llmApiKey" type="password" class="cfg-input" placeholder="LLM API Key" style="flex:1" />
+                  <button id="openLlmKeyPageBtn" type="button" class="btn-sm" style="white-space:nowrap">申请 Key</button>
+                </div>
+                <span class="cfg-hint">可留空先使用服务器免费试用额度；额度用完或长期使用时，建议填写自己的 Key。不同供应商的 Key 会分开保存。</span>
+                <span id="llmKeyNotice" class="cfg-hint key-notice" hidden></span>
               </label>
               <label class="cfg-label full">豆包 API Key
                 <div style="display:flex;gap:8px;align-items:center">
                   <input id="doubaoApiKey" type="password" class="cfg-input" placeholder="Doubao API Key" style="flex:1" />
                   <button id="testDoubaoAsrBtn" type="button" class="btn-sm" style="white-space:nowrap">测试豆包 ASR</button>
                 </div>
+              </label>
+              <label class="cfg-label">搜索平台
+                <select id="searchProvider" class="cfg-input">
+                  <option value="tavily" selected>Tavily</option>
+                  <option value="serper">Serper</option>
+                  <option value="bing">Bing</option>
+                </select>
+              </label>
+              <label class="cfg-label">搜索 API Key（可选）
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input id="searchApiKey" type="password" class="cfg-input" placeholder="Tavily / Serper / Bing Search API Key" style="flex:1" />
+                  <button id="openSearchKeyPageBtn" type="button" class="btn-sm" style="white-space:nowrap">申请 Key</button>
+                </div>
+                <span class="cfg-hint">留空时使用服务器配置的限额兜底 Key；填入自己的 Key 后不消耗服务器免费额度。</span>
               </label>
               <label class="cfg-label">豆包 APP ID（旧版可选）
                 <input id="appId" type="password" class="cfg-input" placeholder="APP ID" />

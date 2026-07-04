@@ -104,6 +104,7 @@ const dom = {
   llmKeyNotice: $('llmKeyNotice'),
   modelDropdown: $('modelDropdown'),
   fetchModelsBtn: $('fetchModelsBtn'),
+  useFreeTrialBtn: $('useFreeTrialBtn'),
   openLlmKeyPageBtn: $('openLlmKeyPageBtn'),
   openSearchKeyPageBtn: $('openSearchKeyPageBtn'),
 
@@ -295,6 +296,25 @@ function openCurrentLlmKeyPage() {
 
 function openCurrentSearchKeyPage() {
   openExternalKeyPage(SEARCH_KEY_URLS[dom.searchProvider?.value] || SEARCH_KEY_URLS.tavily);
+}
+
+function saveCurrentConfig() {
+  rememberCurrentLlmKey();
+  saveConfig(getConfig());
+}
+
+function useFreeTrialLlm() {
+  if (!dom.llmApiKey) return;
+  dom.llmApiKey.value = '';
+  rememberCurrentLlmKey();
+  apiKeyMissingPromptShown = false;
+  if (dom.llmKeyNotice) {
+    dom.llmKeyNotice.textContent = '已切换为服务器免费试用。额度用完后，可以回来填写自己的 LLM API Key。';
+    dom.llmKeyNotice.hidden = false;
+  }
+  saveConfig(getConfig());
+  dom.settingsOverlay.classList.remove('open');
+  dom.settingsOverlay.setAttribute('aria-hidden', 'true');
 }
 
 function hasDoubaoAsrCredentials(config = getConfig()) {
@@ -2543,6 +2563,7 @@ function bindEvents() {
   });
 
   function closeSettings() {
+    saveCurrentConfig();
     dom.settingsOverlay.classList.remove('open');
     dom.settingsOverlay.setAttribute('aria-hidden', 'true');
   }
@@ -2551,6 +2572,7 @@ function bindEvents() {
   dom.llmProvider.addEventListener('change', handleLlmProviderChange);
   dom.openLlmKeyPageBtn?.addEventListener('click', openCurrentLlmKeyPage);
   dom.openSearchKeyPageBtn?.addEventListener('click', openCurrentSearchKeyPage);
+  dom.useFreeTrialBtn?.addEventListener('click', useFreeTrialLlm);
   dom.searchMode?.addEventListener('click', toggleSearchMode);
   dom.llmApiKey.addEventListener('input', () => {
     rememberCurrentLlmKey();
@@ -2611,8 +2633,7 @@ function bindEvents() {
 
   // Save / Load config
   dom.saveConfig.addEventListener('click', () => {
-    rememberCurrentLlmKey();
-    saveConfig(getConfig());
+    saveCurrentConfig();
   });
   dom.loadConfig.addEventListener('click', () => {
     const cfg = loadSavedConfig();

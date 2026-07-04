@@ -120,8 +120,11 @@ const dom = {
   oauthExchange: $('oauthExchange'),
 
   // Voice
+  recordBtn: $('recordBtn'),
   speakBtn: $('speakBtn'),
   voiceMode: $('voiceMode'),
+  sttEnabled: $('sttEnabled'),
+  ttsEnabled: $('ttsEnabled'),
   voiceLanguage: $('voiceLanguage'),
   sttModel: $('sttModel'),
   fileSttModel: $('fileSttModel'),
@@ -146,6 +149,8 @@ function getConfig() {
     sttProvider: dom.sttProvider.value,
     ttsProvider: dom.ttsProvider.value,
     voiceMode: dom.voiceMode.value,
+    sttEnabled: dom.sttEnabled?.value !== 'false',
+    ttsEnabled: dom.ttsEnabled?.value !== 'false',
     voiceLanguage: dom.voiceLanguage.value,
     llmEndpoint: dom.llmEndpoint.value,
     llmModel: dom.llmModel.value,
@@ -180,6 +185,8 @@ function getConfig() {
 function applyConfigDefaults(config = {}) {
   return {
     voiceMode: 'doubao-pipeline',
+    sttEnabled: true,
+    ttsEnabled: true,
     voiceLanguage: 'zh-CN',
     sttModel: ENDPOINT_PRESETS.doubao?.sttModel || '',
     fileSttModel: ENDPOINT_PRESETS.doubao?.fileSttModel || '',
@@ -334,23 +341,39 @@ function hasDoubaoTtsCredentials(config = getConfig()) {
   return canUseDoubaoTts(config);
 }
 
+function isSttEnabled(config = getConfig()) {
+  return config.sttEnabled !== false;
+}
+
+function isTtsEnabled(config = getConfig()) {
+  return config.ttsEnabled !== false;
+}
+
 function isDoubaoVoiceMode(config = getConfig()) {
   return config.voiceMode === 'doubao-pipeline' || config.voiceMode === 'doubao-realtime';
 }
 
 function getVoiceRouting(config = getConfig()) {
+  if (!isSttEnabled(config) && !isTtsEnabled(config)) {
+    return {
+      inputMode: 'off',
+      outputMode: 'off',
+      fallbackReason: '',
+    };
+  }
+
   if (config.voiceMode === 'browser') {
     return {
-      inputMode: 'browser',
-      outputMode: 'browser',
+      inputMode: isSttEnabled(config) ? 'browser' : 'off',
+      outputMode: isTtsEnabled(config) ? 'browser' : 'off',
       fallbackReason: '',
     };
   }
 
   if (!isDoubaoVoiceMode(config)) {
     return {
-      inputMode: 'browser',
-      outputMode: config.ttsProvider || 'browser',
+      inputMode: isSttEnabled(config) ? 'browser' : 'off',
+      outputMode: isTtsEnabled(config) ? (config.ttsProvider || 'browser') : 'off',
       fallbackReason: '',
     };
   }
@@ -359,9 +382,9 @@ function getVoiceRouting(config = getConfig()) {
   const hasTts = hasDoubaoTtsCredentials(config);
 
   return {
-    inputMode: hasAsr ? 'doubao' : 'browser',
-    outputMode: hasTts ? 'doubao' : 'browser',
-    fallbackReason: !hasTts && hasAsr
+    inputMode: isSttEnabled(config) ? (hasAsr ? 'doubao' : 'browser') : 'off',
+    outputMode: isTtsEnabled(config) ? (hasTts ? 'doubao' : 'browser') : 'off',
+    fallbackReason: isTtsEnabled(config) && !hasTts && hasAsr
       ? getDoubaoTtsFallbackReason(config)
       : '',
   };
@@ -370,9 +393,9 @@ function getVoiceRouting(config = getConfig()) {
 function syncVoiceModeFallback() {
   const config = getConfig();
   if (!isDoubaoVoiceMode(config)) return;
+  if (!isSttEnabled(config)) return;
   if (!hasDoubaoAsrCredentials(config) || !config.sttEndpoint) {
     dom.voiceMode.value = 'browser';
-    dom.ttsProvider.value = 'browser';
   }
 }
 
@@ -427,6 +450,13 @@ function notifyVoiceFallback(reason) {
 }
 
 function resolveSpeechPlaybackConfig(config = getConfig()) {
+  if (!isTtsEnabled(config)) {
+    return {
+      ...config,
+      ttsProvider: 'off',
+    };
+  }
+
   const routing = getVoiceRouting(config);
   if (routing.outputMode === 'doubao') {
     return {
@@ -501,7 +531,31 @@ function commitVoiceRouteToast(config = getConfig(), force = false) {
 }
 
 function updateVoiceStatusBadges(config = getConfig()) {
+  updateVoiceControlAvailability(config);
   commitVoiceRouteToast(config, true);
+}
+
+function updateVoiceControlAvailability(config = getConfig()) {
+  const sttEnabled = isSttEnabled(config);
+  const ttsEnabled = isTtsEnabled(config);
+
+  if (dom.recordBtn) {
+    dom.recordBtn.disabled = !sttEnabled;
+    dom.recordBtn.title = sttEnabled ? '连续语音' : '语音转写已关闭';
+    dom.recordBtn.setAttribute('aria-label', dom.recordBtn.title);
+  }
+
+  if (dom.audioUploadBtn) {
+    dom.audioUploadBtn.disabled = !sttEnabled;
+    dom.audioUploadBtn.title = sttEnabled ? '上传音频转写' : '语音转写已关闭';
+    dom.audioUploadBtn.setAttribute('aria-label', dom.audioUploadBtn.title);
+  }
+
+  if (dom.speakBtn) {
+    dom.speakBtn.disabled = !ttsEnabled;
+    dom.speakBtn.title = ttsEnabled ? '朗读上一条回复' : '语音播报已关闭';
+    dom.speakBtn.setAttribute('aria-label', dom.speakBtn.title);
+  }
 }
 
 window.__VOICE_TOAST__ = showVoiceToast;
@@ -1533,8 +1587,12 @@ function playBrowserSpeech(reply, callbacks = {}) {
 }
 
 async function playReplyWithResolvedConfig(reply, config = getConfig()) {
+  if (!isTtsEnabled(config)) return;
+
   const resolvedConfig = resolveSpeechPlaybackConfig(config);
   const routing = getVoiceRouting(config);
+
+  if (resolvedConfig.ttsProvider === 'off') return;
 
   if (routing.fallbackReason) {
     notifyVoiceFallback(routing.fallbackReason);
@@ -1574,7 +1632,7 @@ async function safeResumeListening() {
 }
 
 async function playAssistantReply(reply) {
-  if (!reply) {
+  if (!reply || !isTtsEnabled()) {
     await safeResumeListening();
     return;
   }
@@ -1585,11 +1643,16 @@ async function playAssistantReply(reply) {
 
 async function replayAssistantReply(reply) {
   if (!reply) return;
+  if (!isTtsEnabled()) {
+    showVoiceToast('语音播报已关闭', 'browser', 1800);
+    return;
+  }
   await playReplyWithResolvedConfig(reply, getConfig());
 }
 
 window.__VOICE_MODE_HELPERS__ = {
   shouldUseBrowserRecognition: () => shouldUseBrowserVoiceMode(getConfig()),
+  isRecognitionEnabled: () => isSttEnabled(getConfig()),
 };
 
 window.__GET_CONFIG__ = getConfig;
@@ -1634,22 +1697,31 @@ function setConfig(config) {
       if (dom.preferBuiltinSearch) dom.preferBuiltinSearch.checked = Boolean(value);
       continue;
     }
+    if (key === 'sttEnabled' || key === 'ttsEnabled') {
+      if (dom[key]) dom[key].value = value === false || value === 'false' ? 'false' : 'true';
+      continue;
+    }
     if (dom[key] && typeof value === 'string') dom[key].value = value;
   }
   applyLlmKeyConfig(finalConfig);
   updateTongyiSearchVisibility();
   syncVoiceModeFallback();
+  updateVoiceControlAvailability(getConfig());
 }
 
 function setAudioUploadBusy(isBusy, label = '上传音频转写') {
   if (!dom.audioUploadBtn) return;
-  dom.audioUploadBtn.disabled = isBusy;
+  dom.audioUploadBtn.disabled = isBusy || !isSttEnabled();
   dom.audioUploadBtn.title = label;
   dom.audioUploadBtn.setAttribute('aria-label', label);
 }
 
 async function handleAudioFileSelected(file) {
   if (!file) return;
+  if (!isSttEnabled()) {
+    showVoiceToast('语音转写已关闭', 'browser', 1800);
+    return;
+  }
   setAudioUploadBusy(true, '正在转写音频...');
   try {
     const text = await transcribe(file, getConfig());
@@ -1775,7 +1847,13 @@ function applyVoiceLocalDefaults() {
 
 function bindAudioUpload() {
   if (!dom.audioUploadBtn || !dom.audioFileInput) return;
-  dom.audioUploadBtn.addEventListener('click', () => dom.audioFileInput.click());
+  dom.audioUploadBtn.addEventListener('click', () => {
+    if (!isSttEnabled()) {
+      showVoiceToast('语音转写已关闭', 'browser', 1800);
+      return;
+    }
+    dom.audioFileInput.click();
+  });
   dom.audioFileInput.addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
     await handleAudioFileSelected(file);
@@ -2591,6 +2669,14 @@ function bindEvents() {
   dom.ttsProvider.addEventListener('change', () => {
     applyProviderPreset(false);
     syncVoiceFallbackNotice();
+  });
+  dom.sttEnabled?.addEventListener('change', () => {
+    syncVoiceModeFallback();
+    updateVoiceStatusBadges();
+  });
+  dom.ttsEnabled?.addEventListener('change', () => {
+    syncVoiceFallbackNotice({ force: true });
+    updateVoiceControlAvailability();
   });
   dom.voiceMode.addEventListener('change', applyVoiceModePreset);
   dom.doubaoApiKey.addEventListener('change', () => {

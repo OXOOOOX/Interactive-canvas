@@ -66,6 +66,10 @@ function shouldUseBrowserRecognition() {
   return !!getVoiceHelpers().shouldUseBrowserRecognition?.();
 }
 
+function isRecognitionEnabled() {
+  return getVoiceHelpers().isRecognitionEnabled?.() !== false;
+}
+
 function getVoiceConfig() {
   return window.__GET_CONFIG__?.() || {};
 }
@@ -514,6 +518,10 @@ async function toggleConversation() {
 
 async function startConversation() {
   try {
+    if (!isRecognitionEnabled()) {
+      notifyVoiceStartFailed('语音转写已关闭');
+      return;
+    }
     if (shouldUseBrowserRecognition()) {
       await startBrowserConversation({ resetTimer: true });
     } else {

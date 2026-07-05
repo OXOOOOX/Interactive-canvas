@@ -4,12 +4,13 @@
   "description": "捕梦 · DreamCatcher — Voice-driven AI mindmap studio with interactive canvas | 边聊天边在白板上生长内容的 AI 思维导图工具",
   "type": "module",
   "scripts": {
-    "start": "node server/index.js",
-    "setup": "node scripts/start.js",
-    "dev": "vite --host 0.0.0.0 --port 8080",
-    "build": "vite build",
+    "configure:llm": "node scripts/set-default-llm-provider.js",
+    "start": "npm run configure:llm && node server/index.js",
+    "setup": "npm run configure:llm && node scripts/start.js",
+    "dev": "npm run configure:llm && vite --host 0.0.0.0 --port 8080",
+    "build": "npm run configure:llm && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 8080",
-    "serve": "node server/index.js",
+    "serve": "npm run configure:llm && node server/index.js",
     "test": "node --test",
     "replay:layout": "node scripts/replay-layout.js"
   },

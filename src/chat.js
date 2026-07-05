@@ -3,8 +3,8 @@
  */
 
 import { appState, pushHistory, saveCanvas } from './state.js';
-import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callSuggestLlm } from './services/llm.js';
-import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown } from './utils/parser.js';
+import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
+import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
 import { renderBlocks, syncBlockSizes } from './canvas.js';
 
@@ -110,6 +110,42 @@ async function updateDraftMemory(config, userText, assistantText) {
   localStorage.setItem(DRAFT_STORAGE_KEY, updated);
 }
 
+async function repairOperationMarkdown(config, operations) {
+  let repairedByModel = 0;
+
+  for (const op of operations) {
+    const targets = [];
+    if (op.op === 'add' && op.block) {
+      targets.push({ object: op.block, field: 'label', blockId: op.block.id, label: op.block.label });
+      targets.push({ object: op.block, field: 'content', blockId: op.block.id, label: op.block.label });
+    }
+    if (op.op === 'update' && op.changes) {
+      targets.push({ object: op.changes, field: 'label', blockId: op.targetId, label: op.changes.label });
+      targets.push({ object: op.changes, field: 'content', blockId: op.targetId, label: op.changes.label });
+    }
+
+    for (const target of targets) {
+      if (typeof target.object[target.field] !== 'string') continue;
+
+      const local = repairMarkdownFormatting(target.object[target.field]);
+      target.object[target.field] = local.text;
+
+      const inspection = inspectMarkdownFormatting(target.object[target.field]);
+      if (!inspection.needsModelRepair) continue;
+
+      target.object[target.field] = await callMarkdownRepairLlm(config, target.object[target.field], {
+        blockId: target.blockId,
+        label: target.label,
+        field: target.field,
+      });
+      target.object[target.field] = repairMarkdownFormatting(target.object[target.field]).text;
+      repairedByModel += 1;
+    }
+  }
+
+  return { repairedByModel };
+}
+
 /** 发送用户消息并处理 AI 响应 */
 async function sendMessage(explicitText = null) {
   const text = (typeof explicitText === 'string' ? explicitText : $input.value).trim();
@@ -176,6 +212,7 @@ async function sendMessage(explicitText = null) {
     }
 
     if (parsed.operations && parsed.operations.length > 0) {
+      const repairResult = await repairOperationMarkdown(config, parsed.operations);
       const tempBlocks = [...appState.canvas.blocks];
       const tempConns = [...appState.canvas.connections];
 
@@ -214,6 +251,7 @@ async function sendMessage(explicitText = null) {
       if (result.addedIds.length) summaryParts.push(`新增 ${result.addedIds.length} 个块`);
       if (result.updatedIds.length) summaryParts.push(`更新 ${result.updatedIds.length} 个块`);
       if (result.removedIds.length) summaryParts.push(`删除 ${result.removedIds.length} 个块`);
+      if (repairResult.repairedByModel) summaryParts.push(`修复 ${repairResult.repairedByModel} 处格式`);
       message.setSummary(summaryParts);
       saveCanvas();
     } else {

@@ -8,7 +8,9 @@ import {
   extractAssistantText,
   extractJson,
   parseAiResponse,
+  repairMarkdownFormatting,
   renderMarkdown,
+  inspectMarkdownFormatting,
 } from '../src/utils/parser.js';
 
 test('extractJson parses JSON wrapped in markdown fences', () => {
@@ -72,6 +74,41 @@ test('renderMarkdown renders pipe tables with escaped cell content', () => {
   assert.match(html, /<td><strong>H\.265<\/strong><\/td>/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /<script>/);
+});
+
+test('repairMarkdownFormatting converts visible newline markers to real newlines', () => {
+  const result = repairMarkdownFormatting('1. 高温\\n2. 台风/n3. 预约');
+
+  assert.equal(result.text, '1. 高温\n2. 台风\n3. 预约');
+  assert.equal(result.changed, true);
+  assert.equal(result.needsModelRepair, false);
+});
+
+test('repairMarkdownFormatting adds a missing markdown table divider when columns match', () => {
+  const result = repairMarkdownFormatting([
+    '| 店名 | 类型 | 备注 |',
+    '| 一鹤 | 骨付鸟 | 高松名物 |',
+    '| 鹤丸 | 乌冬 | 深夜营业 |',
+  ].join('\n'));
+
+  assert.equal(result.text, [
+    '| 店名 | 类型 | 备注 |',
+    '| --- | --- | --- |',
+    '| 一鹤 | 骨付鸟 | 高松名物 |',
+    '| 鹤丸 | 乌冬 | 深夜营业 |',
+  ].join('\n'));
+  assert.equal(result.needsModelRepair, false);
+});
+
+test('inspectMarkdownFormatting flags ambiguous table column mismatch for model repair', () => {
+  const result = inspectMarkdownFormatting([
+    '| 项目 | 说明 |',
+    '|---|---|',
+    '| 编码 | H.264 | H.265 |',
+  ].join('\n'));
+
+  assert.equal(result.needsModelRepair, true);
+  assert.equal(result.issues[0].type, 'table_column_mismatch');
 });
 
 test('executeOperations adds blocks, connections, updates, and removes safely', () => {

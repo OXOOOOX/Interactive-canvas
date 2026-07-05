@@ -130,6 +130,12 @@ function normalizeOp(op) {
   switch (op.op) {
     case 'add':
       if (!op.block) return null;
+      if (typeof op.block.label === 'string') {
+        op.block.label = repairMarkdownFormatting(op.block.label).text;
+      }
+      if (typeof op.block.content === 'string') {
+        op.block.content = repairMarkdownFormatting(op.block.content).text;
+      }
       op.block = ensureNodeFields({
         id: op.block.id || crypto.randomUUID(),
         type: op.block.type || 'text',
@@ -140,6 +146,12 @@ function normalizeOp(op) {
       return op;
     case 'update':
       if (!op.targetId || !op.changes) return null;
+      if (typeof op.changes.label === 'string') {
+        op.changes.label = repairMarkdownFormatting(op.changes.label).text;
+      }
+      if (typeof op.changes.content === 'string') {
+        op.changes.content = repairMarkdownFormatting(op.changes.content).text;
+      }
       return op;
     case 'remove':
       if (!op.targetId) return null;
@@ -312,7 +324,21 @@ function splitTableRow(line) {
   const trimmed = line.trim();
   const body = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed;
   const normalized = body.endsWith('|') ? body.slice(0, -1) : body;
-  return normalized.split('|').map(cell => cell.trim());
+  const cells = [];
+  let current = '';
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    if (char === '|' && normalized[index - 1] !== '\\') {
+      cells.push(current.replace(/\\\|/g, '|').trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+
+  cells.push(current.replace(/\\\|/g, '|').trim());
+  return cells;
 }
 
 function isTableDivider(line) {
@@ -323,6 +349,151 @@ function isTableDivider(line) {
 
 function isTableHeader(line, dividerLine) {
   return line?.includes('|') && dividerLine?.includes('|') && isTableDivider(dividerLine);
+}
+
+function escapeMarkdownTableCell(cell) {
+  return String(cell ?? '').replace(/(?<!\\)\|/g, '\\|').trim();
+}
+
+function buildTableDivider(columnCount) {
+  return `| ${Array.from({ length: columnCount }, () => '---').join(' | ')} |`;
+}
+
+function buildTableRow(cells) {
+  return `| ${cells.map(escapeMarkdownTableCell).join(' | ')} |`;
+}
+
+function getTableCandidateRange(lines, startIndex) {
+  let endIndex = startIndex;
+  while (endIndex < lines.length && lines[endIndex].trim() && lines[endIndex].includes('|')) {
+    endIndex += 1;
+  }
+  return { startIndex, endIndex };
+}
+
+function repairTableCandidate(lines) {
+  const nonDividerLines = lines.filter(line => !isTableDivider(line));
+  if (nonDividerLines.length < 2) {
+    return { lines, changed: false, issues: [] };
+  }
+
+  const rows = nonDividerLines.map(splitTableRow);
+  const columnCount = rows[0].length;
+  const issues = [];
+
+  if (columnCount < 2) {
+    return { lines, changed: false, issues: [] };
+  }
+
+  const hasMismatchedRows = rows.some(cells => cells.length !== columnCount);
+  if (hasMismatchedRows) {
+    issues.push({
+      type: 'table_column_mismatch',
+      message: 'Markdown table rows have different column counts; this may require semantic repair.',
+    });
+    return { lines, changed: false, issues };
+  }
+
+  const repaired = [
+    buildTableRow(rows[0]),
+    buildTableDivider(columnCount),
+    ...rows.slice(1).map(buildTableRow),
+  ];
+
+  return {
+    lines: repaired,
+    changed: repaired.join('\n') !== lines.join('\n'),
+    issues,
+  };
+}
+
+export function inspectMarkdownFormatting(text) {
+  const issues = [];
+  const source = String(text ?? '');
+  if (/\\[nNrRt]/.test(source) || /\/[nN]/.test(source)) {
+    issues.push({
+      type: 'escaped_newline_literal',
+      message: 'Text contains visible newline escape markers.',
+      fixable: true,
+    });
+  }
+
+  const lines = source.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].includes('|') || isTableDivider(lines[index])) continue;
+    const { endIndex } = getTableCandidateRange(lines, index);
+    const candidate = lines.slice(index, endIndex);
+    const result = repairTableCandidate(candidate);
+    result.issues.forEach(issue => issues.push({ ...issue, fixable: false }));
+    index = endIndex - 1;
+  }
+
+  return {
+    issues,
+    needsModelRepair: issues.some(issue => !issue.fixable),
+  };
+}
+
+export function repairMarkdownFormatting(text) {
+  let nextText = String(text ?? '')
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
+    .replace(/\\t/g, '  ')
+    .replace(/\/n/g, '\n')
+    .replace(/\/N/g, '\n');
+
+  const issues = [];
+  const lines = nextText.split(/\r?\n/);
+  const repairedLines = [];
+  let changed = nextText !== String(text ?? '');
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.includes('|') || isTableDivider(line)) {
+      repairedLines.push(line);
+      continue;
+    }
+
+    const { endIndex } = getTableCandidateRange(lines, index);
+    const candidate = lines.slice(index, endIndex);
+    const result = repairTableCandidate(candidate);
+    issues.push(...result.issues);
+    if (result.issues.length === 0 && result.changed) changed = true;
+    repairedLines.push(...(result.issues.length ? candidate : result.lines));
+    index = endIndex - 1;
+  }
+
+  nextText = repairedLines.join('\n');
+
+  return {
+    text: nextText,
+    changed,
+    issues,
+    needsModelRepair: issues.some(issue => issue.type === 'table_column_mismatch'),
+  };
+}
+
+export function repairCanvasTextFormatting(canvas) {
+  if (!canvas?.blocks) return { changed: false, issues: [] };
+  const allIssues = [];
+  let changed = false;
+
+  for (const block of canvas.blocks) {
+    for (const field of ['label', 'content']) {
+      if (typeof block[field] !== 'string') continue;
+      const result = repairMarkdownFormatting(block[field]);
+      if (result.changed) {
+        block[field] = result.text;
+        changed = true;
+      }
+      result.issues.forEach(issue => {
+        allIssues.push({ ...issue, blockId: block.id, field });
+      });
+    }
+  }
+
+  return { changed, issues: allIssues };
 }
 
 function renderTable(lines, startIndex) {

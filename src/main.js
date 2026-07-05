@@ -21,7 +21,7 @@ import { speak, canUseDoubaoTts, getDoubaoTtsFallbackReason } from './services/t
 import { testDoubaoAsrConnection } from './services/doubao-asr.js';
 import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
 import { callOrganizeLlm, callRefineLlm, callNamingLlm } from './services/llm.js';
-import { parseAiResponse, executeOperations, dedupeConnections } from './utils/parser.js';
+import { parseAiResponse, executeOperations, dedupeConnections, repairCanvasTextFormatting, repairMarkdownFormatting } from './utils/parser.js';
 import { createCopyAttachment, createMappedAttachment, getAttachmentFile, listAttachments, supportsMappedFiles, updateAttachmentBlob } from './services/file-store.js';
 import { PDFDocument } from 'pdf-lib';
 
@@ -1365,8 +1365,8 @@ Content: ${block.content || 'None'}`
         const newBlock = {
           id: crypto.randomUUID(),
           type: 'text',
-          label: item.label || `拆分块${index + 1}`,
-          content: item.content || '',
+          label: repairMarkdownFormatting(item.label || `拆分块${index + 1}`).text,
+          content: repairMarkdownFormatting(item.content || '').text,
           x: baseX,
           y: baseY + index * verticalGap,
         };
@@ -1476,8 +1476,8 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
       const mergedBlock = {
         id: crypto.randomUUID(),
         type: 'text',
-        label: mergeResult.label,
-        content: mergeResult.content || '',
+        label: repairMarkdownFormatting(mergeResult.label).text,
+        content: repairMarkdownFormatting(mergeResult.content || '').text,
         x: minX,
         y: minY,
         width: 240, // 合并后的块稍大一些
@@ -1918,8 +1918,8 @@ Content: ${block.content || 'None'}`
     const expandResult = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
 
     if (expandResult.content) {
-      block.label = expandResult.label || block.label;
-      block.content = expandResult.content;
+      block.label = repairMarkdownFormatting(expandResult.label || block.label).text;
+      block.content = repairMarkdownFormatting(expandResult.content).text;
       relayoutAfterContentChange({ pushHistoryEntry: true, changedBlockIds: [block.id] });
     } else {
       alert('无法扩张，请尝试手动编辑');
@@ -1987,8 +1987,8 @@ Content: ${block.content || 'None'}`
         const newBlock = {
           id: crypto.randomUUID(),
           type: 'text',
-          label: item.label || `派生${index + 1}`,
-          content: item.content || '',
+          label: repairMarkdownFormatting(item.label || `派生${index + 1}`).text,
+          content: repairMarkdownFormatting(item.content || '').text,
           x: startX,
           y: startY + index * verticalGap,
         };
@@ -2068,8 +2068,8 @@ Content: ${block.content || 'None'}`
     const translateResult = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
 
     if (translateResult.label || translateResult.content) {
-      block.label = translateResult.label || block.label;
-      block.content = translateResult.content || block.content;
+      block.label = repairMarkdownFormatting(translateResult.label || block.label).text;
+      block.content = repairMarkdownFormatting(translateResult.content || block.content).text;
       relayoutAfterContentChange({ pushHistoryEntry: true, changedBlockIds: [block.id] });
     } else {
       alert('无法翻译，请尝试手动编辑');
@@ -2500,6 +2500,7 @@ function bindEvents() {
         
         if (parsed.operations && parsed.operations.length > 0) {
           const result = executeOperations(appState.canvas, parsed.operations);
+          repairCanvasTextFormatting(appState.canvas);
           dedupeConnections(appState.canvas);
           relayoutAfterContentChange({
             pushHistoryEntry: true,
@@ -2580,8 +2581,8 @@ function bindEvents() {
         const config = getConfig();
         const refined = await callRefineLlm(config, b, appState.canvas);
         
-        b.label = refined.label || b.label;
-        b.content = refined.content || b.content;
+        b.label = repairMarkdownFormatting(refined.label || b.label).text;
+        b.content = repairMarkdownFormatting(refined.content || b.content).text;
         relayoutAfterContentChange({ changedBlockIds: [b.id] });
         
         tempRefineState = { b, originalLabel, originalContent };
@@ -3156,6 +3157,7 @@ function handleImportJson(content) {
       connections: data.connections,
       groups: data.groups || [],
     };
+    repairCanvasTextFormatting(appState.canvas);
 
     // 更新 UI
     dom.boardTitle.textContent = appState.canvas.title;

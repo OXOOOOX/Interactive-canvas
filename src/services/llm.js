@@ -18,7 +18,7 @@ Available Operations:
 - remove: {op:"remove", targetId:"id"}
 - addConnection: {op:"addConnection", fromId:"source", toId:"target"}
 - removeConnection: {op:"removeConnection", fromId:"source", toId:"target"}
-Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Blocks with positionLocked:true may have label/content updates, but their position and size MUST NOT change. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
+Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Use real JSON newline escapes in strings; never write visible \\n, /n, \\N, or /N markers for layout. Markdown tables must include a divider row and consistent column counts. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Blocks with positionLocked:true may have label/content updates, but their position and size MUST NOT change. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
 }
 
 /**
@@ -418,6 +418,48 @@ Rewrite the Markdown memory now.`;
     ],
     true
   );
+}
+
+export async function callMarkdownRepairLlm(config, text, context = {}) {
+  const systemPrompt = `You repair malformed Markdown for an interactive whiteboard node.
+Return ONLY valid JSON with this exact shape:
+{"content":"..."}
+
+Rules:
+- Preserve the original language, facts, order, and wording as much as possible.
+- Convert visible newline markers such as \\n, /n, \\N, /N into real line breaks.
+- Repair Markdown tables so every row has the same number of columns.
+- If a cell needs a literal pipe character, escape it as \\|.
+- Add the required Markdown divider row after a table header.
+- Do not add commentary or new information.`;
+
+  const userPrompt = `Node context:
+${JSON.stringify(context, null, 2)}
+
+Malformed content:
+${text}`;
+
+  const rawText = await sendRequest(
+    {
+      ...config,
+      searchMode: 'off',
+    },
+    [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    true
+  );
+
+  try {
+    const jsonStr = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+    if (typeof parsed.content === 'string') return parsed.content;
+  } catch (error) {
+    console.warn('Markdown repair parse failed:', error);
+  }
+
+  return text;
 }
 
 /**

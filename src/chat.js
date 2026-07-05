@@ -2,7 +2,7 @@
  * chat.js — 右侧聊天面板逻辑
  */
 
-import { appState, pushHistory, saveCanvas } from './state.js';
+import { appState, pushHistory, saveCurrentCanvas } from './state.js';
 import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting, assertCanvasIntegrity } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
@@ -13,6 +13,40 @@ const DRAFT_AUTO_APPEND_KEY = 'canvas-studio-draft-auto-append-v1';
 
 let $messages, $input, $sendBtn, $draftPanel, $draftToggle, $markdownDraft, $draftAutoAppend;
 let getConfig = () => ({});
+
+function extractVoiceBrief(text = '') {
+  const source = String(text || '');
+  const bracketMatch = source.match(/\[\[\s*VOICE[_\s-]*BRIEF\s*[:：]\s*([\s\S]*?)\]\]/i);
+  if (bracketMatch) return bracketMatch[1].trim();
+
+  const lineMatch = source.match(/^\s*(?:VOICE[_\s-]*BRIEF|语音摘要|口播)\s*[:：]\s*(.+)$/im);
+  return lineMatch ? lineMatch[1].trim() : '';
+}
+
+function stripVoiceBrief(text = '') {
+  const source = String(text || '');
+  const complete = source
+    .replace(/\s*\[\[\s*VOICE[_\s-]*BRIEF\s*[:：]\s*[\s\S]*?\]\]\s*/i, '')
+    .replace(/^\s*(?:VOICE[_\s-]*BRIEF|语音摘要|口播)\s*[:：]\s*.+(?:\r?\n)?/im, '')
+    .trimStart();
+  if (complete !== source.trimStart()) return complete;
+  const openIndex = source.search(/\[\[\s*VOICE[_\s-]*BRIEF\s*[:：]/i);
+  if (openIndex < 0) return source;
+  return source.slice(0, openIndex).trimStart();
+}
+
+function buildFallbackVoiceBrief(text = '') {
+  const cleaned = stripVoiceBrief(text)
+    .replace(/[#*_`>\[\]()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  return cleaned.length > 90 ? `${cleaned.slice(0, 90)}...` : cleaned;
+}
+
+function getMissingVoiceBriefFallback() {
+  return '我已经把回复写出来了，你可以先看屏幕上的内容。';
+}
 
 /** 初始化聊天面板 */
 export function initChat(configGetter) {
@@ -147,7 +181,7 @@ async function repairOperationMarkdown(config, operations) {
 }
 
 /** 发送用户消息并处理 AI 响应 */
-async function sendMessage(explicitText = null) {
+async function sendMessage(explicitText = null, options = {}) {
   const text = (typeof explicitText === 'string' ? explicitText : $input.value).trim();
   if (!text) return null;
 
@@ -168,8 +202,14 @@ async function sendMessage(explicitText = null) {
   let assistantMessage = null;
 
   try {
-    const config = { ...getConfig(), markdownDraft: getMarkdownDraft() };
+    const config = {
+      ...getConfig(),
+      markdownDraft: getMarkdownDraft(),
+      voiceOutputEnabled: Boolean(options.voiceOutputEnabled),
+    };
     let hasStreamText = false;
+    let hasNotifiedStreamStart = false;
+    let hasNotifiedVoiceBrief = false;
 
     const ensureAssistantMessage = () => {
       if (!assistantMessage) assistantMessage = createMessageController('assistant');
@@ -182,22 +222,45 @@ async function sendMessage(explicitText = null) {
           typing.remove();
           hasStreamText = true;
         }
-        ensureAssistantMessage().setText(fullText);
+        if (!hasNotifiedStreamStart) {
+          hasNotifiedStreamStart = true;
+          options.onAssistantStreamStart?.();
+        }
+        if (config.voiceOutputEnabled && !hasNotifiedVoiceBrief) {
+          const voiceBrief = extractVoiceBrief(fullText);
+          if (voiceBrief) {
+            hasNotifiedVoiceBrief = true;
+            options.onVoiceBrief?.(voiceBrief);
+          }
+        }
+        ensureAssistantMessage().setText(stripVoiceBrief(fullText));
       }
     });
 
+    const voiceText = config.voiceOutputEnabled
+      ? (extractVoiceBrief(chatReply) || '')
+      : '';
+    if (voiceText && !hasNotifiedVoiceBrief) {
+      hasNotifiedVoiceBrief = true;
+      options.onVoiceBrief?.(voiceText);
+    }
+    if (config.voiceOutputEnabled && !voiceText) {
+      console.warn('[voice] Missing VOICE_BRIEF in assistant response:', chatReply.slice(0, 240));
+    }
+    const visibleChatReply = stripVoiceBrief(chatReply);
+
     if (!hasStreamText) {
       typing.remove();
-      ensureAssistantMessage().setText(chatReply);
+      ensureAssistantMessage().setText(visibleChatReply);
     }
 
     const message = ensureAssistantMessage();
 
-    appState.lastAssistantReply = chatReply;
+    appState.lastAssistantReply = visibleChatReply;
 
-    appState.lastAssistantReply = chatReply;
-    appState.conversation.push({ role: 'assistant', content: chatReply });
-    const draftPromise = updateDraftMemory(config, text, chatReply).catch((error) => {
+    appState.lastAssistantReply = visibleChatReply;
+    appState.conversation.push({ role: 'assistant', content: visibleChatReply });
+    const draftPromise = updateDraftMemory(config, text, visibleChatReply).catch((error) => {
       console.warn('Draft memory update failed:', error);
     });
 
@@ -205,7 +268,7 @@ async function sendMessage(explicitText = null) {
     const parsed = parseAiResponse(canvasRaw);
     const parsedReply = parsed.reply || '';
 
-    if (!chatReply && parsedReply) {
+    if (!visibleChatReply && parsedReply) {
       message.setText(parsedReply);
       appState.lastAssistantReply = parsedReply;
       appState.conversation[appState.conversation.length - 1] = { role: 'assistant', content: parsedReply };
@@ -254,7 +317,7 @@ async function sendMessage(explicitText = null) {
       if (result.removedIds.length) summaryParts.push(`删除 ${result.removedIds.length} 个块`);
       if (repairResult.repairedByModel) summaryParts.push(`修复 ${repairResult.repairedByModel} 处格式`);
       message.setSummary(summaryParts);
-      saveCanvas();
+      saveCurrentCanvas();
     } else {
       message.setSummary([]);
     }
@@ -262,6 +325,12 @@ async function sendMessage(explicitText = null) {
     await draftPromise;
     document.dispatchEvent(new CustomEvent('boardChanged'));
     generateSuggestions();
+    if (options.returnVoicePayload) {
+      return {
+        reply: appState.lastAssistantReply,
+        voiceText: voiceText || getMissingVoiceBriefFallback(),
+      };
+    }
     return appState.lastAssistantReply;
   } catch (err) {
     typing.remove();
@@ -300,9 +369,9 @@ async function generateSuggestions() {
 }
 
 /** 从外部触发发送（用于语音转写后） */
-export async function sendText(text) {
+export async function sendText(text, options = {}) {
   if (!text) return null;
-  return await sendMessage(text);
+  return await sendMessage(text, options);
 }
 
 function buildOpSummaryHtml(opSummary = []) {

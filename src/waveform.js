@@ -1,12 +1,12 @@
 /**
- * waveform.js — 浏览器 / 豆包流式语音识别 + 动态波浪支持
+ * waveform.js - browser / Doubao streaming ASR with waveform UI.
  */
 
 import { startDoubaoStreamingRecognition } from './services/doubao-asr.js';
 
-const SILENCE_TIMEOUT_MS = 1600;
-const STARTUP_GRACE_MS = 900;
-const AUDIO_ACTIVITY_THRESHOLD = 0.14;
+const SILENCE_TIMEOUT_MS = 2800;
+const STARTUP_GRACE_MS = 1200;
+const AUDIO_ACTIVITY_THRESHOLD = 0.018;
 
 let analyser = null;
 let animFrameId = null;
@@ -17,24 +17,30 @@ let streamGlobal = null;
 let doubaoSession = null;
 let usingDoubaoRecognition = false;
 let resumePromise = null;
-
 let recognition = null;
 
 export let isConversationActive = false;
 let isPaused = false;
 let silenceStopRequested = false;
 let hasDetectedSpeech = false;
-let lastSpeechAt = 0;
+let lastTranscriptAt = 0;
+let lastAudioActivityAt = 0;
 let voiceSessionStartedAt = 0;
 let latestInterimTranscript = '';
 let latestFinalTranscript = '';
 let latestSubmittedTranscript = '';
+let lastTranscriptSnapshot = '';
 let turnCompleted = false;
 let silenceRecoveryTimer = null;
+let transcriptSilenceTimer = null;
+let pendingAutoSubmitTimer = null;
+let pausedStatusText = '等待模型回复';
 
 let $waveformBar;
 let $waveformCanvas;
 let $waveTime;
+let $waveStatus;
+let $waveSubmitBtn;
 let $recordBtn;
 let ctx = null;
 let onTextComplete = () => {};
@@ -51,6 +57,10 @@ function getVoiceLanguage() {
   return window.__GET_VOICE_LANGUAGE__?.() || 'zh-CN';
 }
 
+function getVoiceConfig() {
+  return window.__GET_CONFIG__?.() || {};
+}
+
 function getTranscriptText(text) {
   return window.__VOICE_TRANSCRIPT_TEXT__?.(text) ?? (text || '').trim();
 }
@@ -59,7 +69,7 @@ function isMeaningfulTranscript(text) {
   if (window.__VOICE_TRANSCRIPT_VALID__) {
     return window.__VOICE_TRANSCRIPT_VALID__(text);
   }
-  return !!text && text.replace(/[^\w一-龥]/g, '').length > 0;
+  return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
 }
 
 function shouldUseBrowserRecognition() {
@@ -70,36 +80,58 @@ function isRecognitionEnabled() {
   return getVoiceHelpers().isRecognitionEnabled?.() !== false;
 }
 
-function getVoiceConfig() {
-  return window.__GET_CONFIG__?.() || {};
-}
-
 function bindInputInterim(text) {
   const chatInput = document.getElementById('chatInput');
-  if (chatInput) {
-    chatInput.value = text || '';
-  }
+  if (chatInput) chatInput.value = text || '';
 }
 
 function clearSilenceRecoveryTimer() {
-  if (silenceRecoveryTimer) {
-    clearTimeout(silenceRecoveryTimer);
-    silenceRecoveryTimer = null;
-  }
+  if (!silenceRecoveryTimer) return;
+  clearTimeout(silenceRecoveryTimer);
+  silenceRecoveryTimer = null;
+}
+
+function clearTranscriptSilenceTimer() {
+  if (!transcriptSilenceTimer) return;
+  clearTimeout(transcriptSilenceTimer);
+  transcriptSilenceTimer = null;
+}
+
+function clearPendingAutoSubmitTimer() {
+  if (!pendingAutoSubmitTimer) return;
+  clearTimeout(pendingAutoSubmitTimer);
+  pendingAutoSubmitTimer = null;
+}
+
+function scheduleTranscriptSilenceStop() {
+  clearTranscriptSilenceTimer();
+  transcriptSilenceTimer = setTimeout(() => {
+    transcriptSilenceTimer = null;
+    if (Date.now() - lastTranscriptAt >= SILENCE_TIMEOUT_MS) {
+      requestSilenceStop();
+      return;
+    }
+    if (isConversationActive && !isPaused && !silenceStopRequested) {
+      scheduleTranscriptSilenceStop();
+    }
+  }, SILENCE_TIMEOUT_MS + 80);
 }
 
 function resetTurnState({ clearSubmitted = false } = {}) {
   clearSilenceRecoveryTimer();
+  clearTranscriptSilenceTimer();
+  clearPendingAutoSubmitTimer();
   silenceStopRequested = false;
   hasDetectedSpeech = false;
-  lastSpeechAt = Date.now();
-  voiceSessionStartedAt = Date.now();
+  const now = Date.now();
+  lastTranscriptAt = now;
+  lastAudioActivityAt = now;
+  voiceSessionStartedAt = now;
   latestInterimTranscript = '';
   latestFinalTranscript = '';
+  lastTranscriptSnapshot = '';
   turnCompleted = false;
-  if (clearSubmitted) {
-    latestSubmittedTranscript = '';
-  }
+  if (clearSubmitted) latestSubmittedTranscript = '';
 }
 
 function scheduleSilenceRecoveryFallback() {
@@ -110,12 +142,31 @@ function scheduleSilenceRecoveryFallback() {
   }, 1400);
 }
 
+function getPendingTranscript() {
+  const inputText = document.getElementById('chatInput')?.value || '';
+  return getTranscriptText(latestFinalTranscript || latestInterimTranscript || inputText || '');
+}
+
+function hasPendingMeaningfulTranscript() {
+  return isMeaningfulTranscript(getPendingTranscript());
+}
+
 function flushPendingTranscriptIfNeeded() {
   if (!silenceStopRequested || turnCompleted || !isConversationActive) return false;
   if (!hasPendingMeaningfulTranscript()) return false;
   const pending = getPendingTranscript();
   clearSilenceRecoveryTimer();
+  clearPendingAutoSubmitTimer();
   return submitRecognizedText(pending, { autoStopped: true });
+}
+
+function schedulePendingAutoSubmit() {
+  clearPendingAutoSubmitTimer();
+  pendingAutoSubmitTimer = setTimeout(() => {
+    pendingAutoSubmitTimer = null;
+    if (flushPendingTranscriptIfNeeded()) return;
+    recoverFromSilenceStop();
+  }, 800);
 }
 
 function resumeAfterSilenceFallback() {
@@ -137,65 +188,134 @@ function markTranscriptActivity(text, { final = false } = {}) {
   } else {
     latestInterimTranscript = cleaned;
   }
-  lastSpeechAt = Date.now();
   if (isMeaningfulTranscript(cleaned)) {
+    if (cleaned !== lastTranscriptSnapshot) {
+      lastTranscriptSnapshot = cleaned;
+      lastTranscriptAt = Date.now();
+    }
     hasDetectedSpeech = true;
+    if (!transcriptSilenceTimer) scheduleTranscriptSilenceStop();
   }
   return cleaned;
 }
 
+function mergeTranscriptText(current, incoming) {
+  const base = getTranscriptText(current || '');
+  const next = getTranscriptText(incoming || '');
+  if (!next) return base;
+  if (!base) return next;
+
+  const normalizeForMerge = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[\s,，.。!?！？;；:：'"“”‘’、\-—_()[\]{}<>《》]/g, '');
+  const normalizedBase = normalizeForMerge(base);
+  const normalizedNext = normalizeForMerge(next);
+  const commonPrefixLength = (a, b) => {
+    const max = Math.min(a.length, b.length);
+    let index = 0;
+    while (index < max && a[index] === b[index]) index += 1;
+    return index;
+  };
+
+  if (normalizedBase && normalizedNext) {
+    if (normalizedNext === normalizedBase || normalizedNext.startsWith(normalizedBase)) return next;
+    if (normalizedBase.startsWith(normalizedNext)) return base;
+    if (normalizedBase.endsWith(normalizedNext)) return base;
+
+    const commonPrefix = commonPrefixLength(normalizedBase, normalizedNext);
+    const shorterLength = Math.min(normalizedBase.length, normalizedNext.length);
+    if (commonPrefix >= 6 && commonPrefix / shorterLength >= 0.55) {
+      return next.length >= base.length * 0.6 ? next : base;
+    }
+  }
+
+  if (next === base || next.startsWith(base)) return next;
+  if (base.endsWith(next)) return base;
+
+  const maxOverlap = Math.min(base.length, next.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (base.slice(-size) === next.slice(0, size)) {
+      return getTranscriptText(`${base}${next.slice(size)}`);
+    }
+  }
+
+  return getTranscriptText(`${base}${/[a-zA-Z0-9]$/.test(base) && /^[a-zA-Z0-9]/.test(next) ? ' ' : ''}${next}`);
+}
+
+function appendFinalTranscript(text) {
+  const cleaned = getTranscriptText(text);
+  if (!cleaned) return '';
+  const combined = mergeTranscriptText(latestFinalTranscript, cleaned);
+  latestFinalTranscript = combined;
+  latestInterimTranscript = '';
+  if (isMeaningfulTranscript(combined)) {
+    if (combined !== lastTranscriptSnapshot) {
+      lastTranscriptSnapshot = combined;
+      lastTranscriptAt = Date.now();
+    }
+    hasDetectedSpeech = true;
+    if (!transcriptSilenceTimer) scheduleTranscriptSilenceStop();
+  }
+  return combined;
+}
+
 function markAudioActivity(level) {
-  if (level < AUDIO_ACTIVITY_THRESHOLD) return;
-  lastSpeechAt = Date.now();
-  hasDetectedSpeech = true;
+  if (level >= AUDIO_ACTIVITY_THRESHOLD) {
+    lastAudioActivityAt = Date.now();
+  }
 }
 
-function getPendingTranscript() {
-  return getTranscriptText(latestFinalTranscript || latestInterimTranscript || '');
-}
+function setVoiceVisualState(state, label) {
+  const isListening = state === 'listening';
+  const isPausedState = state === 'paused';
+  const isVisible = isListening || isPausedState;
+  if (label) pausedStatusText = label;
 
-function hasPendingMeaningfulTranscript() {
-  return isMeaningfulTranscript(getPendingTranscript());
-}
+  if ($waveformBar) {
+    $waveformBar.classList.toggle('active', isVisible);
+    $waveformBar.classList.toggle('is-listening', isListening);
+    $waveformBar.classList.toggle('is-paused', isPausedState);
+    $waveformBar.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
+  }
 
-function clearListeningUi() {
-  if ($waveformBar) $waveformBar.classList.remove('active');
-  if ($recordBtn) $recordBtn.classList.remove('recording');
+  if ($recordBtn) {
+    $recordBtn.classList.toggle('recording', isListening);
+    $recordBtn.classList.toggle('paused', isPausedState);
+  }
+
+  if ($waveStatus) {
+    $waveStatus.textContent = isListening ? '正在收听' : isPausedState ? pausedStatusText : '';
+  }
 }
 
 function beginVisualSession(resetTimer = false) {
   const wasActive = isConversationActive;
   isConversationActive = true;
   isPaused = false;
-  resetTurnState({ clearSubmitted: true });
+  resetTurnState({ clearSubmitted: resetTimer || !wasActive });
   if (resetTimer || !wasActive) {
     startTime = Date.now();
     updateTimer();
   }
-  if ($recordBtn) $recordBtn.classList.add('recording');
-  if ($waveformBar) $waveformBar.classList.add('active');
-  if (!wasActive) {
-    drawWaveform();
-  }
+  setVoiceVisualState('listening');
+  if (!wasActive) drawWaveform();
 }
 
 function clearVisualSession() {
   cancelAnimationFrame(animFrameId);
-  clearListeningUi();
+  setVoiceVisualState('idle');
   bindInputInterim('');
 }
 
 async function teardownAudioMonitoring() {
   if (streamGlobal) {
-    streamGlobal.getTracks().forEach(track => track.stop());
+    streamGlobal.getTracks().forEach((track) => track.stop());
     streamGlobal = null;
   }
-
   if (audioCtx) {
     await audioCtx.close().catch(() => {});
     audioCtx = null;
   }
-
   analyser = null;
 }
 
@@ -211,10 +331,10 @@ async function setupAudioMonitoring(stream) {
 
 function stopBrowserRecognition({ resetInstance = false } = {}) {
   if (!recognition) return;
-  try { recognition.stop(); } catch (e) {}
-  if (resetInstance) {
-    recognition = null;
-  }
+  try {
+    recognition.stop();
+  } catch (e) {}
+  if (resetInstance) recognition = null;
 }
 
 function stopDoubaoRecognition() {
@@ -249,15 +369,20 @@ function notifyVoiceStartFailed(message) {
   getVoiceUi().announceVoiceStartFailed?.(message);
 }
 
-function pauseListeningUiOnly() {
-  if (isPaused) return;
+function pauseListeningUiOnly(label = '等待模型回复') {
+  pausedStatusText = label;
+  if (isPaused) {
+    setVoiceVisualState('paused', label);
+    return;
+  }
   isPaused = true;
-  clearListeningUi();
+  setVoiceVisualState('paused', label);
 }
 
 function pauseListeningForPlayback() {
-  pauseListeningUiOnly();
+  pauseListeningUiOnly('语音播报中');
   silenceStopRequested = false;
+  clearTranscriptSilenceTimer();
   stopBrowserRecognition();
   stopDoubaoRecognition();
 }
@@ -267,7 +392,9 @@ function submitRecognizedText(text, { autoStopped = false } = {}) {
   if (!isMeaningfulTranscript(cleaned)) return false;
   if (turnCompleted && latestSubmittedTranscript === cleaned) return false;
 
-  pauseListeningUiOnly();
+  pauseListeningUiOnly('等待模型回复');
+  clearTranscriptSilenceTimer();
+  clearPendingAutoSubmitTimer();
   stopBrowserRecognition();
   stopDoubaoRecognition();
 
@@ -275,6 +402,7 @@ function submitRecognizedText(text, { autoStopped = false } = {}) {
   latestSubmittedTranscript = cleaned;
   latestFinalTranscript = cleaned;
   latestInterimTranscript = '';
+  lastTranscriptSnapshot = cleaned;
   silenceStopRequested = false;
   bindInputInterim('');
 
@@ -291,8 +419,10 @@ function submitRecognizedText(text, { autoStopped = false } = {}) {
 function requestSilenceStop() {
   if (!isConversationActive || isPaused || silenceStopRequested) return;
   if (!hasDetectedSpeech) return;
+  if (Date.now() - voiceSessionStartedAt < STARTUP_GRACE_MS) return;
 
   silenceStopRequested = true;
+  clearTranscriptSilenceTimer();
   const submitted = flushPendingTranscriptIfNeeded();
   if (submitted) {
     if (usingDoubaoRecognition) {
@@ -304,31 +434,40 @@ function requestSilenceStop() {
   }
 
   scheduleSilenceRecoveryFallback();
-  pauseListeningUiOnly();
+  schedulePendingAutoSubmit();
+  pauseListeningUiOnly('等待模型回复');
 
   if (usingDoubaoRecognition) {
     stopDoubaoRecognition();
     return;
   }
-
   stopBrowserRecognition();
 }
 
-function shouldAutoStopForSilence(level) {
+function submitCurrentVoiceTurn() {
+  if (!isConversationActive || isPaused || turnCompleted) return false;
+  const pending = getPendingTranscript();
+  if (!isMeaningfulTranscript(pending)) return false;
+  silenceStopRequested = true;
+  clearTranscriptSilenceTimer();
+  return submitRecognizedText(pending, { autoStopped: false });
+}
+
+function shouldAutoStopForSilence() {
   if (!isConversationActive || isPaused || silenceStopRequested) return false;
   if (!hasDetectedSpeech) return false;
   if (!hasPendingMeaningfulTranscript()) return false;
   if (Date.now() - voiceSessionStartedAt < STARTUP_GRACE_MS) return false;
-  if (level >= AUDIO_ACTIVITY_THRESHOLD) return false;
-  return Date.now() - lastSpeechAt >= SILENCE_TIMEOUT_MS;
+  return Date.now() - lastTranscriptAt >= SILENCE_TIMEOUT_MS;
 }
 
-function computeAudioLevel(dataArray) {
-  let total = 0;
-  for (let i = 0; i < dataArray.length; i += 1) {
-    total += dataArray[i] / 255;
+function computeAudioLevel(timeDomainArray) {
+  let sumSquares = 0;
+  for (let i = 0; i < timeDomainArray.length; i += 1) {
+    const centered = (timeDomainArray[i] - 128) / 128;
+    sumSquares += centered * centered;
   }
-  return total / dataArray.length;
+  return Math.sqrt(sumSquares / timeDomainArray.length);
 }
 
 function createBrowserRecognition(SRec) {
@@ -352,13 +491,17 @@ function createBrowserRecognition(SRec) {
     }
 
     if (interimTranscript) {
-      bindInputInterim(interimTranscript);
-      markTranscriptActivity(interimTranscript, { final: false });
+      const combinedInterim = mergeTranscriptText(latestFinalTranscript, interimTranscript);
+      bindInputInterim(combinedInterim);
+      markTranscriptActivity(combinedInterim, { final: false });
     }
 
     if (finalTranscript) {
-      markTranscriptActivity(finalTranscript, { final: true });
-      submitRecognizedText(finalTranscript, { autoStopped: silenceStopRequested });
+      const combinedFinal = appendFinalTranscript(finalTranscript);
+      bindInputInterim(combinedFinal);
+      if (silenceStopRequested) {
+        submitRecognizedText(combinedFinal, { autoStopped: true });
+      }
     }
   };
 
@@ -368,7 +511,9 @@ function createBrowserRecognition(SRec) {
       return;
     }
     if (isConversationActive && !isPaused) {
-      try { recognition.start(); } catch (e) {}
+      try {
+        recognition.start();
+      } catch (e) {}
     }
   };
 
@@ -377,13 +522,13 @@ function createBrowserRecognition(SRec) {
       console.error('Speech recognition error:', event.error);
     }
   };
-};
+}
 
 async function startBrowserConversation({ resetTimer = true } = {}) {
   usingDoubaoRecognition = false;
   const SRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SRec) {
-    throw new Error('您的浏览器不支持原生语音识别，请使用 Chrome 或 Edge。');
+    throw new Error('当前浏览器不支持原生语音识别，请使用 Chrome 或 Edge。');
   }
 
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -398,32 +543,33 @@ async function startDoubaoConversation({ resetTimer = true } = {}) {
   const config = getVoiceConfig();
   const session = await startDoubaoStreamingRecognition(config, {
     onInterim(text) {
-      console.log('[waveform] Doubao onInterim:', text, 'isPaused=', isPaused);
       if (isPaused && !silenceStopRequested) return;
-      bindInputInterim(text);
-      markTranscriptActivity(text, { final: false });
+      const combinedInterim = mergeTranscriptText(latestFinalTranscript, text);
+      bindInputInterim(combinedInterim);
+      markTranscriptActivity(combinedInterim, { final: false });
     },
     onFinal(fullText) {
-      console.log('[waveform] Doubao onFinal:', fullText, 'isPaused=', isPaused, 'silenceStopRequested=', silenceStopRequested);
       if (!isMeaningfulTranscript(fullText)) return;
       if (turnCompleted && latestSubmittedTranscript === getTranscriptText(fullText)) return;
-      markTranscriptActivity(fullText, { final: true });
-      submitRecognizedText(fullText, { autoStopped: silenceStopRequested });
+      const mergedFinal = mergeTranscriptText(latestFinalTranscript, fullText);
+      markTranscriptActivity(mergedFinal, { final: true });
+      bindInputInterim(mergedFinal);
+      if (silenceStopRequested) {
+        submitRecognizedText(mergedFinal, { autoStopped: true });
+      }
     },
     onError(error) {
       console.error('[waveform] Doubao onError:', error);
     },
     onComplete(finalText) {
-      console.log('[waveform] Doubao onComplete:', finalText);
       if (finalText) {
-        markTranscriptActivity(finalText, { final: true });
+        markTranscriptActivity(mergeTranscriptText(latestFinalTranscript, finalText), { final: true });
       }
       flushPendingTranscriptIfNeeded();
     },
     onClose(finalText) {
-      console.log('[waveform] Doubao onClose:', finalText);
       if (finalText) {
-        markTranscriptActivity(finalText, { final: true });
+        markTranscriptActivity(mergeTranscriptText(latestFinalTranscript, finalText), { final: true });
       }
       if (doubaoSession === session) {
         doubaoSession = null;
@@ -443,14 +589,17 @@ export function initWaveform(completeCallback) {
   $waveformBar = document.getElementById('waveformBar');
   $waveformCanvas = document.getElementById('waveformCanvas');
   $waveTime = document.getElementById('waveTime');
+  $waveStatus = document.getElementById('waveStatus');
+  $waveSubmitBtn = document.getElementById('waveSubmitBtn');
   $recordBtn = document.getElementById('recordBtn');
-  ctx = $waveformCanvas.getContext('2d');
+  ctx = $waveformCanvas?.getContext('2d') || null;
   onTextComplete = completeCallback;
 
-  $recordBtn.addEventListener('click', toggleConversation);
+  $recordBtn?.addEventListener('click', toggleConversation);
+  $waveSubmitBtn?.addEventListener('click', submitCurrentVoiceTurn);
 
   if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
-    console.warn('当前浏览器不支持原生 SpeechRecognition，需要 Chrome/Edge');
+    console.warn('当前浏览器不支持原生 SpeechRecognition，需要 Chrome 或 Edge');
   }
 }
 
@@ -480,12 +629,14 @@ export async function resumeListening() {
     if (!recognition) {
       const SRec = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SRec) {
-        throw new Error('您的浏览器不支持原生语音识别，请使用 Chrome 或 Edge。');
+        throw new Error('当前浏览器不支持原生语音识别，请使用 Chrome 或 Edge。');
       }
       createBrowserRecognition(SRec);
     }
 
-    try { recognition.start(); } catch (e) {}
+    try {
+      recognition.start();
+    } catch (e) {}
     notifyVoiceWaiting();
   })();
 
@@ -529,7 +680,7 @@ async function startConversation() {
     }
     notifyVoiceStarted();
   } catch (err) {
-    console.error('麦克风权限被拒绝或启动失败:', err);
+    console.error('麦克风权限被拒绝或语音启动失败', err);
     notifyVoiceStartFailed(err.message);
     alert(`语音启动失败：${err.message}`);
     await stopConversation();
@@ -546,6 +697,9 @@ export async function stopConversation() {
   turnCompleted = false;
   latestInterimTranscript = '';
   latestFinalTranscript = '';
+  lastTranscriptSnapshot = '';
+  clearTranscriptSilenceTimer();
+  clearPendingAutoSubmitTimer();
 
   stopBrowserRecognition({ resetInstance: true });
   stopDoubaoRecognition();
@@ -556,26 +710,28 @@ export async function stopConversation() {
 }
 
 function drawWaveform() {
-  if (!isConversationActive || !analyser) return;
+  if (!isConversationActive || !analyser || !$waveformCanvas || !ctx) return;
 
   const bufferLength = analyser.frequencyBinCount;
   const dataArray = new Uint8Array(bufferLength);
+  const timeDomainArray = new Uint8Array(analyser.fftSize);
 
   function draw() {
     animFrameId = requestAnimationFrame(draw);
-    if (!analyser) return;
-    analyser.getByteFrequencyData(dataArray);
+    if (!analyser || !$waveformCanvas || !ctx) return;
 
-    const level = computeAudioLevel(dataArray);
+    analyser.getByteFrequencyData(dataArray);
+    analyser.getByteTimeDomainData(timeDomainArray);
+
+    const audioLevel = computeAudioLevel(timeDomainArray);
     if (!isPaused) {
-      markAudioActivity(level);
-      if (shouldAutoStopForSilence(level)) {
+      markAudioActivity(audioLevel);
+      if (shouldAutoStopForSilence()) {
         requestSilenceStop();
       }
     }
 
-    const w = $waveformCanvas.width;
-    const h = $waveformCanvas.height;
+    const { width: w, height: h } = $waveformCanvas;
     ctx.clearRect(0, 0, w, h);
 
     const barWidth = (w / bufferLength) * 2;

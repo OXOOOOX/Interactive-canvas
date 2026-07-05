@@ -67,17 +67,34 @@ function getConversationStage(conversation = [], markdownDraft = '') {
   return 'working';
 }
 
-function buildChatSystemPrompt(canvasOutline, markdownDraft = '', conversation = []) {
+function buildChatSystemPrompt(canvasOutline, markdownDraft = '', conversation = [], options = {}) {
   const draftSection = markdownDraft
     ? `\nCurrent Markdown Draft:\n${markdownDraft}\n`
     : '';
   const stage = getConversationStage(conversation, markdownDraft);
+  const voiceSection = options.voiceOutputEnabled
+    ? `
+Voice output is ON.
+Your first characters MUST be exactly the voice brief marker. At the very beginning of every response, output exactly one voice brief line in this format:
+[[VOICE_BRIEF: your short spoken summary]]
+
+Voice brief rules:
+- This line is for TTS only and will be hidden from the chat transcript.
+- Keep it natural, concise, and easy to speak aloud.
+- Use 1-2 short sentences, no Markdown, no lists, no JSON.
+- Focus on what you understood, the key takeaway, or the most important question for the user.
+- Do not read the full answer aloud. After the VOICE_BRIEF line, continue with the full visible answer normally.
+`
+    : `
+Voice output is OFF.
+Do not output VOICE_BRIEF metadata. Write only the visible answer.
+`;
   return `You are a highly professional and friendly 'Voice Chat Copilot'.
 The user is brainstorming and exploring ideas with you via voice.
 Please note:
 1. Your responses must be logical and insightful, but do not jump into long essays too early.
 2. There is a separate Canvas Agent handling whiteboard drawing, so DO NOT output any layout or drawing JSON commands.
-3. Output pure text responses only.
+3. Do not output JSON, tool calls, or canvas operation commands. If voice output is ON, the required VOICE_BRIEF control line is allowed and must come first.
 4. Respond in the same language as the user.
 5. When a Markdown draft is provided, treat it as the user's editable working draft. Continue from it instead of repeating it wholesale, and suggest precise incremental edits when useful.
 6. Use search capabilities only when the user asks for current facts, market/news/policy/source-backed claims, or when you explicitly propose and the user accepts a research step.
@@ -88,6 +105,8 @@ Stage behavior:
 - discovery: The user is probably still defining the task. Do NOT produce a comprehensive answer. Ask 2-4 targeted questions or offer 2-3 concrete directions. Keep the reply short.
 - clarifying: Synthesize what you understand, identify missing constraints, and ask the next most important question. If the task would benefit from outside information, say you can do a web collection/deep integration next.
 - working: Provide useful structure and actionable output. For research-heavy tasks, propose or perform an online collection/deep integration when the user's request implies current information is needed.
+
+${voiceSection}
 
 Default response shape:
 - Prefer concise paragraphs or bullets.
@@ -357,9 +376,15 @@ async function consumeStreamingResponse(res, onDelta) {
  */
 export async function callChatLlm(config, conversation, canvas) {
   const outline = buildCanvasOutline(canvas);
-  const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation);
+  const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation, {
+    voiceOutputEnabled: Boolean(config.voiceOutputEnabled),
+  });
   const messages = [
     { role: 'system', content: systemPrompt },
+    ...(config.voiceOutputEnabled ? [{
+      role: 'system',
+      content: 'Critical voice-mode rule: the assistant response must start with [[VOICE_BRIEF: ...]] before any visible answer text.',
+    }] : []),
     ...conversation,
   ];
   const rawText = await sendRequest(config, messages, false);
@@ -368,9 +393,15 @@ export async function callChatLlm(config, conversation, canvas) {
 
 export async function callChatLlmStream(config, conversation, canvas, handlers = {}) {
   const outline = buildCanvasOutline(canvas);
-  const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation);
+  const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation, {
+    voiceOutputEnabled: Boolean(config.voiceOutputEnabled),
+  });
   const messages = [
     { role: 'system', content: systemPrompt },
+    ...(config.voiceOutputEnabled ? [{
+      role: 'system',
+      content: 'Critical voice-mode rule: the assistant response must start with [[VOICE_BRIEF: ...]] before any visible answer text.',
+    }] : []),
     ...conversation,
   ];
   return await sendStreamingChatRequest(config, messages, handlers.onDelta);

@@ -348,10 +348,10 @@ export const ENDPOINT_PRESETS = {
     llm: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
     llmModel: 'doubao-1.5-pro',
     stt: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
-    tts: 'https://openspeech.bytedance.com/api/v1/tts',
+    tts: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional',
     sttModel: 'doubao-asr-streaming-2.0',
     fileSttModel: 'doubao-asr-file-2.0',
-    ttsModel: 'doubao-tts-2.0',
+    ttsModel: 'seed-tts-2.0',
     realtimeVoiceModel: 'doubao-realtime-voice',
   },
   deepseekV4Pro: {

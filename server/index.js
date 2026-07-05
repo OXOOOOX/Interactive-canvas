@@ -1,7 +1,10 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { createServer } from 'node:http';
+import https from 'node:https';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { WebSocketServer, WebSocket } from 'ws';
 
 const rootDir = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const distDir = join(rootDir, 'dist');
@@ -39,6 +42,79 @@ const DEFAULT_MODELS = {
 
 const freeSearchBuckets = new Map();
 const freeLlmBuckets = new Map();
+
+function setupDoubaoAsrProxy(server) {
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on('upgrade', (req, socket, head) => {
+    const url = req.url || '';
+    if (!url.startsWith('/api/doubao-asr')) return;
+
+    wss.handleUpgrade(req, socket, head, (clientSocket) => {
+      wss.emit('connection', clientSocket, req);
+    });
+  });
+
+  wss.on('connection', (clientSocket, req) => {
+    const requestUrl = new URL(req.url || '', 'http://localhost');
+    const target = requestUrl.searchParams.get('target') || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel';
+    const resourceId = requestUrl.searchParams.get('resourceId') || 'volc.seedasr.sauc.duration';
+    const connectId = requestUrl.searchParams.get('connectId') || randomUUID();
+    const apiKey = requestUrl.searchParams.get('apiKey') || '';
+    const targetUrl = new URL(target);
+
+    const headers = {
+      'X-Api-Key': apiKey,
+      'X-Api-Resource-Id': resourceId,
+      'X-Api-Connect-Id': connectId,
+    };
+
+    const upstream = new WebSocket(targetUrl.toString(), {
+      headers,
+      agent: targetUrl.protocol === 'wss:' ? new https.Agent({ rejectUnauthorized: false }) : undefined,
+    });
+
+    const pendingClientMessages = [];
+
+    const flushPendingClientMessages = () => {
+      while (pendingClientMessages.length && upstream.readyState === WebSocket.OPEN) {
+        const { data, isBinary } = pendingClientMessages.shift();
+        upstream.send(data, { binary: isBinary });
+      }
+    };
+
+    const closeBoth = () => {
+      if (clientSocket.readyState === WebSocket.OPEN) clientSocket.close();
+      if (upstream.readyState === WebSocket.OPEN) upstream.close();
+    };
+
+    clientSocket.on('message', (data, isBinary) => {
+      if (upstream.readyState === WebSocket.OPEN) {
+        upstream.send(data, { binary: isBinary });
+      } else {
+        pendingClientMessages.push({ data, isBinary });
+      }
+    });
+
+    upstream.on('open', () => {
+      flushPendingClientMessages();
+    });
+
+    upstream.on('message', (data, isBinary) => {
+      if (clientSocket.readyState === WebSocket.OPEN) {
+        clientSocket.send(data, { binary: isBinary });
+      }
+    });
+
+    upstream.on('error', (error) => {
+      console.error('[doubao-asr] upstream error:', error.message);
+      closeBoth();
+    });
+    upstream.on('close', closeBoth);
+    clientSocket.on('error', closeBoth);
+    clientSocket.on('close', closeBoth);
+  });
+}
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -92,6 +168,51 @@ async function readJsonBody(req, maxBytes = 1_000_000) {
   }
   const text = Buffer.concat(chunks).toString('utf8');
   return text ? JSON.parse(text) : {};
+}
+
+async function proxyDoubaoTts(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  const endpoint = body.endpoint || 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
+  const apiKey = body.apiKey || '';
+  const resourceId = body.resourceId || 'seed-tts-2.0';
+  const requestId = body.requestId || randomUUID();
+  const payload = body.payload;
+
+  if (!apiKey || !payload) {
+    sendJson(res, 400, { error: 'Missing Doubao TTS apiKey or payload.' });
+    return;
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': apiKey,
+        'X-Api-Resource-Id': resourceId,
+        'X-Api-Request-Id': requestId,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: error.message });
+    return;
+  }
+
+  const text = await upstream.text().catch(() => '');
+  res.writeHead(upstream.status, {
+    'Content-Type': upstream.headers.get('content-type') || 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(text);
 }
 
 function getProviderConfig(config = {}) {
@@ -446,6 +567,11 @@ function serveStatic(req, res) {
 }
 
 const server = createServer((req, res) => {
+  if (req.method === 'POST' && req.url?.startsWith('/api/doubao-tts')) {
+    proxyDoubaoTts(req, res);
+    return;
+  }
+
   if (req.method === 'POST' && req.url?.startsWith('/api/chat/stream')) {
     proxyChatStream(req, res);
     return;
@@ -463,6 +589,8 @@ const server = createServer((req, res) => {
 
   serveStatic(req, res);
 });
+
+setupDoubaoAsrProxy(server);
 
 server.listen(port, host, () => {
   console.log(`[server] Interactive Canvas listening on http://${host}:${port}`);

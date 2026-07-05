@@ -231,6 +231,10 @@
           <div class="chat-suggestions" id="chatSuggestions" aria-live="polite"></div>
           <div class="waveform-bar" id="waveformBar" aria-hidden="true">
             <canvas id="waveformCanvas" width="300" height="32"></canvas>
+            <span class="wave-status" id="waveStatus"></span>
+            <button class="wave-submit-btn" id="waveSubmitBtn" type="button" title="提交本次语音" aria-label="提交本次语音">
+              <svg width="14" height="14" viewBox="0 0 18 18" fill="none"><path d="M3.5 9.2l3.4 3.4L14.8 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
             <span class="wave-time" id="waveTime">00:00</span>
           </div>
           <div class="voice-toast" id="voiceToast" aria-live="polite"></div>
@@ -293,9 +297,9 @@
               </label>
             </div>
           </div>
-          <!-- Voice -->
+          <!-- Speech to text -->
           <div class="cfg-section">
-            <h3 class="cfg-title">语音模式</h3>
+            <h3 class="cfg-title">语音转文字 (STT/ASR)</h3>
             <div class="cfg-grid">
               <label class="cfg-label">语音转写
                 <select id="sttEnabled" class="cfg-input">
@@ -303,62 +307,64 @@
                   <option value="false">关闭</option>
                 </select>
               </label>
+              <label class="cfg-label">语言
+                <select id="voiceLanguage" class="cfg-input">
+                  <option value="zh-CN" selected>中文</option>
+                  <option value="en-US">英文</option>
+                  <option value="ja-JP">日语</option>
+                </select>
+              </label>
+              <label class="cfg-label">实时识别 (ASR)
+                <select id="voiceMode" class="cfg-input">
+                  <option value="doubao-pipeline" selected>豆包</option>
+                  <option value="browser">浏览器内置</option>
+                </select>
+              </label>
+              <label class="cfg-label" data-provider-field="asr-doubao">ASR 流式模型
+                <input id="asrModel" type="text" class="cfg-input" placeholder="例如: doubao-asr-streaming-2.0" />
+              </label>
+              <label class="cfg-label" data-provider-field="asr-doubao">ASR Resource ID
+                <input id="asrResourceId" type="text" class="cfg-input" placeholder="volc.bigasr.sauc.duration" />
+              </label>
+              <label class="cfg-label full" data-provider-field="asr-doubao">ASR Endpoint
+                <input id="asrEndpoint" type="url" class="cfg-input" placeholder="wss://..." />
+              </label>
+              <label class="cfg-label">文件转写 (STT)
+                <select id="sttProvider" class="cfg-input"><option value="tongyi">通义千问</option><option value="doubao" selected>豆包</option><option value="custom">自定义</option></select>
+              </label>
+              <label class="cfg-label" data-provider-field="stt-service">STT 文件模型
+                <input id="fileSttModel" type="text" class="cfg-input" placeholder="例如: doubao-asr-file-2.0" />
+              </label>
+              <label class="cfg-label full" data-provider-field="stt-service">STT Endpoint
+                <input id="sttEndpoint" type="url" class="cfg-input" placeholder="https://..." />
+              </label>
+              <input id="sttModel" type="hidden" />
+              <input id="doubaoResourceId" type="hidden" />
+            </div>
+          </div>
+          <!-- Text to speech -->
+          <div class="cfg-section">
+            <h3 class="cfg-title">文字转语音 / 语音合成 (TTS)</h3>
+            <div class="cfg-grid">
               <label class="cfg-label">语音播报
                 <select id="ttsEnabled" class="cfg-input">
                   <option value="true" selected>开启</option>
                   <option value="false">关闭</option>
                 </select>
               </label>
-              <label class="cfg-label">模式
-                <select id="voiceMode" class="cfg-input">
-                  <option value="doubao-pipeline" selected>豆包语音流水线</option>
-                  <option value="doubao-realtime">豆包实时语音</option>
-                  <option value="browser">浏览器兜底</option>
-                </select>
-              </label>
-              <label class="cfg-label">语言
-                <input id="voiceLanguage" type="text" class="cfg-input" placeholder="zh-CN" value="zh-CN" />
-              </label>
-            </div>
-          </div>
-          <!-- STT -->
-          <div class="cfg-section">
-            <h3 class="cfg-title">语音转写 (STT)</h3>
-            <div class="cfg-grid">
-              <label class="cfg-label">供应商
-                <select id="sttProvider" class="cfg-input"><option value="tongyi">通义千问</option><option value="doubao" selected>豆包</option><option value="custom">自定义</option></select>
-              </label>
-              <label class="cfg-label">流式模型
-                <input id="sttModel" type="text" class="cfg-input" placeholder="例如: doubao-asr-streaming-2.0" />
-              </label>
-              <label class="cfg-label">文件模型
-                <input id="fileSttModel" type="text" class="cfg-input" placeholder="例如: doubao-asr-file-2.0" />
-              </label>
-              <label class="cfg-label">Resource ID
-                <input id="doubaoResourceId" type="text" class="cfg-input" placeholder="volc.bigasr.sauc.duration" />
-              </label>
-              <label class="cfg-label full">Endpoint
-                <input id="sttEndpoint" type="url" class="cfg-input" placeholder="https://..." />
-              </label>
-            </div>
-          </div>
-          <!-- TTS -->
-          <div class="cfg-section">
-            <h3 class="cfg-title">语音合成 (TTS)</h3>
-            <div class="cfg-grid">
-              <label class="cfg-label">供应商
+              <label class="cfg-label">TTS 供应商
                 <select id="ttsProvider" class="cfg-input"><option value="tongyi">通义千问</option><option value="doubao" selected>豆包</option><option value="browser">浏览器内置</option><option value="custom">自定义</option></select>
               </label>
-              <label class="cfg-label">模型
-                <input id="ttsModel" type="text" class="cfg-input" placeholder="例如: doubao-tts-2.0" />
+              <label class="cfg-label" data-provider-field="tts-service">TTS 模型
+                <input id="ttsModel" type="text" class="cfg-input" placeholder="例如: seed-tts-2.0" />
               </label>
-              <label class="cfg-label">音色
+              <label class="cfg-label" data-provider-field="tts-service">音色
                 <input id="ttsVoice" type="text" class="cfg-input" placeholder="例如: zh_female_roumei" />
               </label>
-              <label class="cfg-label">实时模型
+              <label class="cfg-label" data-provider-field="tts-service">TTS 实时模型
                 <input id="realtimeVoiceModel" type="text" class="cfg-input" placeholder="例如: doubao-realtime-voice" />
               </label>
-              <label class="cfg-label full">Endpoint
+              <label class="cfg-label full" data-provider-field="tts-service">TTS Endpoint
                 <input id="ttsEndpoint" type="url" class="cfg-input" placeholder="https://..." />
               </label>
             </div>
@@ -367,6 +373,7 @@
           <div class="cfg-section">
             <h3 class="cfg-title">认证</h3>
             <div class="cfg-grid">
+              <div class="cfg-subtitle full">大语言模型 (LLM)</div>
               <label class="cfg-label full">LLM API Key
                 <div style="display:flex;gap:8px;align-items:center">
                   <input id="llmApiKey" type="password" class="cfg-input" placeholder="LLM API Key" style="flex:1" />
@@ -376,12 +383,7 @@
                 <span class="cfg-hint">可留空先使用服务器免费试用额度；额度用完或长期使用时，建议填写自己的 Key。不同供应商的 Key 会分开保存。</span>
                 <span id="llmKeyNotice" class="cfg-hint key-notice" hidden></span>
               </label>
-              <label class="cfg-label full">豆包 API Key
-                <div style="display:flex;gap:8px;align-items:center">
-                  <input id="doubaoApiKey" type="password" class="cfg-input" placeholder="Doubao API Key" style="flex:1" />
-                  <button id="testDoubaoAsrBtn" type="button" class="btn-sm" style="white-space:nowrap">测试豆包 ASR</button>
-                </div>
-              </label>
+              <div class="cfg-subtitle full">搜索</div>
               <label class="cfg-label">搜索平台
                 <select id="searchProvider" class="cfg-input">
                   <option value="tavily" selected>Tavily</option>
@@ -396,18 +398,18 @@
                 </div>
                 <span class="cfg-hint">留空时使用服务器配置的限额兜底 Key；填入自己的 Key 后不消耗服务器免费额度。</span>
               </label>
-              <label class="cfg-label">豆包 APP ID（旧版可选）
-                <input id="appId" type="password" class="cfg-input" placeholder="APP ID" />
+              <div class="cfg-subtitle full">ASR 语音识别</div>
+              <label class="cfg-label full">豆包 API Key（用于 ASR / TTS）
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input id="doubaoApiKey" type="password" class="cfg-input" placeholder="Doubao API Key" style="flex:1" />
+                  <button id="testDoubaoAsrBtn" type="button" class="btn-sm" style="white-space:nowrap">测试豆包 ASR</button>
+                </div>
               </label>
-              <label class="cfg-label">豆包 Access Token（旧版可选）
-                <input id="accessToken" type="password" class="cfg-input" placeholder="Access Token" />
-              </label>
-              <label class="cfg-label">豆包 Secret Key（旧版可选）
-                <input id="secretKey" type="password" class="cfg-input" placeholder="Secret Key" />
-              </label>
-              <label class="cfg-label full">代理 URL（可选）
+              <label class="cfg-label full">代理 URL（用于文件 STT，可选）
                 <input id="proxyUrl" type="url" class="cfg-input" placeholder="https://your-proxy/api" />
               </label>
+              <div class="cfg-subtitle full">TTS 语音合成</div>
+              <div class="cfg-hint full">豆包 TTS 使用上面的“豆包 API Key（用于 ASR / TTS）”；浏览器内置 TTS 不需要 Key。</div>
             </div>
           </div>
           <!-- OAuth -->

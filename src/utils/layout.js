@@ -72,6 +72,34 @@ function isPositionLocked(block) {
   return Boolean(block?.locked || block?.positionLocked);
 }
 
+function snapshotLockedBlockGeometry(blocks) {
+  const snapshot = new Map();
+  for (const block of blocks) {
+    if (!isPositionLocked(block)) continue;
+    snapshot.set(block.id, {
+      x: block.x,
+      y: block.y,
+      width: block.width,
+      height: block.height,
+    });
+  }
+  return snapshot;
+}
+
+function restoreLockedBlockGeometry(blocks, snapshot) {
+  if (!snapshot || snapshot.size === 0) return;
+  for (const block of blocks) {
+    const geometry = snapshot.get(block.id);
+    if (!geometry || !isPositionLocked(block)) continue;
+    block.x = geometry.x;
+    block.y = geometry.y;
+    if (geometry.width === undefined) delete block.width;
+    else block.width = geometry.width;
+    if (geometry.height === undefined) delete block.height;
+    else block.height = geometry.height;
+  }
+}
+
 function normalizeExtremePortraitBlocks(blocks) {
   const originallyTallIds = new Set();
   let changed = false;
@@ -1146,7 +1174,7 @@ function positionBlocks(blocks, connections, orderedLayers, layerMap) {
 }
 
 function resolveHorizontalOverlaps(blocks, connections, parentMap = {}, options = {}) {
-  const movableBlocks = blocks.filter(b => !b.isVirtual && b.x !== undefined && b.y !== undefined);
+  const movableBlocks = blocks.filter(b => !b.isVirtual && !isPositionLocked(b) && b.x !== undefined && b.y !== undefined);
   if (movableBlocks.length <= 1) return;
 
   const protectedIds = options.protectedIds || new Set();
@@ -1264,7 +1292,7 @@ function resolveLayerBandOverlaps(blocks, connections, options = {}) {
 }
 
 function resolveResidualSkeletonOverlaps(blocks, connections) {
-  const movableBlocks = blocks.filter(block => !block.isVirtual && block.x !== undefined && block.y !== undefined);
+  const movableBlocks = blocks.filter(block => !block.isVirtual && !isPositionLocked(block) && block.x !== undefined && block.y !== undefined);
   if (movableBlocks.length <= 1) return;
 
   const parentMap = buildParentMap(blocks, connections);
@@ -1608,7 +1636,7 @@ function compactHorizontalBands(blocks, clusters = null) {
     }
   }
   const movableBlocks = blocks.filter(
-    b => !b.isVirtual && !blockedIds.has(b.id) && b.x !== undefined && b.y !== undefined
+    b => !b.isVirtual && !isPositionLocked(b) && !blockedIds.has(b.id) && b.x !== undefined && b.y !== undefined
   );
   const bandTolerance = 90;
   const bands = [];
@@ -2551,6 +2579,7 @@ export function autoLayout(blocks, connections, groups = []) {
   if (blocks.length === 0) return;
   if (!validateLayoutInput(blocks)) return;
 
+  const lockedGeometry = snapshotLockedBlockGeometry(blocks);
   const { originallyTallIds } = normalizeExtremePortraitBlocks(blocks);
 
   const blockMap = {};
@@ -2620,6 +2649,8 @@ export function autoLayout(blocks, connections, groups = []) {
       }
     });
   }
+
+  restoreLockedBlockGeometry(blocks, lockedGeometry);
 }
 
 /**

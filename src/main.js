@@ -1,5 +1,5 @@
-/**
- * main.js — 应用入口，初始化 + 全局事件绑定
+﻿/**
+ * main.js 鈥?搴旂敤鍏ュ彛锛屽垵濮嬪寲 + 鍏ㄥ眬浜嬩欢缁戝畾
  */
 
 import './style.css';
@@ -25,7 +25,7 @@ import { parseAiResponse, executeOperations, dedupeConnections, repairCanvasText
 import { createCopyAttachment, createMappedAttachment, getAttachmentFile, listAttachments, supportsMappedFiles, updateAttachmentBlob } from './services/file-store.js';
 import { PDFDocument } from 'pdf-lib';
 
-// ── DOM References ──
+// 鈹€鈹€ DOM References 鈹€鈹€
 const $ = (id) => document.getElementById(id);
 
 const dom = {
@@ -94,9 +94,6 @@ const dom = {
   searchProvider: $('searchProvider'),
   searchApiKey: $('searchApiKey'),
   testDoubaoAsrBtn: $('testDoubaoAsrBtn'),
-  appId: $('appId'),
-  accessToken: $('accessToken'),
-  secretKey: $('secretKey'),
   proxyUrl: $('proxyUrl'),
   saveConfig: $('saveConfig'),
   loadConfig: $('loadConfig'),
@@ -126,6 +123,9 @@ const dom = {
   sttEnabled: $('sttEnabled'),
   ttsEnabled: $('ttsEnabled'),
   voiceLanguage: $('voiceLanguage'),
+  asrModel: $('asrModel'),
+  asrResourceId: $('asrResourceId'),
+  asrEndpoint: $('asrEndpoint'),
   sttModel: $('sttModel'),
   fileSttModel: $('fileSttModel'),
   doubaoResourceId: $('doubaoResourceId'),
@@ -137,7 +137,7 @@ const dom = {
   voiceToast: $('voiceToast'),
 };
 
-// ── Config Helper ──
+// 鈹€鈹€ Config Helper 鈹€鈹€
 let llmApiKeys = {};
 let lastLlmProvider = 'tongyi';
 let modelOptions = [];
@@ -145,6 +145,7 @@ let apiKeyMissingPromptShown = false;
 
 function getConfig() {
   return {
+    voiceConfigVersion: 2,
     llmProvider: dom.llmProvider.value,
     sttProvider: dom.sttProvider.value,
     ttsProvider: dom.ttsProvider.value,
@@ -152,6 +153,9 @@ function getConfig() {
     sttEnabled: dom.sttEnabled?.value !== 'false',
     ttsEnabled: dom.ttsEnabled?.value !== 'false',
     voiceLanguage: dom.voiceLanguage.value,
+    asrModel: dom.asrModel?.value || dom.sttModel.value,
+    asrResourceId: dom.asrResourceId?.value || dom.doubaoResourceId.value,
+    asrEndpoint: dom.asrEndpoint?.value || dom.sttEndpoint.value,
     llmEndpoint: dom.llmEndpoint.value,
     llmModel: dom.llmModel.value,
     sttEndpoint: dom.sttEndpoint.value,
@@ -167,9 +171,6 @@ function getConfig() {
     doubaoApiKey: dom.doubaoApiKey.value,
     searchProvider: dom.searchProvider?.value || 'tavily',
     searchApiKey: dom.searchApiKey?.value || '',
-    appId: dom.appId.value,
-    accessToken: dom.accessToken.value,
-    secretKey: dom.secretKey.value,
     proxyUrl: dom.proxyUrl?.value || '',
     searchMode: getSearchModeValue(),
     preferBuiltinSearch: Boolean(dom.preferBuiltinSearch?.checked),
@@ -183,21 +184,45 @@ function getConfig() {
 }
 
 function applyConfigDefaults(config = {}) {
-  return {
+  const needsVoiceMigration = !config.voiceConfigVersion || Number(config.voiceConfigVersion) < 2;
+  const merged = {
     voiceMode: 'doubao-pipeline',
+    sttProvider: 'doubao',
+    ttsProvider: 'doubao',
     sttEnabled: true,
     ttsEnabled: true,
     voiceLanguage: 'zh-CN',
+    asrEndpoint: ENDPOINT_PRESETS.doubao?.stt || '',
+    asrModel: ENDPOINT_PRESETS.doubao?.sttModel || '',
+    asrResourceId: 'volc.seedasr.sauc.duration',
     sttModel: ENDPOINT_PRESETS.doubao?.sttModel || '',
     fileSttModel: ENDPOINT_PRESETS.doubao?.fileSttModel || '',
     doubaoResourceId: 'volc.seedasr.sauc.duration',
-    ttsModel: ENDPOINT_PRESETS.doubao?.ttsModel || '',
+    ttsEndpoint: ENDPOINT_PRESETS.doubao?.tts || '',
+    ttsModel: ENDPOINT_PRESETS.doubao?.ttsModel || 'seed-tts-2.0',
     realtimeVoiceModel: ENDPOINT_PRESETS.doubao?.realtimeVoiceModel || '',
     searchMode: 'auto',
     preferBuiltinSearch: false,
     searchProvider: 'tavily',
     ...config,
+    voiceConfigVersion: 2,
   };
+
+  if (needsVoiceMigration && merged.doubaoApiKey) {
+    merged.ttsEnabled = true;
+    merged.ttsProvider = 'doubao';
+    if (merged.voiceMode === 'browser') {
+      merged.voiceMode = 'doubao-pipeline';
+    }
+    if (!merged.ttsEndpoint) {
+      merged.ttsEndpoint = ENDPOINT_PRESETS.doubao?.tts || '';
+    }
+    if (!merged.ttsModel || merged.ttsModel === 'doubao-tts-2.0') {
+      merged.ttsModel = ENDPOINT_PRESETS.doubao?.ttsModel || 'seed-tts-2.0';
+    }
+  }
+
+  return merged;
 }
 
 function normalizeLlmApiKeys(value) {
@@ -330,11 +355,7 @@ function useFreeTrialLlm() {
 }
 
 function hasDoubaoAsrCredentials(config = getConfig()) {
-  return !!(
-    config.doubaoApiKey ||
-    (config.appId && config.accessToken) ||
-    (config.appId && config.secretKey)
-  );
+  return !!config.doubaoApiKey;
 }
 
 function hasDoubaoTtsCredentials(config = getConfig()) {
@@ -362,41 +383,35 @@ function getVoiceRouting(config = getConfig()) {
     };
   }
 
-  if (config.voiceMode === 'browser') {
-    return {
-      inputMode: isSttEnabled(config) ? 'browser' : 'off',
-      outputMode: isTtsEnabled(config) ? 'browser' : 'off',
-      fallbackReason: '',
-    };
-  }
-
-  if (!isDoubaoVoiceMode(config)) {
-    return {
-      inputMode: isSttEnabled(config) ? 'browser' : 'off',
-      outputMode: isTtsEnabled(config) ? (config.ttsProvider || 'browser') : 'off',
-      fallbackReason: '',
-    };
-  }
-
-  const hasAsr = hasDoubaoAsrCredentials(config) && !!config.sttEndpoint;
+  const hasDoubaoAsrCreds = hasDoubaoAsrCredentials(config);
+  const hasAsr = hasDoubaoAsrCreds && !!config.asrEndpoint;
   const hasTts = hasDoubaoTtsCredentials(config);
+  const fallbackReasons = [];
+  const wantsDoubaoAsr = isDoubaoVoiceMode(config);
+  const wantsDoubaoTts = config.ttsProvider === 'doubao';
+  const outputMode = (() => {
+    if (!isTtsEnabled(config)) return 'off';
+    if (wantsDoubaoTts) return hasTts ? 'doubao' : 'browser';
+    return config.ttsProvider || 'browser';
+  })();
+
+  if (isSttEnabled(config) && wantsDoubaoAsr && !hasAsr) {
+    fallbackReasons.push(hasDoubaoAsrCreds ? '未配置豆包 ASR endpoint，暂用浏览器识别' : '未配置豆包识别凭证，暂用浏览器识别');
+  }
+
+  if (isTtsEnabled(config) && wantsDoubaoTts && !hasTts) {
+    fallbackReasons.push(getDoubaoTtsFallbackReason(config));
+  }
 
   return {
-    inputMode: isSttEnabled(config) ? (hasAsr ? 'doubao' : 'browser') : 'off',
-    outputMode: isTtsEnabled(config) ? (hasTts ? 'doubao' : 'browser') : 'off',
-    fallbackReason: isTtsEnabled(config) && !hasTts && hasAsr
-      ? getDoubaoTtsFallbackReason(config)
-      : '',
+    inputMode: isSttEnabled(config) ? (wantsDoubaoAsr && hasAsr ? 'doubao' : 'browser') : 'off',
+    outputMode,
+    fallbackReason: fallbackReasons.filter(Boolean).join('；'),
   };
 }
 
 function syncVoiceModeFallback() {
-  const config = getConfig();
-  if (!isDoubaoVoiceMode(config)) return;
-  if (!isSttEnabled(config)) return;
-  if (!hasDoubaoAsrCredentials(config) || !config.sttEndpoint) {
-    dom.voiceMode.value = 'browser';
-  }
+  syncVoiceFallbackNotice({ force: true });
 }
 
 let lastVoiceFallbackReason = '';
@@ -504,7 +519,7 @@ function announceVoiceStopFallback() {
 }
 
 function announceVoiceWaiting() {
-  showVoiceToast('正在听你说话…', 'default', 1800);
+  showVoiceToast('正在听你说话...', 'default', 1800);
 }
 
 function announceVoiceStopped() {
@@ -518,7 +533,7 @@ function announceVoiceStarted(inputMode = getVoiceRouting().inputMode) {
 }
 
 function announceVoiceStartFailed(message) {
-  showVoiceToast(message || '语音启动失败', 'browser', 2800);
+  showVoiceToast(message || '璇煶鍚姩澶辫触', 'browser', 2800);
 }
 
 function shouldShowRouteToast(config = getConfig()) {
@@ -556,6 +571,19 @@ function updateVoiceControlAvailability(config = getConfig()) {
     dom.speakBtn.title = ttsEnabled ? '朗读上一条回复' : '语音播报已关闭';
     dom.speakBtn.setAttribute('aria-label', dom.speakBtn.title);
   }
+}
+
+function setProviderFieldsVisible(fieldName, visible) {
+  document.querySelectorAll(`[data-provider-field="${fieldName}"]`).forEach((el) => {
+    el.classList.toggle('is-hidden', !visible);
+    el.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  });
+}
+
+function syncVoiceProviderFieldVisibility(config = getConfig()) {
+  setProviderFieldsVisible('asr-doubao', config.voiceMode !== 'browser');
+  setProviderFieldsVisible('stt-service', config.sttProvider !== 'browser');
+  setProviderFieldsVisible('tts-service', config.ttsProvider !== 'browser');
 }
 
 window.__VOICE_TOAST__ = showVoiceToast;
@@ -611,14 +639,8 @@ function applyLocalConfig() {
   const cfg = window.__LOCAL_CONFIG__ || {};
   const envLlmApiKey = import.meta.env?.VITE_LLM_API_KEY || import.meta.env?.VITE_DASHSCOPE_KEY;
   const envDoubaoApiKey = import.meta.env?.VITE_DOUBAO_API_KEY;
-  const envAppId = import.meta.env?.VITE_DOUBAO_APP_ID;
-  const envAccessToken = import.meta.env?.VITE_DOUBAO_ACCESS_TOKEN;
-  const envSecretKey = import.meta.env?.VITE_DOUBAO_SECRET_KEY;
   const finalLlmApiKey = envLlmApiKey || cfg.LLM_API_KEY || cfg.DASHSCOPE_KEY;
   const finalDoubaoApiKey = envDoubaoApiKey || cfg.DOUBAO_API_KEY;
-  const finalAppId = envAppId || cfg.DOUBAO_APP_ID;
-  const finalAccessToken = envAccessToken || cfg.DOUBAO_ACCESS_TOKEN;
-  const finalSecretKey = envSecretKey || cfg.DOUBAO_SECRET_KEY;
 
   if (finalLlmApiKey) {
     dom.llmApiKey.value = finalLlmApiKey;
@@ -629,30 +651,14 @@ function applyLocalConfig() {
   }
 
   if (finalDoubaoApiKey) {
-    // 清空旧的 API Key，强制使用 AppID + AccessToken 认证
-    dom.doubaoApiKey.value = '';
+    dom.doubaoApiKey.value = finalDoubaoApiKey;
   } else if (!dom.doubaoApiKey.value && typeof finalDoubaoApiKey === 'string') {
-    dom.doubaoApiKey.value = '';
+    dom.doubaoApiKey.value = finalDoubaoApiKey;
   }
 
-
-  if (finalAppId) {
-    dom.appId.value = finalAppId;
-  } else {
-    dom.appId.value = '6166922297';
-  }
-  if (finalAccessToken) {
-    dom.accessToken.value = finalAccessToken;
-  } else {
-    dom.accessToken.value = 'VbF4CWyH164u21wcN-ulOf-4M9A3Y0VC';
-  }
-  if (finalSecretKey) {
-    dom.secretKey.value = finalSecretKey;
-  } else {
-    dom.secretKey.value = 'YCF0iqRAetOeiEmYKUBsyxxlD-XGCctF';
-  }
 
   if (!dom.llmEndpoint.value && cfg.DEFAULT_LLM_ENDPOINT) dom.llmEndpoint.value = cfg.DEFAULT_LLM_ENDPOINT;
+  if (dom.asrEndpoint && !dom.asrEndpoint.value && cfg.DEFAULT_STT_ENDPOINT) dom.asrEndpoint.value = cfg.DEFAULT_STT_ENDPOINT;
   if (!dom.sttEndpoint.value && cfg.DEFAULT_STT_ENDPOINT) dom.sttEndpoint.value = cfg.DEFAULT_STT_ENDPOINT;
   if (!dom.ttsEndpoint.value && cfg.DEFAULT_TTS_ENDPOINT) dom.ttsEndpoint.value = cfg.DEFAULT_TTS_ENDPOINT;
 
@@ -679,7 +685,7 @@ export async function checkAutoNaming() {
   }
 }
 
-// ── Canvas change handler ──
+// 鈹€鈹€ Canvas change handler 鈹€鈹€
 function onCanvasChange(options = {}) {
   if (options.relayout) {
     relayoutAfterContentChange({
@@ -774,35 +780,17 @@ function restoreLockedBlockGeometry(snapshot) {
   }
 }
 
-function snapshotPositionLocks() {
-  return appState.canvas.blocks
-    .filter(block => block.positionLocked)
-    .map(block => block.id);
-}
-
-function restorePositionLocks(lockedIds) {
-  const lockedIdSet = new Set(lockedIds);
-  for (const block of appState.canvas.blocks) {
-    block.positionLocked = lockedIdSet.has(block.id);
-  }
-}
-
 function runManualAutoLayout() {
   try {
     assertCanvasIntegrity(appState.canvas);
   } catch (err) {
-    alert('Canvas integrity check failed before auto layout:\n' + err.message);
+    alert('鑷姩甯冨眬鍓嶆鏌ュけ璐ワ細\n' + err.message);
     return;
   }
 
-  const positionLockedIds = snapshotPositionLocks();
   let layoutCompleted = false;
 
   try {
-    for (const block of appState.canvas.blocks) {
-      if (block.positionLocked) block.positionLocked = false;
-    }
-
     renderBlocks();
     syncBlockSizes({ adaptForAutoLayout: true });
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
@@ -812,7 +800,6 @@ function runManualAutoLayout() {
     fitToView();
     layoutCompleted = true;
   } finally {
-    restorePositionLocks(positionLockedIds);
     if (layoutCompleted) pushHistory();
     syncCanvasAfterRender();
     saveCurrentCanvas();
@@ -845,7 +832,7 @@ function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false,
   updateLayoutLockButton();
 }
 
-// ── Reusable node actions ──
+// 鈹€鈹€ Reusable node actions 鈹€鈹€
 function initChatPanelResize() {
   if (!dom.chatPanel || !dom.chatResizeHandle) return;
 
@@ -934,7 +921,7 @@ function handleAddSibling() {
   const newBlock = {
     id: crypto.randomUUID(),
     type: 'text',
-    label: '新同级块',
+    label: '鏂板悓绾у潡',
     content: '',
     x: selected.x + 260,
     y: selected.y,
@@ -1026,13 +1013,13 @@ async function chooseMappedAttachment() {
     createFileBlockFromAttachment(meta);
   } catch (err) {
     if (err?.name === 'AbortError') return;
-    alert('映射失败：浏览器当前不允许读取该文件。你可以改用「保存副本」，或在浏览器授权后重试。');
+    alert('映射失败：浏览器当前不允许读取该文件。你可以改用保存副本，或在浏览器授权后重试。');
   }
 }
 
 function getAttachmentStatusText(item) {
   if (item.status === 'permission-blocked') return '需授权';
-  if (item.status === 'broken-copy') return '映射断裂，已转副本';
+  if (item.status === 'broken-copy') return '映射断开，已转副本';
   if (item.mode === 'mapped') return '映射，含副本';
   return '副本';
 }
@@ -1041,7 +1028,7 @@ function formatAttachmentSize(size) {
   const n = Number(size) || 0;
   if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   if (n >= 1024) return `${Math.round(n / 1024)} KB`;
-  return n > 0 ? `${n} B` : '未知大小';
+  return n > 0 ? `${n} B` : '鏈煡澶у皬';
 }
 
 function isPdfAttachment(item) {
@@ -1050,7 +1037,7 @@ function isPdfAttachment(item) {
 
 function parsePdfPagesText(text) {
   return [...new Set(String(text || '')
-    .split(/[,，\s]+/)
+    .split(/[,锛孿s]+/)
     .map(part => Number(part.trim()))
     .filter(page => Number.isInteger(page) && page > 0))];
 }
@@ -1119,7 +1106,7 @@ async function compactPdfAttachment(item) {
 
   const result = await getAttachmentFile(item.id);
   if (!result.file) {
-    alert('无法读取 PDF 文件，请先重新上传或选择副本');
+    alert('鏃犳硶璇诲彇 PDF 鏂囦欢锛岃鍏堥噸鏂颁笂浼犳垨閫夋嫨鍓湰');
     return;
   }
 
@@ -1127,7 +1114,7 @@ async function compactPdfAttachment(item) {
   const totalPages = sourcePdf.getPageCount();
   const safePages = [...new Set(usedPages.map(page => Math.min(Math.max(1, page), totalPages)))].sort((a, b) => a - b);
   if (safePages.length === 0) {
-    alert('没有可保留的有效页码');
+    alert('娌℃湁鍙繚鐣欑殑鏈夋晥椤电爜');
     return;
   }
 
@@ -1172,8 +1159,8 @@ function renderAttachmentList(items) {
         </div>
       </div>
       <div class="file-list-actions">
-        ${isPdfAttachment(item) ? `<button class="file-list-compact" data-compact-pdf="${item.id}" type="button">只留使用页</button>` : ''}
-        <button class="file-list-use" data-use-attachment="${item.id}" type="button">插入</button>
+        ${isPdfAttachment(item) ? `<button class="file-list-compact" data-compact-pdf="${item.id}" type="button">鍙暀浣跨敤椤?/button>` : ''}
+        <button class="file-list-use" data-use-attachment="${item.id}" type="button">鎻掑叆</button>
       </div>
     </div>
   `).join('');
@@ -1194,14 +1181,14 @@ async function showFileUploadMenu() {
   menu.innerHTML = `
     <div class="file-upload-actions">
       <button class="import-item" data-mode="mapped" ${supportsMappedFiles() ? '' : 'disabled'}>
-        <span class="import-icon">↻</span>
+        <span class="import-icon">↗</span>
         <span class="import-text">
           <strong>映射文件</strong>
           <small>上传副本，每次刷新</small>
         </span>
       </button>
       <button class="import-item" data-mode="copy">
-        <span class="import-icon">＋</span>
+        <span class="import-icon">⧉</span>
         <span class="import-text">
           <strong>保存副本</strong>
           <small>不随本地文件修改</small>
@@ -1226,7 +1213,7 @@ async function showFileUploadMenu() {
       const attachment = attachments.find(item => item.id === compactBtn.dataset.compactPdf);
       if (attachment) {
         compactBtn.disabled = true;
-        compactBtn.textContent = '处理中';
+        compactBtn.textContent = '处理中...';
         compactPdfAttachment(attachment)
           .then(() => {
             menu.remove();
@@ -1269,7 +1256,7 @@ async function showFileUploadMenu() {
 }
 
 function handleDeleteNode() {
-  // 支持多选删除
+  // 鏀寔澶氶€夊垹闄?
   const selectedIds = appState.selectedBlockIds.length > 0
     ? [...appState.selectedBlockIds]
     : appState.selectedBlockId
@@ -1278,7 +1265,7 @@ function handleDeleteNode() {
 
   if (selectedIds.length === 0) return;
 
-  // 递归收集要删除的块（包括子节点）
+  // 閫掑綊鏀堕泦瑕佸垹闄ょ殑鍧楋紙鍖呮嫭瀛愯妭鐐癸級
   const toRemove = new Set(selectedIds);
   let changed = true;
   while (changed) {
@@ -1291,15 +1278,15 @@ function handleDeleteNode() {
     }
   }
 
-  // 删除块
+  // 鍒犻櫎鍧?
   appState.canvas.blocks = appState.canvas.blocks.filter(b => !toRemove.has(b.id));
 
-  // 删除相关连接
+  // 鍒犻櫎鐩稿叧杩炴帴
   appState.canvas.connections = appState.canvas.connections.filter(
     c => !toRemove.has(c.fromId) && !toRemove.has(c.toId)
   );
 
-  // 删除组内的块引用，如果组为空则删除组
+  // 鍒犻櫎缁勫唴鐨勫潡寮曠敤锛屽鏋滅粍涓虹┖鍒欏垹闄ょ粍
   if (appState.canvas.groups) {
     for (let i = appState.canvas.groups.length - 1; i >= 0; i--) {
       const group = appState.canvas.groups[i];
@@ -1310,7 +1297,7 @@ function handleDeleteNode() {
     }
   }
 
-  // 清除选中状态
+  // 娓呴櫎閫変腑鐘舵€?
   appState.selectedBlockId = null;
   appState.selectedBlockIds = [];
   pushHistory();
@@ -1318,7 +1305,7 @@ function handleDeleteNode() {
   saveCurrentCanvas();
 }
 
-/** 拆分块 - 将一个块拆成几个语义上区分的块 */
+/** 鎷嗗垎鍧?- 灏嗕竴涓潡鎷嗘垚鍑犱釜璇箟涓婂尯鍒嗙殑鍧?*/
 async function handleSplitNode() {
   if (!appState.selectedBlockId) return;
   const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -1332,7 +1319,7 @@ async function handleSplitNode() {
 
   try {
     const config = getConfig();
-    // 调用 LLM 进行拆分
+    // 璋冪敤 LLM 杩涜鎷嗗垎
     const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
       method: 'POST',
       headers: {
@@ -1361,11 +1348,11 @@ Content: ${block.content || 'None'}`
     const splitResult = JSON.parse(data?.choices?.[0]?.message?.content || '[]');
 
     if (splitResult.length > 0) {
-      // 删除原始块
+      // 鍒犻櫎鍘熷鍧?
       const blockIndex = appState.canvas.blocks.findIndex(b => b.id === block.id);
       appState.canvas.blocks.splice(blockIndex, 1);
 
-      // 创建拆分后的新块，排列在原始块附近
+      // 鍒涘缓鎷嗗垎鍚庣殑鏂板潡锛屾帓鍒楀湪鍘熷鍧楅檮杩?
       const baseX = block.x;
       const baseY = block.y;
       const verticalGap = 100;
@@ -1374,22 +1361,22 @@ Content: ${block.content || 'None'}`
         const newBlock = {
           id: crypto.randomUUID(),
           type: 'text',
-          label: repairMarkdownFormatting(item.label || `拆分块${index + 1}`).text,
+          label: repairMarkdownFormatting(item.label || `拆分块 ${index + 1}`).text,
           content: repairMarkdownFormatting(item.content || '').text,
           x: baseX,
           y: baseY + index * verticalGap,
         };
         appState.canvas.blocks.push(newBlock);
 
-        // 如果是第一个块，继承原始块的连接
+        // 濡傛灉鏄涓€涓潡锛岀户鎵垮師濮嬪潡鐨勮繛鎺?
         if (index === 0) {
-          // 继承所有传入连接（fromId 指向原始块的）
+          // 缁ф壙鎵€鏈変紶鍏ヨ繛鎺ワ紙fromId 鎸囧悜鍘熷鍧楃殑锛?
           appState.canvas.connections.forEach(conn => {
             if (conn.toId === block.id) {
               conn.toId = newBlock.id;
             }
           });
-          // 继承所有传出连接（toId 指向原始块的）
+          // 缁ф壙鎵€鏈変紶鍑鸿繛鎺ワ紙toId 鎸囧悜鍘熷鍧楃殑锛?
           appState.canvas.connections.forEach(conn => {
             if (conn.fromId === block.id) {
               conn.fromId = newBlock.id;
@@ -1398,7 +1385,7 @@ Content: ${block.content || 'None'}`
         }
       });
 
-      // 清理组引用
+      // 娓呯悊缁勫紩鐢?
       if (appState.canvas.groups) {
         appState.canvas.groups.forEach(group => {
           const idx = group.blockIds.indexOf(block.id);
@@ -1428,7 +1415,7 @@ Content: ${block.content || 'None'}`
   }
 }
 
-/** 合并块 - 将选中的多个块合并成一个 */
+/** 鍚堝苟鍧?- 灏嗛€変腑鐨勫涓潡鍚堝苟鎴愪竴涓?*/
 async function handleMergeNode() {
   const selectedIds = appState.selectedBlockIds;
   if (selectedIds.length < 2) {
@@ -1447,7 +1434,7 @@ async function handleMergeNode() {
   try {
     const config = getConfig();
 
-    // 调用 LLM 进行合并
+    // 璋冪敤 LLM 杩涜鍚堝苟
     const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
       method: 'POST',
       headers: {
@@ -1477,11 +1464,11 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
     const mergeResult = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
 
     if (mergeResult.label) {
-      // 计算边界框，确定合并后块的位置
+      // 璁＄畻杈圭晫妗嗭紝纭畾鍚堝苟鍚庡潡鐨勪綅缃?
       const minX = Math.min(...selectedBlocks.map(b => b.x));
       const minY = Math.min(...selectedBlocks.map(b => b.y));
 
-      // 创建合并后的新块
+      // 鍒涘缓鍚堝苟鍚庣殑鏂板潡
       const mergedBlock = {
         id: crypto.randomUUID(),
         type: 'text',
@@ -1489,11 +1476,11 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
         content: repairMarkdownFormatting(mergeResult.content || '').text,
         x: minX,
         y: minY,
-        width: 240, // 合并后的块稍大一些
+        width: 240, // 鍚堝苟鍚庣殑鍧楃◢澶т竴浜?
       };
       appState.canvas.blocks.push(mergedBlock);
 
-      // 继承所有连接的源和目标
+      // 缁ф壙鎵€鏈夎繛鎺ョ殑婧愬拰鐩爣
       const connFromIds = new Set();
       const connToIds = new Set();
       selectedBlocks.forEach(b => {
@@ -1507,9 +1494,9 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
         });
       });
 
-      // 创建新连接
+      // 鍒涘缓鏂拌繛鎺?
       connFromIds.forEach(toId => {
-        if (!selectedIds.includes(toId)) { // 不连接到已删除的块
+        if (!selectedIds.includes(toId)) { // 涓嶈繛鎺ュ埌宸插垹闄ょ殑鍧?
           appState.canvas.connections.push({
             id: crypto.randomUUID(),
             fromId: mergedBlock.id,
@@ -1518,7 +1505,7 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
         }
       });
       connToIds.forEach(fromId => {
-        if (!selectedIds.includes(fromId)) { // 不从已删除的块连接
+        if (!selectedIds.includes(fromId)) { // 涓嶄粠宸插垹闄ょ殑鍧楄繛鎺?
           appState.canvas.connections.push({
             id: crypto.randomUUID(),
             fromId,
@@ -1527,20 +1514,20 @@ ${selectedBlocks.map(b => `[${b.label}] ${b.content || ''}`).join('\n\n')}`
         }
       });
 
-      // 删除原始块和连接
+      // 鍒犻櫎鍘熷鍧楀拰杩炴帴
       appState.canvas.blocks = appState.canvas.blocks.filter(b => !selectedIds.includes(b.id));
       appState.canvas.connections = appState.canvas.connections.filter(
         c => !selectedIds.includes(c.fromId) && !selectedIds.includes(c.toId)
       );
 
-      // 清理组引用
+      // 娓呯悊缁勫紩鐢?
       if (appState.canvas.groups) {
         appState.canvas.groups.forEach(group => {
           group.blockIds = group.blockIds.filter(id => !selectedIds.includes(id));
         });
       }
 
-      // 选中新块
+      // 閫変腑鏂板潡
       appState.selectedBlockId = mergedBlock.id;
       appState.selectedBlockIds = [];
 
@@ -1622,12 +1609,8 @@ async function playReplyWithResolvedConfig(reply, config = getConfig()) {
     await speak(reply, resolvedConfig);
     announceAssistantSpeechDone('doubao');
   } catch (error) {
-    console.error('豆包语音合成失败，回退浏览器朗读:', error);
-    showVoiceToast('豆包播报失败，已回退浏览器朗读', 'browser', 2600);
-    await playBrowserSpeech(reply, {
-      onStart: () => announceAssistantSpeechStart('browser'),
-      onDone: () => announceAssistantSpeechDone('browser'),
-    });
+    console.error('豆包语音合成失败', error);
+    showVoiceToast(`豆包播报失败：${error.message || '请检查 TTS 配置'}`, 'browser', 3200);
   }
 }
 
@@ -1640,7 +1623,26 @@ async function safeResumeListening() {
   await resumeListening();
 }
 
+let earlyVoiceResumeTimer = null;
+
+function clearEarlyVoiceResumeTimer() {
+  if (!earlyVoiceResumeTimer) return;
+  clearTimeout(earlyVoiceResumeTimer);
+  earlyVoiceResumeTimer = null;
+}
+
+function scheduleEarlyVoiceResumeDuringModelReply() {
+  clearEarlyVoiceResumeTimer();
+  if (!isConversationActive || isTtsEnabled()) return;
+
+  earlyVoiceResumeTimer = setTimeout(() => {
+    earlyVoiceResumeTimer = null;
+    void safeResumeListening();
+  }, 1000);
+}
+
 async function playAssistantReply(reply) {
+  clearEarlyVoiceResumeTimer();
   if (!reply || !isTtsEnabled()) {
     await safeResumeListening();
     return;
@@ -1689,6 +1691,15 @@ function setSttProviderModels(provider, preserveExisting = false) {
   setPresetInputValue(dom.fileSttModel, preset.fileSttModel, preserveExisting);
 }
 
+function setAsrProviderPreset(provider, preserveExisting = false) {
+  if (!dom.asrEndpoint || !dom.asrModel || !dom.asrResourceId) return;
+  if (provider === 'browser') return;
+  const preset = ENDPOINT_PRESETS.doubao || {};
+  setPresetInputValue(dom.asrEndpoint, preset.stt, preserveExisting);
+  setPresetInputValue(dom.asrModel, preset.sttModel, preserveExisting);
+  setPresetInputValue(dom.asrResourceId, 'volc.seedasr.sauc.duration', preserveExisting);
+}
+
 function setTtsProviderModels(provider, preserveExisting = false) {
   const preset = ENDPOINT_PRESETS[provider] || {};
   setPresetInputValue(dom.ttsModel, preset.ttsModel, preserveExisting);
@@ -1716,9 +1727,10 @@ function setConfig(config) {
   updateTongyiSearchVisibility();
   syncVoiceModeFallback();
   updateVoiceControlAvailability(getConfig());
+  syncVoiceProviderFieldVisibility(getConfig());
 }
 
-function setAudioUploadBusy(isBusy, label = '上传音频转写') {
+function setAudioUploadBusy(isBusy, label = '涓婁紶闊抽杞啓') {
   if (!dom.audioUploadBtn) return;
   dom.audioUploadBtn.disabled = isBusy || !isSttEnabled();
   dom.audioUploadBtn.title = label;
@@ -1735,7 +1747,7 @@ async function handleAudioFileSelected(file) {
   try {
     const text = await transcribe(file, getConfig());
     const cleaned = (text || '').trim();
-    if (!cleaned) throw new Error('未识别到有效文本');
+    if (!cleaned) throw new Error('鏈瘑鍒埌鏈夋晥鏂囨湰');
 
     if (isConversationActive) {
       await sendText(cleaned);
@@ -1749,11 +1761,11 @@ async function handleAudioFileSelected(file) {
       input.focus();
     }
   } catch (error) {
-    console.error('音频文件转写失败:', error);
-    alert(`音频转写失败：${error.message}`);
+    console.error('闊抽鏂囦欢杞啓澶辫触:', error);
+    alert(`闊抽杞啓澶辫触锛?{error.message}`);
   } finally {
     if (dom.audioFileInput) dom.audioFileInput.value = '';
-    setAudioUploadBusy(false, '上传音频转写');
+    setAudioUploadBusy(false, '涓婁紶闊抽杞啓');
   }
 }
 
@@ -1835,23 +1847,17 @@ function updateModelOptions(models) {
 }
 
 function applyVoiceModePreset() {
-  if (dom.voiceMode.value === 'browser') {
-    dom.sttProvider.value = 'browser';
-    dom.ttsProvider.value = 'browser';
-    applyProviderPreset(false);
-    syncVoiceFallbackNotice();
-    return;
-  }
-
-  dom.sttProvider.value = 'doubao';
-  dom.ttsProvider.value = hasDoubaoTtsCredentials() ? 'doubao' : 'browser';
-  applyProviderPreset(false);
+  setAsrProviderPreset(dom.voiceMode.value, false);
   syncVoiceFallbackNotice();
 }
 
 function applyVoiceLocalDefaults() {
   if (!dom.voiceMode.value) dom.voiceMode.value = 'doubao-pipeline';
   if (!dom.voiceLanguage.value) dom.voiceLanguage.value = 'zh-CN';
+  setAsrProviderPreset(dom.voiceMode.value, true);
+  if (!dom.asrModel?.value && dom.sttModel?.value) dom.asrModel.value = dom.sttModel.value;
+  if (!dom.asrResourceId?.value && dom.doubaoResourceId?.value) dom.asrResourceId.value = dom.doubaoResourceId.value;
+  if (!dom.asrEndpoint?.value && dom.sttEndpoint?.value?.startsWith('ws')) dom.asrEndpoint.value = dom.sttEndpoint.value;
 }
 
 function bindAudioUpload() {
@@ -1881,7 +1887,7 @@ function isMeaningfulTranscript(text) {
   return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
 }
 
-/** 扩张块 - 在当前块内增加更多内容 */
+/** 鎵╁紶鍧?- 鍦ㄥ綋鍓嶅潡鍐呭鍔犳洿澶氬唴瀹?*/
 async function handleExpandNode() {
   if (!appState.selectedBlockId) return;
   const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -1890,12 +1896,12 @@ async function handleExpandNode() {
   const btn = $('expandNode');
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '扩张中...';
+    btn.innerHTML = '扩展中...';
   }
 
   try {
     const config = getConfig();
-    // 调用 LLM 进行扩张
+    // 璋冪敤 LLM 杩涜鎵╁紶
     const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
       method: 'POST',
       headers: {
@@ -1910,7 +1916,7 @@ async function handleExpandNode() {
 - label: Keep or slightly refine the original title
 - content: Add key points, examples, or relevant information to enrich the content
 - Use concise language with short sentences, avoid verbosity
-- Stay on topic, don't偏离 the core theme
+- Stay on topic, do not deviate from the core theme
 - Return ONLY JSON: {"label":"Title","content":"Expanded content"}
 - No explanations, no extra text
 - IMPORTANT: Keep the output language the same as the input content language
@@ -1931,23 +1937,23 @@ Content: ${block.content || 'None'}`
       block.content = repairMarkdownFormatting(expandResult.content).text;
       relayoutAfterContentChange({ pushHistoryEntry: true, changedBlockIds: [block.id] });
     } else {
-      alert('无法扩张，请尝试手动编辑');
+      alert('无法扩展，请尝试手动编辑');
     }
   } catch (err) {
     console.error('Expand error:', err);
-    alert('扩张失败：' + err.message);
+    alert('扩展失败：' + err.message);
   } finally {
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = `
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2v20M2 12h20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="5" y="5" width="14" height="14" stroke="currentColor" stroke-width="2" rx="2"/></svg>
-        <span>扩张</span>
+        <span>扩展</span>
       `;
     }
   }
 }
 
-/** 派生块 - 创建更深层次的子层级块 */
+/** 娲剧敓鍧?- 鍒涘缓鏇存繁灞傛鐨勫瓙灞傜骇鍧?*/
 async function handleDeriveNode() {
   if (!appState.selectedBlockId) return;
   const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -1961,7 +1967,7 @@ async function handleDeriveNode() {
 
   try {
     const config = getConfig();
-    // 调用 LLM 生成派生子层级
+    // 璋冪敤 LLM 鐢熸垚娲剧敓瀛愬眰绾?
     const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
       method: 'POST',
       headers: {
@@ -1988,7 +1994,7 @@ Content: ${block.content || 'None'}`
     const deriveResult = JSON.parse(data?.choices?.[0]?.message?.content || '[]');
 
     if (deriveResult.length > 0) {
-      const startX = block.x + 260; // 在右侧生成
+      const startX = block.x + 260; // 鍦ㄥ彸渚х敓鎴?
       const startY = block.y;
       const verticalGap = 80;
 
@@ -1996,14 +2002,14 @@ Content: ${block.content || 'None'}`
         const newBlock = {
           id: crypto.randomUUID(),
           type: 'text',
-          label: repairMarkdownFormatting(item.label || `派生${index + 1}`).text,
+          label: repairMarkdownFormatting(item.label || `派生 ${index + 1}`).text,
           content: repairMarkdownFormatting(item.content || '').text,
           x: startX,
           y: startY + index * verticalGap,
         };
         appState.canvas.blocks.push(newBlock);
 
-        // 创建从父块到新块的连接
+        // 鍒涘缓浠庣埗鍧楀埌鏂板潡鐨勮繛鎺?
         appState.canvas.connections.push({
           id: crypto.randomUUID(),
           fromId: block.id,
@@ -2031,7 +2037,7 @@ Content: ${block.content || 'None'}`
   }
 }
 
-/** 翻译块 - 中英互译 */
+/** 缈昏瘧鍧?- 涓嫳浜掕瘧 */
 async function handleTranslateNode() {
   if (!appState.selectedBlockId) return;
   const block = appState.canvas.blocks.find(b => b.id === appState.selectedBlockId);
@@ -2045,7 +2051,7 @@ async function handleTranslateNode() {
 
   try {
     const config = getConfig();
-    // 调用 LLM 进行翻译
+    // 璋冪敤 LLM 杩涜缈昏瘧
     const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
       method: 'POST',
       headers: {
@@ -2097,7 +2103,7 @@ Content: ${block.content || 'None'}`
   }
 }
 
-// ── Create new block at position ──
+// 鈹€鈹€ Create new block at position 鈹€鈹€
 function handleCreateBlock(x, y) {
   const newBlock = {
     id: crypto.randomUUID(),
@@ -2115,12 +2121,17 @@ function handleCreateBlock(x, y) {
   checkAutoNaming();
 }
 
-// ── Init ──
+// 鈹€鈹€ Init 鈹€鈹€
 function init() {
   document.addEventListener('boardChanged', checkAutoNaming);
   // 1. Load saved config
   const saved = loadSavedConfig();
-  if (saved) setConfig(saved);
+  if (saved) {
+    setConfig(saved);
+    if (!saved.voiceConfigVersion || Number(saved.voiceConfigVersion) < 2) {
+      saveCurrentConfig();
+    }
+  }
   applyProviderPreset(true);
   applyLocalConfig();
   applyVoiceModePreset();
@@ -2156,7 +2167,7 @@ function init() {
       }
     }
   }
-  // 确保 groups 字段存在
+  // 纭繚 groups 瀛楁瀛樺湪
   if (!appState.canvas.groups) {
     appState.canvas.groups = [];
   }
@@ -2180,14 +2191,33 @@ function init() {
         return;
       }
 
-      const reply = await sendText(text);
+      let voiceBriefPlayed = false;
+      const response = await sendText(text, {
+        voiceOutputEnabled: isTtsEnabled(getConfig()),
+        returnVoicePayload: true,
+        onVoiceBrief: (voiceBrief) => {
+          if (voiceBriefPlayed || !voiceBrief || !isConversationActive) return;
+          voiceBriefPlayed = true;
+          void (async () => {
+            await resumeListening();
+            await playAssistantReply(voiceBrief);
+          })();
+        },
+      });
+      const reply = typeof response === 'string' ? response : response?.reply;
+      const voiceText = typeof response === 'string' ? response : response?.voiceText;
       if (reply && isConversationActive) {
-        await playAssistantReply(reply);
+        await resumeListening();
+        if (!voiceBriefPlayed && voiceText) {
+          await playAssistantReply(voiceText);
+        }
       } else {
+        clearEarlyVoiceResumeTimer();
         await resumeListening();
       }
     } catch (err) {
-      console.error('语音转写或响应失败:', err);
+      clearEarlyVoiceResumeTimer();
+      console.error('璇煶杞啓鎴栧搷搴斿け璐?', err);
       await resumeListening();
     }
   });
@@ -2203,7 +2233,7 @@ function init() {
   bindEvents();
 }
 
-// ── Helper Functions ──
+// 鈹€鈹€ Helper Functions 鈹€鈹€
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -2215,16 +2245,16 @@ function formatDate(timestamp) {
   const now = new Date();
   const diff = now - date;
 
-  // 小于 1 分钟
+  // 灏忎簬 1 鍒嗛挓
   if (diff < 60000) return '刚刚';
-  // 小于 1 小时
+  // 灏忎簬 1 灏忔椂
   if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
-  // 小于 24 小时
+  // 灏忎簬 24 灏忔椂
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
-  // 小于 7 天
+  // 灏忎簬 7 澶?
   if (diff < 604800000) return `${Math.floor(diff / 86400000)}天前`;
 
-  // 超过 7 天显示日期
+  // 瓒呰繃 7 澶╂樉绀烘棩鏈?
   return date.toLocaleDateString('zh-CN', {
     month: 'short',
     day: 'numeric'
@@ -2233,7 +2263,7 @@ function formatDate(timestamp) {
 
 function bindEvents() {
 
-  // ── Canvas List ──
+  // 鈹€鈹€ Canvas List 鈹€鈹€
   let canvasListOpen = false;
 
   function updateCanvasListUI() {
@@ -2254,10 +2284,10 @@ function bindEvents() {
           <span class="canvas-list-item-meta">${formatDate(canvas.updatedAt)}</span>
         </div>
         <div class="canvas-list-item-actions">
-          <button class="btn-icon btn-xs rename-canvas-btn" data-id="${canvas.id}" title="重命名">
+          <button class="btn-icon btn-xs rename-canvas-btn" data-id="${canvas.id}" title="閲嶅懡鍚?>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 10l5-1 5-5-4-4-5 5-1 5z" stroke="currentColor" stroke-width="1.2"/></svg>
           </button>
-          <button class="btn-icon btn-xs delete-canvas-btn" data-id="${canvas.id}" title="删除">
+          <button class="btn-icon btn-xs delete-canvas-btn" data-id="${canvas.id}" title="鍒犻櫎">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M3 3v7h6V3M4 1h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
           </button>
         </div>
@@ -2284,7 +2314,7 @@ function bindEvents() {
     const item = e.target.closest('.canvas-list-item');
     if (!item) return;
 
-    // 忽略按钮点击（删除/重命名）
+    // 蹇界暐鎸夐挳鐐瑰嚮锛堝垹闄?閲嶅懡鍚嶏級
     if (e.target.closest('.rename-canvas-btn') || e.target.closest('.delete-canvas-btn')) return;
 
     const id = item.dataset.id;
@@ -2308,7 +2338,7 @@ function bindEvents() {
       deleteCanvas(id);
       updateCanvasListUI();
 
-      // 如果删除的是当前画布，创建新的空白画布
+      // 濡傛灉鍒犻櫎鐨勬槸褰撳墠鐢诲竷锛屽垱寤烘柊鐨勭┖鐧界敾甯?
       if (appState.canvas.id === id) {
         const newCanvas = createCanvas('未命名白板');
         appState.canvas = newCanvas;
@@ -2331,7 +2361,7 @@ function bindEvents() {
         renameCanvas(id, newTitle.trim());
         updateCanvasListUI();
 
-        // 如果是当前画布，同步更新标题显示
+        // 濡傛灉鏄綋鍓嶇敾甯冿紝鍚屾鏇存柊鏍囬鏄剧ず
         if (id === appState.canvas.id) {
           dom.boardTitle.textContent = newTitle.trim();
           appState.canvas.title = newTitle.trim();
@@ -2340,10 +2370,10 @@ function bindEvents() {
     }
   }
 
-  // 画布列表按钮
+  // 鐢诲竷鍒楄〃鎸夐挳
   dom.canvasListBtn.addEventListener('click', toggleCanvasList);
 
-  // 新建画布按钮（顶部）
+  // 鏂板缓鐢诲竷鎸夐挳锛堥《閮級
   dom.newCanvasBtn.addEventListener('click', () => {
     const newCanvas = createCanvas('未命名白板');
     appState.canvas = newCanvas;
@@ -2353,7 +2383,7 @@ function bindEvents() {
     closeCanvasList();
   });
 
-  // 新建画布按钮（列表中）
+  // 鏂板缓鐢诲竷鎸夐挳锛堝垪琛ㄤ腑锛?
   dom.newCanvasFromListBtn.addEventListener('click', () => {
     const newCanvas = createCanvas('未命名白板');
     appState.canvas = newCanvas;
@@ -2363,21 +2393,21 @@ function bindEvents() {
     updateCanvasListUI();
   });
 
-  // 画布列表点击委托
+  // 鐢诲竷鍒楄〃鐐瑰嚮濮旀墭
   dom.canvasListItems.addEventListener('click', handleCanvasListClick);
   dom.canvasListItems.addEventListener('click', handleDeleteCanvas);
   dom.canvasListItems.addEventListener('click', handleRenameCanvas);
 
-  // 点击外部关闭画布列表
+  // 鐐瑰嚮澶栭儴鍏抽棴鐢诲竷鍒楄〃
   document.addEventListener('pointerdown', (e) => {
     if (canvasListOpen && !dom.canvasListMenu.contains(e.target) && !dom.canvasListBtn.contains(e.target)) {
       closeCanvasList();
     }
   });
 
-  // ── Board title edit ──
+  // 鈹€鈹€ Board title edit 鈹€鈹€
   dom.boardTitle.addEventListener('click', () => {
-    const newTitle = prompt('编辑白板标题', appState.canvas.title);
+    const newTitle = prompt('缂栬緫鐧芥澘鏍囬', appState.canvas.title);
     if (newTitle !== null) {
       appState.canvas.title = newTitle;
       dom.boardTitle.textContent = newTitle;
@@ -2385,7 +2415,7 @@ function bindEvents() {
     }
   });
 
-  // ── Undo / Redo ──
+  // 鈹€鈹€ Undo / Redo 鈹€鈹€
   dom.undoBtn.addEventListener('click', () => {
     if (undo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
   });
@@ -2403,36 +2433,36 @@ function bindEvents() {
     }
   });
 
-  // ── Group Shortcuts ──
+  // 鈹€鈹€ Group Shortcuts 鈹€鈹€
   document.addEventListener('keydown', (e) => {
     // Skip when editing text
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
 
-    // Ctrl+G → 创建组
+    // Ctrl+G 鈫?鍒涘缓缁?
     if ((e.ctrlKey || e.metaKey) && e.key === 'g' && !e.shiftKey) {
       const selectedIds = appState.selectedBlockIds;
       if (selectedIds.length >= 2) {
         e.preventDefault();
-        // 确保 groups 数组存在
+        // 纭繚 groups 鏁扮粍瀛樺湪
         if (!appState.canvas.groups) {
           appState.canvas.groups = [];
         }
-        // 选择一个颜色（基于组的索引）
+        // 閫夋嫨涓€涓鑹诧紙鍩轰簬缁勭殑绱㈠紩锛?
         const GROUP_COLORS_LOCAL = [
-          { name: '黄色', value: '#FFD600' },
-          { name: '蓝色', value: '#2979FF' },
-          { name: '绿色', value: '#00E676' },
-          { name: '粉红', value: '#FF4081' },
-          { name: '紫色', value: '#D500F9' },
-          { name: '橙色', value: '#FF9100' },
+          { name: '榛勮壊', value: '#FFD600' },
+          { name: '钃濊壊', value: '#2979FF' },
+          { name: '缁胯壊', value: '#00E676' },
+          { name: '绮夌孩', value: '#FF4081' },
+          { name: '绱壊', value: '#D500F9' },
+          { name: '姗欒壊', value: '#FF9100' },
         ];
         const colorIndex = appState.canvas.groups.length % GROUP_COLORS_LOCAL.length;
         const color = GROUP_COLORS_LOCAL[colorIndex].value;
 
-        // 先创建组
+        // 鍏堝垱寤虹粍
         const group = createGroup(selectedIds, color);
 
-        // AI 推荐组名（异步）
+        // AI 鎺ㄨ崘缁勫悕锛堝紓姝ワ級
         suggestGroupName(selectedIds, getConfig()).then(name => {
           if (name && name.length > 0) {
             group.name = name;
@@ -2447,11 +2477,11 @@ function bindEvents() {
       }
     }
 
-    // Ctrl+Shift+G → 解散组
+    // Ctrl+Shift+G 鈫?瑙ｆ暎缁?
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'g' || e.key === 'G')) {
       const selectedIds = appState.selectedBlockIds;
       if (selectedIds.length > 0) {
-        // 检查选中的块所属的组
+        // 妫€鏌ラ€変腑鐨勫潡鎵€灞炵殑缁?
         const allGroupIds = [];
         selectedIds.forEach(id => {
           const block = appState.canvas.blocks.find(b => b.id === id);
@@ -2461,7 +2491,7 @@ function bindEvents() {
         });
         const uniqueGroupIds = new Set(allGroupIds);
 
-        // 如果所有选中的块都在同一个组内
+        // 濡傛灉鎵€鏈夐€変腑鐨勫潡閮藉湪鍚屼竴涓粍鍐?
         if (uniqueGroupIds.size === 1 && allGroupIds.length > 0) {
           e.preventDefault();
           const groupId = uniqueGroupIds.values().next().value;
@@ -2474,7 +2504,7 @@ function bindEvents() {
     }
   });
 
-  // ── Canvas controls ──
+  // 鈹€鈹€ Canvas controls 鈹€鈹€
   dom.zoomIn.addEventListener('click', zoomIn);
   dom.zoomOut.addEventListener('click', zoomOut);
   dom.fitBtn.addEventListener('click', fitToView);
@@ -2491,14 +2521,14 @@ function bindEvents() {
   if (dom.aiOrganizeBtn) {
     dom.aiOrganizeBtn.addEventListener('click', async () => {
       if (appState.canvas.blocks.length === 0) {
-        alert('白板是空的，无法整理');
+        alert('鐧芥澘鏄┖鐨勶紝鏃犳硶鏁寸悊');
         return;
       }
       
       const btn = dom.aiOrganizeBtn;
       const originalTitle = btn.title;
       const originalHTML = btn.innerHTML;
-      btn.title = '正在整理...';
+      btn.title = '姝ｅ湪鏁寸悊...';
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" class="spin"><path d="M8 1.5V4M8 12v2.5M1.5 8H4M12 8h2.5M3.4 3.4l1.8 1.8M10.8 10.8l1.8 1.8M3.4 12.6l1.8-1.8M10.8 5.2l1.8-1.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
       btn.disabled = true;
 
@@ -2517,10 +2547,10 @@ function bindEvents() {
             changedBlockIds: [...result.addedIds, ...result.updatedIds],
           });
         } else {
-          alert('AI 认为目前无需整理');
+          alert('AI 璁や负鐩墠鏃犻渶鏁寸悊');
         }
       } catch (err) {
-        alert('整理失败: ' + err.message);
+        alert('鏁寸悊澶辫触: ' + err.message);
         console.error('Organize error:', err);
       } finally {
         btn.title = originalTitle;
@@ -2530,7 +2560,7 @@ function bindEvents() {
     });
   }
 
-// ── Node actions ──
+// 鈹€鈹€ Node actions 鈹€鈹€
   dom.addChild.addEventListener('click', handleAddChild);
   dom.addSibling.addEventListener('click', handleAddSibling);
   if (dom.deleteNode) {
@@ -2547,7 +2577,7 @@ function bindEvents() {
       }
     });
   }
-  // 新增功能按钮
+  // 鏂板鍔熻兘鎸夐挳
   if (dom.splitNode) {
     dom.splitNode.addEventListener('click', handleSplitNode);
   } else {
@@ -2574,7 +2604,7 @@ function bindEvents() {
     console.warn('translateNode button not found in DOM');
   }
 
-  // ── Refine Node Logic ──
+  // 鈹€鈹€ Refine Node Logic 鈹€鈹€
   let tempRefineState = null;
   
   if (dom.refineNode) {
@@ -2585,7 +2615,7 @@ function bindEvents() {
       const originalLabel = b.label;
       const originalContent = b.content;
       dom.refineNode.disabled = true;
-      dom.refineNode.innerHTML = '✨思考中...';
+      dom.refineNode.innerHTML = '精炼中...';
       try {
         const config = getConfig();
         const refined = await callRefineLlm(config, b, appState.canvas);
@@ -2605,7 +2635,10 @@ function bindEvents() {
         alert('提炼失败: ' + err.message);
       } finally {
         dom.refineNode.disabled = false;
-        dom.refineNode.innerHTML = '✨提炼';
+        dom.refineNode.innerHTML = `
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2l2.4 7.2h7.6l-6 4.8 2.4 7.2-6-4.8-6 4.8 2.4-7.2-6-4.8h7.6z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          <span>精炼</span>
+        `;
       }
     });
   }
@@ -2631,7 +2664,7 @@ function bindEvents() {
     });
   }
 
-  // ── Chat panel toggle ──
+  // 鈹€鈹€ Chat panel toggle 鈹€鈹€
   initChatPanelResize();
 
   dom.chatToggleBtn.addEventListener('click', () => {
@@ -2645,8 +2678,9 @@ function bindEvents() {
     dom.chatExpandBtn.setAttribute('aria-hidden', 'true');
   });
 
-  // ── Settings modal ──
+  // 鈹€鈹€ Settings modal 鈹€鈹€
   dom.settingsBtn.addEventListener('click', () => {
+    syncVoiceProviderFieldVisibility();
     dom.settingsOverlay.classList.add('open');
     dom.settingsOverlay.setAttribute('aria-hidden', 'false');
   });
@@ -2675,10 +2709,12 @@ function bindEvents() {
   dom.sttProvider.addEventListener('change', () => {
     applyProviderPreset(false);
     syncVoiceFallbackNotice();
+    syncVoiceProviderFieldVisibility();
   });
   dom.ttsProvider.addEventListener('change', () => {
     applyProviderPreset(false);
     syncVoiceFallbackNotice();
+    syncVoiceProviderFieldVisibility();
   });
   dom.sttEnabled?.addEventListener('change', () => {
     syncVoiceModeFallback();
@@ -2688,47 +2724,39 @@ function bindEvents() {
     syncVoiceFallbackNotice({ force: true });
     updateVoiceControlAvailability();
   });
-  dom.voiceMode.addEventListener('change', applyVoiceModePreset);
+  dom.voiceMode.addEventListener('change', () => {
+    applyVoiceModePreset();
+    syncVoiceProviderFieldVisibility();
+  });
   dom.doubaoApiKey.addEventListener('change', () => {
     syncVoiceModeFallback();
-    applyVoiceModePreset();
   });
   dom.testDoubaoAsrBtn.addEventListener('click', async () => {
     const config = getConfig();
     const btn = dom.testDoubaoAsrBtn;
     const originalText = btn.textContent;
 
-    const useProxy = confirm('是否使用代理模式测试？\n\n点击「确定」使用代理（/api/doubao-asr）\n点击「取消」使用直连（豆包官方 WebSocket）');
+    const useProxy = true;
 
     try {
       btn.textContent = '测试中...';
       btn.disabled = true;
 
       const result = await testDoubaoAsrConnection(config, { useProxy });
-      alert(`✅ ${result.message}\n\n返回数据：${JSON.stringify(result.data, null, 2).slice(0, 500)}`);
+      alert(`测试成功：${result.message}\n\n返回数据：${JSON.stringify(result.data, null, 2).slice(0, 500)}`);
     } catch (err) {
-      alert(`❌ 测试失败：${err.message}`);
+      alert(`测试失败：${err.message}`);
     } finally {
       btn.textContent = originalText;
       btn.disabled = false;
     }
   });
-  dom.appId.addEventListener('change', () => {
-    syncVoiceModeFallback();
-    applyVoiceModePreset();
-  });
-  dom.accessToken.addEventListener('change', () => {
-    syncVoiceModeFallback();
-    applyVoiceModePreset();
-  });
-  dom.secretKey.addEventListener('change', () => {
-    syncVoiceModeFallback();
-    applyVoiceModePreset();
-  });
   dom.sttEndpoint.addEventListener('change', () => {
-    syncVoiceModeFallback();
-    applyVoiceModePreset();
+    syncVoiceFallbackNotice({ force: true });
   });
+  dom.asrEndpoint?.addEventListener('change', () => syncVoiceFallbackNotice({ force: true }));
+  dom.asrResourceId?.addEventListener('change', () => syncVoiceFallbackNotice({ force: true }));
+  dom.asrModel?.addEventListener('change', () => syncVoiceFallbackNotice({ force: true }));
   dom.ttsEndpoint.addEventListener('change', syncVoiceFallbackNotice);
   bindAudioUpload();
 
@@ -2745,17 +2773,17 @@ function bindEvents() {
     }
   });
 
-  // ── Fetch Models ──
+  // 鈹€鈹€ Fetch Models 鈹€鈹€
   if (dom.fetchModelsBtn) {
     dom.fetchModelsBtn.addEventListener('click', async () => {
       const btn = dom.fetchModelsBtn;
       const originalText = btn.textContent;
-      btn.textContent = '加载中...';
+      btn.textContent = '鍔犺浇涓?..';
       btn.disabled = true;
 
       try {
         const config = getConfig();
-        if (!config.llmApiKey) throw new Error('请先填写 LLM API Key');
+        if (!config.llmApiKey) throw new Error('璇峰厛濉啓 LLM API Key');
         
         let url = config.llmEndpoint || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
         if (url.endsWith('/chat/completions')) url = url.replace('/chat/completions', '');
@@ -2772,12 +2800,12 @@ function bindEvents() {
         
         if (data && Array.isArray(data.data)) {
           updateModelOptions(data.data.map(m => m.id));
-          alert(`成功获取 ${data.data.length} 个模型！请在左侧输入框下拉选择`);
+          alert(`鎴愬姛鑾峰彇 ${data.data.length} 涓ā鍨嬶紒璇峰湪宸︿晶杈撳叆妗嗕笅鎷夐€夋嫨`);
         } else {
-          throw new Error('返回格式不包含 data 字段');
+          throw new Error('杩斿洖鏍煎紡涓嶅寘鍚?data 瀛楁');
         }
       } catch (err) {
-        alert('获取失败: ' + err.message);
+        alert('鑾峰彇澶辫触: ' + err.message);
       } finally {
         btn.textContent = originalText;
         btn.disabled = false;
@@ -2785,7 +2813,7 @@ function bindEvents() {
     });
   }
 
-  // ── Import ──
+  // 鈹€鈹€ Import 鈹€鈹€
   if (dom.llmModel) {
     dom.llmModel.addEventListener('focus', openModelDropdown);
     dom.llmModel.addEventListener('click', openModelDropdown);
@@ -2808,15 +2836,15 @@ function bindEvents() {
     showImportMenu();
   });
 
-  // ── Export ──
+  // 鈹€鈹€ Export 鈹€鈹€
   dom.downloadJson.addEventListener('click', () => {
     showExportMenu();
   });
 
-  // ── Demo data ──
+  // 鈹€鈹€ Demo data 鈹€鈹€
   dom.resetDemo.addEventListener('click', loadDemoData);
 
-  // ── OAuth ──
+  // 鈹€鈹€ OAuth 鈹€鈹€
   if (dom.oauthStart) {
     dom.oauthStart.addEventListener('click', () => {
       try {
@@ -2837,12 +2865,12 @@ function bindEvents() {
     });
   }
 
-  // ── OAuth redirect URI ──
+  // 鈹€鈹€ OAuth redirect URI 鈹€鈹€
   if (dom.oauthRedirect) {
     dom.oauthRedirect.value = location.origin + location.pathname;
   }
 
-  // ── API Key Missing Alert ──
+  // 鈹€鈹€ API Key Missing Alert 鈹€鈹€
   window.addEventListener('api:key-missing', (e) => {
     if (apiKeyMissingPromptShown) return;
     apiKeyMissingPromptShown = true;
@@ -2853,7 +2881,7 @@ function bindEvents() {
       ? '免费试用额度已用完。你可以填写自己的 LLM API Key 继续使用，或者稍后再试。'
       : '当前没有可用的模型 Key。可以先使用服务器免费试用；如果服务端未配置或你想长期使用，请填写自己的 LLM API Key。';
 
-    // 打开设置面板
+    // 鎵撳紑璁剧疆闈㈡澘
     dom.settingsOverlay.classList.add('open');
     dom.settingsOverlay.setAttribute('aria-hidden', 'false');
     if (dom.llmKeyNotice) {
@@ -2861,10 +2889,10 @@ function bindEvents() {
       dom.llmKeyNotice.hidden = false;
     }
 
-    // 给设置按钮添加闪动动画
+    // 缁欒缃寜閽坊鍔犻棯鍔ㄥ姩鐢?
     dom.settingsBtn.classList.add('api-key-alert');
 
-    // 给 API key 输入框添加高亮红框
+    // 缁?API key 杈撳叆妗嗘坊鍔犻珮浜孩妗?
     dom.llmApiKey.classList.add('api-key-highlight');
 
     setTimeout(() => {
@@ -2878,7 +2906,7 @@ function bindEvents() {
     }, 3000);
   });
 
-  // ── TTS speak ──
+  // 鈹€鈹€ TTS speak 鈹€鈹€
   if (dom.speakBtn) {
     dom.speakBtn.addEventListener('click', async () => {
       if (!appState.lastAssistantReply) return;
@@ -2940,25 +2968,18 @@ function createSyncSizeFixture() {
   const longId = crypto.randomUUID();
   const mediumId = crypto.randomUUID();
   const shortId = crypto.randomUUID();
-  const detailAId = crypto.randomUUID();
-  const detailBId = crypto.randomUUID();
-
   return {
     title: '测试：尺寸同步',
     blocks: [
-      { id: rootId, type: 'text', label: '尺寸同步测试', content: '用于验证缩放下不会错误缩窄块宽度', x: 420, y: 60, width: 260 },
-      { id: longId, type: 'text', label: '长内容块', content: '这是一段很长的内容，用于测试在缩放和自动排布之前同步尺寸时，不会把块的宽度错误缩小，同时要让内容保持在块内正常换行显示。\n\n- 第一条很长的说明\n- 第二条也比较长\n- 第三条继续补充细节', x: 160, y: 220, width: 300 },
-      { id: mediumId, type: 'text', label: '中等内容块', content: '中等长度内容，带有一些换行。\n第二行说明。\n第三行说明。', x: 520, y: 220, width: 220 },
+      { id: rootId, type: 'text', label: '尺寸同步测试', content: '用于验证缩放和自动布局不会错误缩窄块宽度', x: 420, y: 60, width: 260 },
+      { id: longId, type: 'text', label: '长内容块', content: '这是一段很长的内容，用于测试换行和宽度保持。\n\n- 第一条说明\n- 第二条说明\n- 第三条说明', x: 160, y: 220, width: 300 },
+      { id: mediumId, type: 'text', label: '中等内容块', content: '中等长度内容。\n第二行说明。\n第三行说明。', x: 520, y: 220, width: 220 },
       { id: shortId, type: 'text', label: '短块', content: '短内容', x: 820, y: 220, width: 180 },
-      { id: detailAId, type: 'text', label: '附加说明 A', content: '用于观察层级布局。', x: 300, y: 420, width: 210 },
-      { id: detailBId, type: 'text', label: '附加说明 B', content: '用于观察自动排布前后的宽度是否稳定。', x: 640, y: 420, width: 240 },
     ],
     connections: [
       { id: crypto.randomUUID(), fromId: rootId, toId: longId },
       { id: crypto.randomUUID(), fromId: rootId, toId: mediumId },
       { id: crypto.randomUUID(), fromId: rootId, toId: shortId },
-      { id: crypto.randomUUID(), fromId: longId, toId: detailAId },
-      { id: crypto.randomUUID(), fromId: mediumId, toId: detailBId },
     ],
     groups: [],
   };
@@ -2966,51 +2987,27 @@ function createSyncSizeFixture() {
 
 function createLayoutDriftFixture() {
   const rootId = crypto.randomUUID();
-  const strategyId = crypto.randomUUID();
-  const productId = crypto.randomUUID();
-  const operationsId = crypto.randomUUID();
-  const signalId = crypto.randomUUID();
-  const leafA1 = crypto.randomUUID();
-  const leafA2 = crypto.randomUUID();
-  const leafA3 = crypto.randomUUID();
-  const leafA4 = crypto.randomUUID();
-  const leafB1 = crypto.randomUUID();
-  const leafB2 = crypto.randomUUID();
-  const leafB3 = crypto.randomUUID();
-  const crossId = crypto.randomUUID();
-
+  const leftId = crypto.randomUUID();
+  const centerId = crypto.randomUUID();
+  const rightId = crypto.randomUUID();
+  const leafA = crypto.randomUUID();
+  const leafB = crypto.randomUUID();
   return {
     title: '测试：布局发散',
     blocks: [
-      { id: rootId, type: 'text', label: '布局发散测试', content: '重复执行自动排布后不应不断外扩。', x: 520, y: 60, width: 260 },
-      { id: strategyId, type: 'text', label: '战略层', content: '包含较长内容，用于制造较高的节点。\n- 方向一\n- 方向二\n- 方向三', x: 180, y: 220, width: 260 },
-      { id: productId, type: 'text', label: '产品层', content: '用于连接多个叶子节点，触发叶子网格布局。', x: 520, y: 220, width: 250 },
-      { id: operationsId, type: 'text', label: '运营层', content: '作为另一侧主干，包含多叶子和跨层连接。', x: 860, y: 220, width: 250 },
-      { id: signalId, type: 'text', label: '锁定观察点', content: '这个块保持锁定，用于放大挤压与绕行问题。', x: 560, y: 420, width: 240, locked: true },
-      { id: leafA1, type: 'text', label: '产品叶子 1', content: '叶子内容 A1', x: 360, y: 440, width: 200 },
-      { id: leafA2, type: 'text', label: '产品叶子 2', content: '叶子内容 A2，稍微长一点，确保高度差异。', x: 520, y: 500, width: 210 },
-      { id: leafA3, type: 'text', label: '产品叶子 3', content: '叶子内容 A3', x: 700, y: 440, width: 190 },
-      { id: leafA4, type: 'text', label: '产品叶子 4', content: '叶子内容 A4，继续增加同父叶子数量。', x: 860, y: 500, width: 220 },
-      { id: leafB1, type: 'text', label: '运营叶子 1', content: '叶子内容 B1', x: 940, y: 440, width: 200 },
-      { id: leafB2, type: 'text', label: '运营叶子 2', content: '叶子内容 B2', x: 1080, y: 500, width: 210 },
-      { id: leafB3, type: 'text', label: '运营叶子 3', content: '叶子内容 B3，用于触发网格阈值。', x: 1220, y: 440, width: 215 },
-      { id: crossId, type: 'text', label: '跨层节点', content: '与左右主干同时相关，容易触发穿块和二次外推。', x: 260, y: 620, width: 260 },
+      { id: rootId, type: 'text', label: '布局发散测试', content: '重复执行自动布局后不应不断外扩。', x: 520, y: 60, width: 260 },
+      { id: leftId, type: 'text', label: '战略层', content: '包含较长内容，用于制造较高节点。\n- 方向一\n- 方向二\n- 方向三', x: 180, y: 220, width: 260 },
+      { id: centerId, type: 'text', label: '产品层', content: '连接多个叶子节点，触发布局计算。', x: 520, y: 220, width: 250 },
+      { id: rightId, type: 'text', label: '运营层', content: '另一侧主干节点。', x: 860, y: 220, width: 250 },
+      { id: leafA, type: 'text', label: '叶子 A', content: '叶子内容 A', x: 420, y: 420, width: 200 },
+      { id: leafB, type: 'text', label: '叶子 B', content: '叶子内容 B', x: 700, y: 420, width: 200 },
     ],
     connections: [
-      { id: crypto.randomUUID(), fromId: rootId, toId: strategyId },
-      { id: crypto.randomUUID(), fromId: rootId, toId: productId },
-      { id: crypto.randomUUID(), fromId: rootId, toId: operationsId },
-      { id: crypto.randomUUID(), fromId: strategyId, toId: crossId },
-      { id: crypto.randomUUID(), fromId: productId, toId: signalId },
-      { id: crypto.randomUUID(), fromId: productId, toId: leafA1 },
-      { id: crypto.randomUUID(), fromId: productId, toId: leafA2 },
-      { id: crypto.randomUUID(), fromId: productId, toId: leafA3 },
-      { id: crypto.randomUUID(), fromId: productId, toId: leafA4 },
-      { id: crypto.randomUUID(), fromId: operationsId, toId: leafB1 },
-      { id: crypto.randomUUID(), fromId: operationsId, toId: leafB2 },
-      { id: crypto.randomUUID(), fromId: operationsId, toId: leafB3 },
-      { id: crypto.randomUUID(), fromId: strategyId, toId: leafA2 },
-      { id: crypto.randomUUID(), fromId: crossId, toId: leafB2 },
+      { id: crypto.randomUUID(), fromId: rootId, toId: leftId },
+      { id: crypto.randomUUID(), fromId: rootId, toId: centerId },
+      { id: crypto.randomUUID(), fromId: rootId, toId: rightId },
+      { id: crypto.randomUUID(), fromId: centerId, toId: leafA },
+      { id: crypto.randomUUID(), fromId: centerId, toId: leafB },
     ],
     groups: [],
   };
@@ -3083,7 +3080,7 @@ function registerLayoutDebugTools() {
   window.runAutoLayoutBenchmark = runAutoLayoutBenchmark;
 }
 
-// ── Import Menu ──
+// 鈹€鈹€ Import Menu 鈹€鈹€
 function showImportMenu() {
   // Create dropdown if not exists
   let menu = document.getElementById('importMenu');
@@ -3097,7 +3094,7 @@ function showImportMenu() {
       <span class="import-icon">{ }</span>JSON 文件
     </button>
     <button class="import-item" data-format="markdown">
-      <span class="import-icon">📝</span>Markdown 大纲
+      <span class="import-icon">#</span>Markdown 大纲
     </button>
   `;
 
@@ -3153,14 +3150,12 @@ function openFilePicker(format) {
 function handleImportJson(content) {
   try {
     const data = JSON.parse(content);
-
-    // 验证数据结构
     if (!data.title || !Array.isArray(data.blocks) || !Array.isArray(data.connections)) {
       throw new Error('JSON 格式无效，需要 title/blocks/connections 字段');
     }
     assertCanvasIntegrity(data);
 
-    // 导入数据
+    // 瀵煎叆鏁版嵁
     appState.canvas = {
       title: data.title,
       blocks: data.blocks,
@@ -3169,7 +3164,7 @@ function handleImportJson(content) {
     };
     repairCanvasTextFormatting(appState.canvas);
 
-    // 更新 UI
+    // 鏇存柊 UI
     dom.boardTitle.textContent = appState.canvas.title;
     pushHistory();
     syncCanvasAfterRender();
@@ -3199,44 +3194,44 @@ function parseMarkdownToCanvas(markdown) {
   const lines = markdown.split('\n');
   const blocks = [];
   const connections = [];
-  const blockStack = []; // 用于跟踪层级关系
+  const blockStack = []; // 鐢ㄤ簬璺熻釜灞傜骇鍏崇郴
   let blockIndex = 0;
 
-  // 提取标题作为画布标题
+  // 鎻愬彇鏍囬浣滀负鐢诲竷鏍囬
   let title = '导入的画布';
   const titleMatch = markdown.match(/^#\s+(.+)/);
   if (titleMatch) {
     title = titleMatch[1];
   }
 
-  // 解析每一行
+  // 瑙ｆ瀽姣忎竴琛?
   for (const line of lines) {
-    // 跳过空行和标题行（已经处理）
+    // 璺宠繃绌鸿鍜屾爣棰樿锛堝凡缁忓鐞嗭級
     if (!line.trim() || line.startsWith('# ')) continue;
 
-    // 计算缩进级别（通过 - 前面的空格或 # 数量）
-    const listMatch = line.match(/^(\s*)-\s*\*\*(.+?)\*\*(?:\s*—\s*(.+))?$/);
-    const headerMatch = line.match(/^(#{2,})\s*(.+?)(?:\s*—\s*(.+))?$/);
+    // 璁＄畻缂╄繘绾у埆锛堥€氳繃 - 鍓嶉潰鐨勭┖鏍兼垨 # 鏁伴噺锛?
+    const listMatch = line.match(/^(\s*)-\s*\*\*(.+?)\*\*(?:\s*鈥擻s*(.+))?$/);
+    const headerMatch = line.match(/^(#{2,})\s*(.+?)(?:\s*鈥擻s*(.+))?$/);
 
     let depth = 0;
     let label = '';
     let content = '';
 
     if (listMatch) {
-      // 列表格式：- **Label** — Content
+      // 鍒楄〃鏍煎紡锛? **Label** 鈥?Content
       depth = Math.floor(listMatch[1].length / 2);
       label = listMatch[2].trim();
       content = listMatch[3]?.trim() || '';
     } else if (headerMatch) {
-      // 标题格式：## Label — Content
+      // 鏍囬鏍煎紡锛?# Label 鈥?Content
       depth = headerMatch[1].length - 1;
       label = headerMatch[2].trim();
       content = headerMatch[3]?.trim() || '';
     } else {
-      continue; // 跳过无法解析的行
+      continue; // 璺宠繃鏃犳硶瑙ｆ瀽鐨勮
     }
 
-    // 创建新块
+    // 鍒涘缓鏂板潡
     const blockId = crypto.randomUUID();
     const block = {
       id: blockId,
@@ -3249,9 +3244,9 @@ function parseMarkdownToCanvas(markdown) {
     blocks.push(block);
     blockStack.push({ id: blockId, depth });
 
-    // 创建连接（连接到父节点）
+    // 鍒涘缓杩炴帴锛堣繛鎺ュ埌鐖惰妭鐐癸級
     if (blockStack.length > 1) {
-      // 找到最近的父节点（深度小于当前深度的最后一个）
+      // 鎵惧埌鏈€杩戠殑鐖惰妭鐐癸紙娣卞害灏忎簬褰撳墠娣卞害鐨勬渶鍚庝竴涓級
       for (let i = blockStack.length - 2; i >= 0; i--) {
         if (blockStack[i].depth < depth) {
           connections.push({
@@ -3267,20 +3262,20 @@ function parseMarkdownToCanvas(markdown) {
     blockIndex++;
   }
 
-  // 使用自动布局计算位置
-  // 先给一个临时的 autoLayout 调用
-  // 由于 autoLayout 需要导入，我们在这里简单计算位置
+  // 浣跨敤鑷姩甯冨眬璁＄畻浣嶇疆
+  // 鍏堢粰涓€涓复鏃剁殑 autoLayout 璋冪敤
+  // 鐢变簬 autoLayout 闇€瑕佸鍏ワ紝鎴戜滑鍦ㄨ繖閲岀畝鍗曡绠椾綅缃?
   const startX = 400;
   const startY = 60;
   const levelHeight = 160;
   const siblingGap = 200;
 
-  // 按层级分配位置
+  // 鎸夊眰绾у垎閰嶄綅缃?
   const levelPositions = {};
   const levelCounts = {};
 
   for (const block of blocks) {
-    // 找到块的深度
+    // 鎵惧埌鍧楃殑娣卞害
     const stackEntry = blockStack.find(s => s.id === block.id);
     const depth = stackEntry ? stackEntry.depth : 0;
 
@@ -3305,7 +3300,7 @@ function parseMarkdownToCanvas(markdown) {
   };
 }
 
-// ── Export Menu ──
+// 鈹€鈹€ Export Menu 鈹€鈹€
 function showExportMenu() {
   // Create dropdown if not exists
   let menu = document.getElementById('exportMenu');
@@ -3319,10 +3314,10 @@ function showExportMenu() {
       <span class="export-icon">{ }</span>JSON 文件
     </button>
     <button class="export-item" data-format="markdown">
-      <span class="export-icon">📝</span>Markdown 大纲
+      <span class="export-icon">#</span>Markdown 大纲
     </button>
     <button class="export-item" data-format="pdf">
-      <span class="export-icon">📄</span>PDF 画布
+      <span class="export-icon">PDF</span>PDF 画布
     </button>
   `;
 
@@ -3379,20 +3374,20 @@ function downloadFile(content, filename, type) {
 
 function exportCanvasToPdf() {
   if (appState.canvas.blocks.length === 0) {
-    alert('当前画布为空，无法导出 PDF');
+    alert('褰撳墠鐢诲竷涓虹┖锛屾棤娉曞鍑?PDF');
     return;
   }
 
   syncBlockSizes();
   const bounds = getVisibleCanvasBounds();
   if (!bounds) {
-    alert('当前没有可导出的画布内容');
+    alert('褰撳墠娌℃湁鍙鍑虹殑鐢诲竷鍐呭');
     return;
   }
 
   const printWindow = window.open('', '_blank');
   if (!printWindow) {
-    alert('无法打开打印窗口，请允许浏览器弹窗后重试');
+    alert('鏃犳硶鎵撳紑鎵撳嵃绐楀彛锛岃鍏佽娴忚鍣ㄥ脊绐楀悗閲嶈瘯');
     return;
   }
 
@@ -3574,7 +3569,7 @@ function canvasToMarkdown() {
   const { blocks, connections, title } = appState.canvas;
   let md = `# ${title}\n\n`;
 
-  // 构建树
+  // 鏋勫缓鏍?
   const childMap = {};
   const hasParent = new Set();
   for (const c of connections) {
@@ -3591,7 +3586,7 @@ function canvasToMarkdown() {
     if (!b) return '';
     const indent = '  '.repeat(depth);
     let line = `${indent}- **${b.label}**`;
-    if (b.content) line += ` — ${b.content}`;
+    if (b.content) line += ` 鈥?${b.content}`;
     line += '\n';
     for (const cid of (childMap[id] || [])) {
       line += walk(cid, depth + 1);
@@ -3603,16 +3598,16 @@ function canvasToMarkdown() {
     md += walk(root.id, 0);
   }
 
-  // 孤立节点
+  // 瀛ょ珛鑺傜偣
   const visited = new Set();
   function markVisited(id) { visited.add(id); (childMap[id] || []).forEach(markVisited); }
   roots.forEach(r => markVisited(r.id));
   const orphans = blocks.filter(b => !visited.has(b.id));
   if (orphans.length) {
-    md += '\n## 其他\n\n';
+    md += '\n## 鍏朵粬\n\n';
     for (const b of orphans) {
       md += `- **${b.label}**`;
-      if (b.content) md += ` — ${b.content}`;
+      if (b.content) md += ` 鈥?${b.content}`;
       md += '\n';
     }
   }
@@ -3620,5 +3615,5 @@ function canvasToMarkdown() {
   return md;
 }
 
-// ── Start ──
+// 鈹€鈹€ Start 鈹€鈹€
 init();

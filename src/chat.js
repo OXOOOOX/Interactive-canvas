@@ -2,8 +2,8 @@
  * chat.js — 右侧聊天面板逻辑
  */
 
-import { appState, pushHistory, saveCurrentCanvas } from './state.js';
-import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
+import { appState, pushHistory, saveCurrentCanvas, loadGlobalMemory } from './state.js';
+import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callGlobalMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting, assertCanvasIntegrity } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
 import { renderBlocks, syncBlockSizes } from './canvas.js';
@@ -12,7 +12,62 @@ const DRAFT_STORAGE_KEY = 'canvas-studio-markdown-draft-v1';
 const DRAFT_AUTO_APPEND_KEY = 'canvas-studio-draft-auto-append-v1';
 
 let $messages, $input, $sendBtn, $draftPanel, $draftToggle, $markdownDraft, $draftAutoAppend;
+let $sessionSelect, $newSessionBtn, $exportSessionBtn, $importSessionBtn;
 let getConfig = () => ({});
+
+function createSession(title = '新会话', messages = []) {
+  const now = Date.now();
+  return {
+    id: crypto.randomUUID(),
+    title,
+    messages: messages.map(message => ({
+      role: message.role,
+      content: message.content,
+    })),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function ensureCanvasSessions() {
+  if (!Array.isArray(appState.canvas.sessions)) appState.canvas.sessions = [];
+  appState.canvas.sessions = appState.canvas.sessions.filter(session => session && typeof session === 'object');
+  if (appState.canvas.sessions.length === 0) {
+    appState.canvas.sessions.push(createSession('默认会话'));
+  }
+  if (!appState.canvas.activeSessionId || !appState.canvas.sessions.some(session => session.id === appState.canvas.activeSessionId)) {
+    appState.canvas.activeSessionId = appState.canvas.sessions[0].id;
+  }
+  return appState.canvas.sessions;
+}
+
+function getActiveSession() {
+  const sessions = ensureCanvasSessions();
+  return sessions.find(session => session.id === appState.canvas.activeSessionId) || sessions[0];
+}
+
+function syncConversationFromActiveSession() {
+  const session = getActiveSession();
+  appState.conversation = session.messages.map(message => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+function persistActiveConversation() {
+  const session = getActiveSession();
+  session.messages = appState.conversation.map(message => ({
+    role: message.role,
+    content: message.content,
+  }));
+  session.updatedAt = Date.now();
+  if ((!session.title || session.title === '新会话' || session.title === '默认会话') && session.messages.length) {
+    const firstUser = session.messages.find(message => message.role === 'user')?.content || '';
+    if (firstUser) session.title = firstUser.slice(0, 16);
+  }
+  saveCurrentCanvas();
+  renderSessionSelect();
+}
 
 function extractVoiceBrief(text = '') {
   const source = String(text || '');
@@ -57,9 +112,15 @@ export function initChat(configGetter) {
   $draftToggle = document.getElementById('draftToggle');
   $markdownDraft = document.getElementById('markdownDraft');
   $draftAutoAppend = document.getElementById('draftAutoAppend');
+  $sessionSelect = document.getElementById('sessionSelect');
+  $newSessionBtn = document.getElementById('newSessionBtn');
+  $exportSessionBtn = document.getElementById('exportSessionBtn');
+  $importSessionBtn = document.getElementById('importSessionBtn');
   getConfig = configGetter;
 
   initDraftPanel();
+  initSessionControls();
+  syncChatSessionUI();
 
   $sendBtn.addEventListener('click', () => sendMessage());
 
@@ -96,7 +157,7 @@ export function initChat(configGetter) {
 function initDraftPanel() {
   if (!$markdownDraft) return;
 
-  $markdownDraft.value = localStorage.getItem(DRAFT_STORAGE_KEY) || '';
+  syncCanvasMemoryDraft({ migrateLegacy: true });
   if ($draftAutoAppend) {
     $draftAutoAppend.checked = localStorage.getItem(DRAFT_AUTO_APPEND_KEY) !== '0';
     $draftAutoAppend.addEventListener('change', () => {
@@ -105,7 +166,8 @@ function initDraftPanel() {
   }
 
   $markdownDraft.addEventListener('input', () => {
-    localStorage.setItem(DRAFT_STORAGE_KEY, $markdownDraft.value);
+    appState.canvas.memory = $markdownDraft.value;
+    saveCurrentCanvas();
   });
 
   $draftToggle?.addEventListener('click', () => {
@@ -121,8 +183,90 @@ function initDraftPanel() {
 
   document.getElementById('draftClearBtn')?.addEventListener('click', () => {
     $markdownDraft.value = '';
-    localStorage.removeItem(DRAFT_STORAGE_KEY);
+    appState.canvas.memory = '';
+    saveCurrentCanvas();
   });
+}
+
+function initSessionControls() {
+  $sessionSelect?.addEventListener('change', () => {
+    if (!$sessionSelect.value) return;
+    appState.canvas.activeSessionId = $sessionSelect.value;
+    syncConversationFromActiveSession();
+    renderConversation();
+    saveCurrentCanvas();
+  });
+
+  $newSessionBtn?.addEventListener('click', () => {
+    const session = createSession(`会话 ${ensureCanvasSessions().length + 1}`);
+    appState.canvas.sessions.unshift(session);
+    appState.canvas.activeSessionId = session.id;
+    syncChatSessionUI();
+    saveCurrentCanvas();
+  });
+
+  $exportSessionBtn?.addEventListener('click', exportActiveSession);
+  $importSessionBtn?.addEventListener('click', importSessionFromFile);
+}
+
+export function syncChatSessionUI() {
+  ensureCanvasSessions();
+  syncConversationFromActiveSession();
+  renderSessionSelect();
+  renderConversation();
+}
+
+function renderSessionSelect() {
+  if (!$sessionSelect) return;
+  ensureCanvasSessions();
+  $sessionSelect.innerHTML = appState.canvas.sessions.map(session => {
+    const title = escapeHtml(session.title || '未命名会话');
+    const count = Array.isArray(session.messages) ? session.messages.length : 0;
+    return `<option value="${escapeHtml(session.id)}">${title} (${count})</option>`;
+  }).join('');
+  $sessionSelect.value = appState.canvas.activeSessionId;
+}
+
+function renderConversation() {
+  if (!$messages) return;
+  $messages.innerHTML = '';
+  if (!appState.conversation.length) {
+    renderWelcome();
+    return;
+  }
+  appState.conversation.forEach((message, index) => {
+    appendMessage(message.role, message.content, [], index);
+  });
+}
+
+function renderWelcome() {
+  const welcome = document.createElement('div');
+  welcome.className = 'chat-welcome';
+  welcome.innerHTML = `
+    <div class="chat-welcome-icon">💡</div>
+    <p>你好！我是你的白板助手。</p>
+    <p>可以先免费试用；额度用完或长期使用时，再在设置里填写自己的模型 Key。</p>
+    <div class="chat-welcome-hints">
+      <button class="hint-chip" data-hint="总结近期AI大模型的最新突破与应用方向">科技前沿探索</button>
+      <button class="hint-chip" data-hint="帮我梳理大语言模型底层的核心原理">学习技术原理</button>
+      <button class="hint-chip" data-hint="有哪些结合AI的创新产品点子？不妨头脑风暴一下">记录灵感创意</button>
+    </div>
+  `;
+  $messages.appendChild(welcome);
+}
+
+export function syncCanvasMemoryDraft(options = {}) {
+  if (!$markdownDraft) return;
+  if (typeof appState.canvas.memory !== 'string') appState.canvas.memory = '';
+
+  const legacyDraft = options.migrateLegacy ? (localStorage.getItem(DRAFT_STORAGE_KEY) || '') : '';
+  if (!appState.canvas.memory && legacyDraft) {
+    appState.canvas.memory = legacyDraft;
+    saveCurrentCanvas();
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  }
+
+  $markdownDraft.value = appState.canvas.memory || '';
 }
 
 function setDraftPanelOpen(open) {
@@ -136,12 +280,98 @@ function getMarkdownDraft() {
   return ($markdownDraft?.value || '').trim();
 }
 
+function forkSessionAt(messageIndex) {
+  const sourceSession = getActiveSession();
+  const index = Number(messageIndex);
+  if (!Number.isInteger(index) || index < 0) return;
+
+  const messages = sourceSession.messages.slice(0, index + 1);
+  const baseTitle = sourceSession.title || '会话';
+  const session = createSession(`${baseTitle} 派生`, messages);
+  appState.canvas.sessions.unshift(session);
+  appState.canvas.activeSessionId = session.id;
+  syncChatSessionUI();
+  saveCurrentCanvas();
+}
+
+function exportActiveSession() {
+  const session = getActiveSession();
+  const payload = {
+    version: 1,
+    type: 'interactive-canvas-session',
+    canvasTitle: appState.canvas.title || '',
+    session: {
+      title: session.title || '未命名会话',
+      messages: session.messages || [],
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    },
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  const title = (session.title || 'session').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 40) || 'session';
+  link.href = URL.createObjectURL(blob);
+  link.download = `${title}.session.json`;
+  document.body.appendChild(link);
+  link.click();
+  URL.revokeObjectURL(link.href);
+  link.remove();
+}
+
+function importSessionFromFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result || ''));
+        const rawSession = data?.session || data;
+        const messages = Array.isArray(rawSession.messages)
+          ? rawSession.messages.filter(message => message && ['user', 'assistant'].includes(message.role) && typeof message.content === 'string')
+          : [];
+        if (!messages.length) throw new Error('Session 文件里没有可导入的对话消息');
+
+        const session = createSession(rawSession.title || `导入会话 ${ensureCanvasSessions().length + 1}`, messages);
+        appState.canvas.sessions.unshift(session);
+        appState.canvas.activeSessionId = session.id;
+        syncChatSessionUI();
+        saveCurrentCanvas();
+      } catch (error) {
+        alert(`导入 session 失败：${error.message}`);
+      }
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
 async function updateDraftMemory(config, userText, assistantText) {
   if (!$markdownDraft || !$draftAutoAppend?.checked) return;
   const updated = (await callDraftMemoryLlm(config, getMarkdownDraft(), userText, assistantText, appState.canvas)).trim();
   if (!updated) return;
   $markdownDraft.value = updated;
-  localStorage.setItem(DRAFT_STORAGE_KEY, updated);
+  appState.canvas.memory = updated;
+  saveCurrentCanvas();
+}
+
+async function suggestGlobalMemory(config, userText, assistantText) {
+  const currentMemory = loadGlobalMemory();
+  const updated = (await callGlobalMemoryLlm(config, currentMemory, userText, assistantText)).trim();
+  const normalized = updated.replace(/[。.\s]/g, '').toLowerCase();
+  if (!updated || updated === currentMemory.trim()) return;
+  if (['empty', 'none', 'null', '无', '无更新', '不更新', '无需更新'].includes(normalized)) return;
+
+  window.dispatchEvent(new CustomEvent('global-memory:suggest', {
+    detail: {
+      previousMemory: currentMemory,
+      suggestedMemory: updated,
+    },
+  }));
 }
 
 async function repairOperationMarkdown(config, operations) {
@@ -195,8 +425,9 @@ async function sendMessage(explicitText = null, options = {}) {
   const welcome = $messages.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
 
-  appendMessage('user', text);
   appState.conversation.push({ role: 'user', content: text });
+  appendMessage('user', text, [], appState.conversation.length - 1);
+  persistActiveConversation();
 
   const typing = showTyping();
   let assistantMessage = null;
@@ -205,6 +436,7 @@ async function sendMessage(explicitText = null, options = {}) {
     const config = {
       ...getConfig(),
       markdownDraft: getMarkdownDraft(),
+      globalMemory: loadGlobalMemory(),
       voiceOutputEnabled: Boolean(options.voiceOutputEnabled),
     };
     let hasStreamText = false;
@@ -260,8 +492,13 @@ async function sendMessage(explicitText = null, options = {}) {
 
     appState.lastAssistantReply = visibleChatReply;
     appState.conversation.push({ role: 'assistant', content: visibleChatReply });
+    assistantMessage?.setIndex(appState.conversation.length - 1);
+    persistActiveConversation();
     const draftPromise = updateDraftMemory(config, text, visibleChatReply).catch((error) => {
       console.warn('Draft memory update failed:', error);
+    });
+    const globalMemoryPromise = suggestGlobalMemory(config, text, visibleChatReply).catch((error) => {
+      console.warn('Global memory suggestion failed:', error);
     });
 
     const canvasRaw = await callCanvasLlm(config, appState.conversation, appState.canvas);
@@ -272,6 +509,7 @@ async function sendMessage(explicitText = null, options = {}) {
       message.setText(parsedReply);
       appState.lastAssistantReply = parsedReply;
       appState.conversation[appState.conversation.length - 1] = { role: 'assistant', content: parsedReply };
+      persistActiveConversation();
     }
 
     if (parsed.operations && parsed.operations.length > 0) {
@@ -320,9 +558,11 @@ async function sendMessage(explicitText = null, options = {}) {
       saveCurrentCanvas();
     } else {
       message.setSummary([]);
+      persistActiveConversation();
     }
 
     await draftPromise;
+    await globalMemoryPromise;
     document.dispatchEvent(new CustomEvent('boardChanged'));
     generateSuggestions();
     if (options.returnVoicePayload) {
@@ -387,23 +627,41 @@ function buildOpSummaryHtml(opSummary = []) {
   return html;
 }
 
-function createMessageController(role, text = '', opSummary = []) {
+function createMessageController(role, text = '', opSummary = [], messageIndex = null) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `chat-msg ${role}`;
   const bubble = document.createElement('div');
   bubble.className = 'chat-msg-bubble';
+  const actions = document.createElement('div');
+  actions.className = 'chat-msg-actions';
+  const forkBtn = document.createElement('button');
+  forkBtn.type = 'button';
+  forkBtn.className = 'chat-msg-action';
+  forkBtn.textContent = '派生';
+  forkBtn.title = '从这条消息派生新会话';
+  actions.appendChild(forkBtn);
   msgDiv.appendChild(bubble);
+  msgDiv.appendChild(actions);
   $messages.appendChild(msgDiv);
 
-  const state = { text, opSummary };
+  const state = { text, opSummary, messageIndex };
   const render = () => {
     bubble.innerHTML = `${renderMarkdown(state.text)}${buildOpSummaryHtml(state.opSummary)}`;
+    forkBtn.disabled = !Number.isInteger(state.messageIndex);
     $messages.scrollTop = $messages.scrollHeight;
   };
+
+  forkBtn.addEventListener('click', () => {
+    forkSessionAt(state.messageIndex);
+  });
 
   render();
 
   return {
+    setIndex(nextIndex) {
+      state.messageIndex = nextIndex;
+      render();
+    },
     setText(nextText = '') {
       state.text = nextText;
       render();
@@ -419,8 +677,8 @@ function createMessageController(role, text = '', opSummary = []) {
 }
 
 /** 追加消息气泡 */
-function appendMessage(role, text, opSummary = []) {
-  return createMessageController(role, text, opSummary);
+function appendMessage(role, text, opSummary = [], messageIndex = null) {
+  return createMessageController(role, text, opSummary, messageIndex);
 }
 
 /** 显示 typing indicator */

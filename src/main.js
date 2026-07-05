@@ -9,11 +9,12 @@ import {
   saveConfig, loadConfig as loadSavedConfig, saveCanvas, loadCanvas,
   getCanvasList, saveCanvasList, createCanvas, deleteCanvas, loadCanvasById,
   saveCurrentCanvas, switchCanvas, getCurrentCanvasId, renameCanvas,
+  loadGlobalMemory, saveGlobalMemory,
   ENDPOINT_PRESETS,
   createGroup, deleteGroup, getGroupBlocks, isBlockInGroup, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName,
 } from './state.js';
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar, syncBlockSizes } from './canvas.js';
-import { initChat, sendText } from './chat.js';
+import { initChat, sendText, syncCanvasMemoryDraft, syncChatSessionUI } from './chat.js';
 import { initWaveform, resumeListening, isConversationActive, isListeningActive } from './waveform.js';
 import { autoLayout, findFreePosition, getBoundingBox } from './utils/layout.js';
 import { transcribe } from './services/stt.js';
@@ -104,6 +105,16 @@ const dom = {
   useFreeTrialBtn: $('useFreeTrialBtn'),
   openLlmKeyPageBtn: $('openLlmKeyPageBtn'),
   openSearchKeyPageBtn: $('openSearchKeyPageBtn'),
+  globalMemoryBtn: $('globalMemoryBtn'),
+  globalMemoryOverlay: $('globalMemoryOverlay'),
+  closeGlobalMemory: $('closeGlobalMemory'),
+  globalMemoryText: $('globalMemoryText'),
+  clearGlobalMemory: $('clearGlobalMemory'),
+  saveGlobalMemory: $('saveGlobalMemory'),
+  globalMemoryConfirmOverlay: $('globalMemoryConfirmOverlay'),
+  globalMemorySuggestionText: $('globalMemorySuggestionText'),
+  rejectGlobalMemory: $('rejectGlobalMemory'),
+  acceptGlobalMemory: $('acceptGlobalMemory'),
 
   // OAuth
   oauthProvider: $('oauthProvider'),
@@ -2163,6 +2174,9 @@ function init() {
           blocks: [],
           connections: [],
           groups: [],
+          memory: '',
+          sessions: [],
+          activeSessionId: '',
         };
       }
     }
@@ -2170,6 +2184,9 @@ function init() {
   // 纭繚 groups 瀛楁瀛樺湪
   if (!appState.canvas.groups) {
     appState.canvas.groups = [];
+  }
+  if (typeof appState.canvas.memory !== 'string') {
+    appState.canvas.memory = '';
   }
   dom.boardTitle.textContent = appState.canvas.title;
 
@@ -2321,6 +2338,8 @@ function bindEvents() {
     if (id && id !== appState.canvas.id) {
       if (switchCanvas(id)) {
         dom.boardTitle.textContent = appState.canvas.title;
+        syncCanvasMemoryDraft();
+        syncChatSessionUI();
         pushHistory();
         syncCanvasAfterRender();
         updateCanvasListUI();
@@ -2343,6 +2362,8 @@ function bindEvents() {
         const newCanvas = createCanvas('未命名白板');
         appState.canvas = newCanvas;
         dom.boardTitle.textContent = newCanvas.title;
+        syncCanvasMemoryDraft();
+        syncChatSessionUI();
         pushHistory();
         syncCanvasAfterRender();
       }
@@ -2378,6 +2399,8 @@ function bindEvents() {
     const newCanvas = createCanvas('未命名白板');
     appState.canvas = newCanvas;
     dom.boardTitle.textContent = newCanvas.title;
+    syncCanvasMemoryDraft();
+    syncChatSessionUI();
     pushHistory();
     syncCanvasAfterRender();
     closeCanvasList();
@@ -2388,6 +2411,8 @@ function bindEvents() {
     const newCanvas = createCanvas('未命名白板');
     appState.canvas = newCanvas;
     dom.boardTitle.textContent = newCanvas.title;
+    syncCanvasMemoryDraft();
+    syncChatSessionUI();
     pushHistory();
     syncCanvasAfterRender();
     updateCanvasListUI();
@@ -2417,19 +2442,19 @@ function bindEvents() {
 
   // 鈹€鈹€ Undo / Redo 鈹€鈹€
   dom.undoBtn.addEventListener('click', () => {
-    if (undo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
+    if (undo()) { syncCanvasMemoryDraft(); syncChatSessionUI(); syncCanvasAfterRender(); saveCurrentCanvas(); }
   });
   dom.redoBtn.addEventListener('click', () => {
-    if (redo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
+    if (redo()) { syncCanvasMemoryDraft(); syncChatSessionUI(); syncCanvasAfterRender(); saveCurrentCanvas(); }
   });
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      if (undo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
+      if (undo()) { syncCanvasMemoryDraft(); syncChatSessionUI(); syncCanvasAfterRender(); saveCurrentCanvas(); }
     }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
       e.preventDefault();
-      if (redo()) { syncCanvasAfterRender(); saveCurrentCanvas(); }
+      if (redo()) { syncCanvasMemoryDraft(); syncChatSessionUI(); syncCanvasAfterRender(); saveCurrentCanvas(); }
     }
   });
 
@@ -2695,6 +2720,51 @@ function bindEvents() {
     dom.settingsOverlay.setAttribute('aria-hidden', 'true');
   }
 
+  function openGlobalMemoryModal() {
+    if (!dom.globalMemoryOverlay || !dom.globalMemoryText) return;
+    dom.globalMemoryText.value = loadGlobalMemory();
+    dom.globalMemoryOverlay.classList.add('open');
+    dom.globalMemoryOverlay.setAttribute('aria-hidden', 'false');
+    setTimeout(() => dom.globalMemoryText?.focus(), 0);
+  }
+
+  function closeGlobalMemoryModal() {
+    dom.globalMemoryOverlay?.classList.remove('open');
+    dom.globalMemoryOverlay?.setAttribute('aria-hidden', 'true');
+  }
+
+  function closeGlobalMemoryConfirm() {
+    dom.globalMemoryConfirmOverlay?.classList.remove('open');
+    dom.globalMemoryConfirmOverlay?.setAttribute('aria-hidden', 'true');
+  }
+
+  dom.globalMemoryBtn?.addEventListener('click', openGlobalMemoryModal);
+  dom.closeGlobalMemory?.addEventListener('click', closeGlobalMemoryModal);
+  dom.globalMemoryOverlay?.addEventListener('click', (e) => {
+    if (e.target === dom.globalMemoryOverlay) closeGlobalMemoryModal();
+  });
+  dom.saveGlobalMemory?.addEventListener('click', () => {
+    saveGlobalMemory(dom.globalMemoryText?.value || '');
+    closeGlobalMemoryModal();
+  });
+  dom.clearGlobalMemory?.addEventListener('click', () => {
+    if (!confirm('确定清空全局记忆吗？')) return;
+    saveGlobalMemory('');
+    if (dom.globalMemoryText) dom.globalMemoryText.value = '';
+  });
+  dom.rejectGlobalMemory?.addEventListener('click', closeGlobalMemoryConfirm);
+  dom.acceptGlobalMemory?.addEventListener('click', () => {
+    saveGlobalMemory(dom.globalMemorySuggestionText?.value || '');
+    closeGlobalMemoryConfirm();
+  });
+  window.addEventListener('global-memory:suggest', (e) => {
+    const suggestedMemory = e.detail?.suggestedMemory || '';
+    if (!suggestedMemory || !dom.globalMemoryConfirmOverlay || !dom.globalMemorySuggestionText) return;
+    dom.globalMemorySuggestionText.value = suggestedMemory;
+    dom.globalMemoryConfirmOverlay.classList.add('open');
+    dom.globalMemoryConfirmOverlay.setAttribute('aria-hidden', 'false');
+  });
+
   // Provider presets
   dom.llmProvider.addEventListener('change', handleLlmProviderChange);
   dom.openLlmKeyPageBtn?.addEventListener('click', openCurrentLlmKeyPage);
@@ -2923,8 +2993,13 @@ function applyCanvasFixture(canvas, fitDelay = 500) {
   appState.canvas = {
     ...canvas,
     groups: canvas.groups || [],
+    memory: canvas.memory || '',
+    sessions: canvas.sessions || [],
+    activeSessionId: canvas.activeSessionId || '',
   };
   dom.boardTitle.textContent = appState.canvas.title;
+  syncCanvasMemoryDraft();
+  syncChatSessionUI();
   initHistory();
   renderBlocks(appState.canvas.blocks.map(b => b.id));
   setTimeout(fitToView, fitDelay);
@@ -3161,11 +3236,16 @@ function handleImportJson(content) {
       blocks: data.blocks,
       connections: data.connections,
       groups: data.groups || [],
+      memory: data.memory || '',
+      sessions: data.sessions || [],
+      activeSessionId: data.activeSessionId || '',
     };
     repairCanvasTextFormatting(appState.canvas);
 
     // 鏇存柊 UI
     dom.boardTitle.textContent = appState.canvas.title;
+    syncCanvasMemoryDraft();
+    syncChatSessionUI();
     pushHistory();
     syncCanvasAfterRender();
     fitToView();
@@ -3180,7 +3260,12 @@ function handleImportMarkdown(content) {
     const canvasData = parseMarkdownToCanvas(content);
 
     appState.canvas = canvasData;
+    appState.canvas.memory = '';
+    appState.canvas.sessions = [];
+    appState.canvas.activeSessionId = '';
     dom.boardTitle.textContent = canvasData.title;
+    syncCanvasMemoryDraft();
+    syncChatSessionUI();
     pushHistory();
     syncCanvasAfterRender();
     fitToView();

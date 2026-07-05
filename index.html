@@ -186,6 +186,12 @@
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 2H2a1 1 0 00-1 1v8.5a1 1 0 001 1h1.5V15l3.5-2.5H14a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.3"/></svg>
             对话
           </h2>
+          <div class="chat-session-controls" id="chatSessionControls">
+            <select id="sessionSelect" class="session-select" aria-label="选择会话"></select>
+            <button type="button" class="session-btn" id="newSessionBtn" title="新建会话">新建</button>
+            <button type="button" class="session-btn" id="exportSessionBtn" title="导出当前会话">导出</button>
+            <button type="button" class="session-btn" id="importSessionBtn" title="导入会话">导入</button>
+          </div>
           <button class="btn-icon chat-collapse-btn" id="chatToggleBtn" title="折叠面板" aria-label="折叠聊天面板">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 3l5 4-5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
@@ -431,10 +437,54 @@
               </div>
             </div>
           </details>
+          <div class="cfg-section">
+            <h3 class="cfg-title">记忆</h3>
+            <div class="cfg-grid">
+              <div class="cfg-label full">
+                <button type="button" class="btn btn-ghost btn-sm cfg-action-btn" id="globalMemoryBtn">全局记忆</button>
+                <span class="cfg-hint">全局记忆只保存用户偏好；当前主题、任务和结论会保存到各自画布的“记忆”面板。</span>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost" id="loadConfig">加载已保存</button>
           <button class="btn btn-primary" id="saveConfig">保存配置</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="globalMemoryOverlay" aria-hidden="true">
+      <div class="modal memory-modal" role="dialog" aria-modal="true" aria-label="全局记忆">
+        <div class="modal-header">
+          <h2 class="modal-title">全局记忆</h2>
+          <button class="btn-icon" id="closeGlobalMemory" aria-label="关闭">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <textarea id="globalMemoryText" class="cfg-input memory-textarea" rows="10" placeholder="用于跨画布生效的用户偏好，例如回答风格、语言偏好、常用格式..."></textarea>
+          <span class="cfg-hint">这里不建议保存某个画布的主题事实；主题信息请放在右侧聊天栏的“记忆”。</span>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="clearGlobalMemory">清空</button>
+          <button class="btn btn-primary" id="saveGlobalMemory">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="globalMemoryConfirmOverlay" aria-hidden="true">
+      <div class="modal memory-modal" role="dialog" aria-modal="true" aria-label="确认全局记忆">
+        <div class="modal-header">
+          <h2 class="modal-title">确认全局记忆</h2>
+        </div>
+        <div class="modal-body">
+          <p class="cfg-hint memory-confirm-copy">系统识别到可能适合作为跨画布偏好的内容。确认后才会写入全局记忆。</p>
+          <textarea id="globalMemorySuggestionText" class="cfg-input memory-textarea" rows="10"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="rejectGlobalMemory">取消</button>
+          <button class="btn btn-primary" id="acceptGlobalMemory">确认保存</button>
         </div>
       </div>
     </div>

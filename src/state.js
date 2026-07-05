@@ -6,7 +6,40 @@ const STORAGE_KEY = 'canvas-studio-config-v2';
 const CANVAS_STORAGE_KEY = 'canvas-studio-canvas-v1';
 const CANVAS_LIST_KEY = 'canvas-studio-list-v1';
 const CURRENT_CANVAS_ID_KEY = 'canvas-studio-current-id-v1';
+const GLOBAL_MEMORY_KEY = 'canvas-studio-global-memory-v1';
 const MAX_HISTORY = 40;
+
+function normalizeCanvas(canvas) {
+  if (!canvas || typeof canvas !== 'object') return canvas;
+  if (!Array.isArray(canvas.groups)) canvas.groups = [];
+  if (typeof canvas.memory !== 'string') canvas.memory = '';
+  if (!Array.isArray(canvas.sessions)) canvas.sessions = [];
+  canvas.sessions = canvas.sessions
+    .filter(session => session && typeof session === 'object')
+    .map((session, index) => ({
+      id: typeof session.id === 'string' ? session.id : crypto.randomUUID(),
+      title: typeof session.title === 'string' && session.title.trim() ? session.title : `会话 ${index + 1}`,
+      messages: Array.isArray(session.messages)
+        ? session.messages.filter(message => message && typeof message.role === 'string' && typeof message.content === 'string')
+        : [],
+      createdAt: Number(session.createdAt) || Date.now(),
+      updatedAt: Number(session.updatedAt) || Date.now(),
+    }));
+  if (canvas.sessions.length === 0) {
+    const now = Date.now();
+    canvas.sessions.push({
+      id: crypto.randomUUID(),
+      title: '默认会话',
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  if (!canvas.activeSessionId || !canvas.sessions.some(session => session.id === canvas.activeSessionId)) {
+    canvas.activeSessionId = canvas.sessions[0].id;
+  }
+  return canvas;
+}
 
 /** 调用 LLM 推荐组名 */
 export async function suggestGroupName(blockIds, config = null) {
@@ -77,6 +110,9 @@ export const appState = {
     blocks: [],       // { id, type, label, content, x, y, groupId?, color? }
     connections: [],   // { id, fromId, toId }
     groups: [],        // { id, blockIds: [], color: string }
+    memory: '',
+    sessions: [],
+    activeSessionId: '',
   },
 
   /** 对话历史（传给 LLM） */
@@ -121,7 +157,7 @@ export function pushHistory() {
 export function undo() {
   if (historyIndex <= 0) return false;
   historyIndex--;
-  appState.canvas = cloneCanvas(historyStack[historyIndex]);
+  appState.canvas = normalizeCanvas(cloneCanvas(historyStack[historyIndex]));
   return true;
 }
 
@@ -129,7 +165,7 @@ export function undo() {
 export function redo() {
   if (historyIndex >= historyStack.length - 1) return false;
   historyIndex++;
-  appState.canvas = cloneCanvas(historyStack[historyIndex]);
+  appState.canvas = normalizeCanvas(cloneCanvas(historyStack[historyIndex]));
   return true;
 }
 
@@ -182,6 +218,7 @@ export function loadCanvas() {
       if (!canvas.groups) {
         canvas.groups = [];
       }
+      normalizeCanvas(canvas);
       appState.canvas = canvas;
       return true;
     }
@@ -216,9 +253,20 @@ export function createCanvas(title = '未命名白板') {
     title,
     blocks: [],
     connections: [],
+    groups: [],
+    memory: '',
+    sessions: [{
+      id: crypto.randomUUID(),
+      title: '默认会话',
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    }],
+    activeSessionId: '',
     createdAt: now,
     updatedAt: now,
   };
+  canvas.activeSessionId = canvas.sessions[0].id;
 
   // 存储完整数据
   localStorage.setItem(`canvas-data-${id}`, JSON.stringify(canvas));
@@ -257,7 +305,7 @@ export function loadCanvasById(id) {
     if (!canvas.groups) {
       canvas.groups = [];
     }
-    return canvas;
+    return normalizeCanvas(canvas);
   } catch {
     return null;
   }
@@ -296,6 +344,7 @@ export function switchCanvas(id) {
     if (!canvas.groups) {
       canvas.groups = [];
     }
+    normalizeCanvas(canvas);
     appState.canvas = canvas;
     localStorage.setItem(CURRENT_CANVAS_ID_KEY, id);
     return true;
@@ -306,6 +355,14 @@ export function switchCanvas(id) {
 /** 获取当前画布 ID */
 export function getCurrentCanvasId() {
   return localStorage.getItem(CURRENT_CANVAS_ID_KEY);
+}
+
+export function loadGlobalMemory() {
+  return localStorage.getItem(GLOBAL_MEMORY_KEY) || '';
+}
+
+export function saveGlobalMemory(memory = '') {
+  localStorage.setItem(GLOBAL_MEMORY_KEY, String(memory || ''));
 }
 
 /** 重命名画布 */

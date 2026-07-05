@@ -67,11 +67,14 @@ function getConversationStage(conversation = [], markdownDraft = '') {
   return 'working';
 }
 
-function buildChatSystemPrompt(canvasOutline, markdownDraft = '', conversation = [], options = {}) {
-  const draftSection = markdownDraft
-    ? `\nCurrent Markdown Draft:\n${markdownDraft}\n`
+function buildChatSystemPrompt(canvasOutline, canvasMemory = '', conversation = [], options = {}) {
+  const canvasMemorySection = canvasMemory
+    ? `\nCurrent Canvas Memory:\n${canvasMemory}\n`
     : '';
-  const stage = getConversationStage(conversation, markdownDraft);
+  const globalMemorySection = options.globalMemory
+    ? `\nGlobal User Memory:\n${options.globalMemory}\n`
+    : '';
+  const stage = getConversationStage(conversation, canvasMemory);
   const voiceSection = options.voiceOutputEnabled
     ? `
 Voice output is ON.
@@ -96,8 +99,9 @@ Please note:
 2. There is a separate Canvas Agent handling whiteboard drawing, so DO NOT output any layout or drawing JSON commands.
 3. Do not output JSON, tool calls, or canvas operation commands. If voice output is ON, the required VOICE_BRIEF control line is allowed and must come first.
 4. Respond in the same language as the user.
-5. When a Markdown draft is provided, treat it as the user's editable working draft. Continue from it instead of repeating it wholesale, and suggest precise incremental edits when useful.
-6. Use search capabilities only when the user asks for current facts, market/news/policy/source-backed claims, or when you explicitly propose and the user accepts a research step.
+5. When Canvas Memory is provided, treat it as the editable working memory for this specific whiteboard. Continue from it instead of repeating it wholesale, and suggest precise incremental edits when useful.
+6. When Global User Memory is provided, use it only for stable user preferences and cross-topic habits. Do not treat it as task facts for the current canvas unless relevant.
+7. Use search capabilities only when the user asks for current facts, market/news/policy/source-backed claims, or when you explicitly propose and the user accepts a research step.
 
 Conversation Stage: ${stage}
 
@@ -115,7 +119,8 @@ Default response shape:
 
 Current Whiteboard Outline:
 ${canvasOutline}
-${draftSection}
+${canvasMemorySection}
+${globalMemorySection}
 
 If the outline is helpful, integrate the current whiteboard state into your response to provide more contextually relevant replies.`;
 }
@@ -378,6 +383,7 @@ export async function callChatLlm(config, conversation, canvas) {
   const outline = buildCanvasOutline(canvas);
   const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation, {
     voiceOutputEnabled: Boolean(config.voiceOutputEnabled),
+    globalMemory: config.globalMemory || '',
   });
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -395,6 +401,7 @@ export async function callChatLlmStream(config, conversation, canvas, handlers =
   const outline = buildCanvasOutline(canvas);
   const systemPrompt = buildChatSystemPrompt(outline, config.markdownDraft, conversation, {
     voiceOutputEnabled: Boolean(config.voiceOutputEnabled),
+    globalMemory: config.globalMemory || '',
   });
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -437,6 +444,45 @@ Latest assistant response:
 ${assistantText}
 
 Rewrite the Markdown memory now.`;
+
+  return await sendRequest(
+    {
+      ...config,
+      searchMode: 'off',
+    },
+    [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    true
+  );
+}
+
+export async function callGlobalMemoryLlm(config, currentMemory, userText, assistantText) {
+  if (!assistantText?.trim()) return '';
+
+  const systemPrompt = `You maintain global user memory for an interactive whiteboard app.
+This memory is only for durable user preferences, working style, communication preferences, and cross-topic habits.
+It is NOT for the current project topic, facts, decisions, tasks, or whiteboard content.
+
+Rules:
+- If the latest turn does not reveal a stable cross-topic user preference, output ONLY an empty string.
+- If an update is useful, return the complete updated global memory in Markdown.
+- Keep the same primary language as the user.
+- Keep it compact, deduplicated, and under 500 Chinese characters or 350 English words.
+- Do not add uncertain guesses.
+- Output ONLY the updated memory or an empty string.`;
+
+  const userPrompt = `Current global user memory:
+${currentMemory || '(empty)'}
+
+Latest user message:
+${userText}
+
+Latest assistant response:
+${assistantText}
+
+Return the updated global user memory only if the user explicitly or strongly implies a durable preference.`;
 
   return await sendRequest(
     {

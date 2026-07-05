@@ -21,7 +21,7 @@ import { speak, canUseDoubaoTts, getDoubaoTtsFallbackReason } from './services/t
 import { testDoubaoAsrConnection } from './services/doubao-asr.js';
 import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
 import { callOrganizeLlm, callRefineLlm, callNamingLlm } from './services/llm.js';
-import { parseAiResponse, executeOperations, dedupeConnections, repairCanvasTextFormatting, repairMarkdownFormatting } from './utils/parser.js';
+import { parseAiResponse, executeOperations, dedupeConnections, repairCanvasTextFormatting, repairMarkdownFormatting, assertCanvasIntegrity } from './utils/parser.js';
 import { createCopyAttachment, createMappedAttachment, getAttachmentFile, listAttachments, supportsMappedFiles, updateAttachmentBlob } from './services/file-store.js';
 import { PDFDocument } from 'pdf-lib';
 
@@ -788,6 +788,13 @@ function restorePositionLocks(lockedIds) {
 }
 
 function runManualAutoLayout() {
+  try {
+    assertCanvasIntegrity(appState.canvas);
+  } catch (err) {
+    alert('Canvas integrity check failed before auto layout:\n' + err.message);
+    return;
+  }
+
   const positionLockedIds = snapshotPositionLocks();
   let layoutCompleted = false;
 
@@ -813,6 +820,8 @@ function runManualAutoLayout() {
 }
 
 function relayoutAfterContentChange({ pushHistoryEntry = false, fitView = false, changedBlockIds = [] } = {}) {
+  assertCanvasIntegrity(appState.canvas);
+
   const lockedGeometry = snapshotLockedBlockGeometry();
   const changedIds = new Set(changedBlockIds || []);
   if (changedIds.size > 0) {
@@ -3149,6 +3158,7 @@ function handleImportJson(content) {
     if (!data.title || !Array.isArray(data.blocks) || !Array.isArray(data.connections)) {
       throw new Error('JSON 格式无效，需要 title/blocks/connections 字段');
     }
+    assertCanvasIntegrity(data);
 
     // 导入数据
     appState.canvas = {

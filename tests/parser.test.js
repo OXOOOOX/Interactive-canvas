@@ -11,6 +11,7 @@ import {
   repairMarkdownFormatting,
   renderMarkdown,
   inspectMarkdownFormatting,
+  validateCanvasIntegrity,
 } from '../src/utils/parser.js';
 
 test('extractJson parses JSON wrapped in markdown fences', () => {
@@ -144,6 +145,69 @@ test('executeOperations adds blocks, connections, updates, and removes safely', 
   assert.equal(canvas.blocks.find(block => block.id === 'child').x, undefined);
   assert.equal(canvas.blocks.some(block => block.id === 'locked'), true);
   assert.deepEqual(canvas.connections.map(conn => [conn.fromId, conn.toId]), [['root', 'child']]);
+});
+
+test('validateCanvasIntegrity reports duplicate blocks and dangling connections', () => {
+  const result = validateCanvasIntegrity({
+    blocks: [
+      { id: 'nezha_x', label: '哪吒 X' },
+      { id: 'nezha_x', label: '哪吒 X duplicate' },
+      { id: 'suv', label: 'SUV' },
+    ],
+    connections: [
+      { fromId: 'suv', toId: 'neza_x' },
+    ],
+    groups: [
+      { id: 'group-a', blockIds: ['missing_block'] },
+    ],
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.duplicateBlockIds, ['nezha_x']);
+  assert.deepEqual(result.invalidConnections, ['#1: suv -> neza_x']);
+  assert.deepEqual(result.invalidGroupRefs, ['#1: missing_block']);
+});
+
+test('executeOperations rejects AI-created duplicate ids and dangling connections', () => {
+  const canvas = {
+    blocks: [
+      { id: 'root', label: 'Root', content: '', type: 'text' },
+      { id: 'child', label: 'Child', content: '', type: 'text' },
+    ],
+    connections: [],
+    groups: [{ id: 'group-a', blockIds: ['child'] }],
+  };
+
+  const result = executeOperations(canvas, [
+    {
+      op: 'add',
+      parentId: 'root',
+      block: { id: 'child', label: 'Duplicate child', content: '', type: 'text' },
+    },
+    {
+      op: 'addConnection',
+      fromId: 'root',
+      toId: 'missing',
+    },
+    {
+      op: 'update',
+      targetId: 'child',
+      changes: { id: 'renamed_child', label: 'Updated child' },
+    },
+    {
+      op: 'remove',
+      targetId: 'child',
+    },
+  ]);
+
+  assert.deepEqual(result.addedIds, []);
+  assert.deepEqual(result.updatedIds, ['child']);
+  assert.deepEqual(result.removedIds, ['child']);
+  assert.equal(canvas.blocks.some(block => block.id === 'renamed_child'), false);
+  assert.equal(canvas.blocks.some(block => block.id === 'child'), false);
+  assert.deepEqual(canvas.connections, []);
+  assert.deepEqual(canvas.groups[0].blockIds, []);
+  assert.equal(validateCanvasIntegrity(canvas).valid, true);
 });
 
 test('dedupeConnections removes duplicate directed edges', () => {

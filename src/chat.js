@@ -4,7 +4,7 @@
 
 import { appState, pushHistory, saveCanvas } from './state.js';
 import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
-import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting } from './utils/parser.js';
+import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting, assertCanvasIntegrity } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
 import { renderBlocks, syncBlockSizes } from './canvas.js';
 
@@ -230,6 +230,7 @@ async function sendMessage(explicitText = null) {
 
       const result = executeOperations(appState.canvas, parsed.operations);
       dedupeConnections(appState.canvas);
+      assertCanvasIntegrity(appState.canvas);
       pushHistory();
 
       const changedIds = [...result.addedIds, ...result.updatedIds];

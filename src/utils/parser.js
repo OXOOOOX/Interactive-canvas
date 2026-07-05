@@ -14,6 +14,75 @@
 
 import { traverse, findNodeById, ensureNodeFields } from './traverse.js';
 
+export function validateCanvasIntegrity(canvas = {}) {
+  const blocks = Array.isArray(canvas.blocks) ? canvas.blocks : [];
+  const connections = Array.isArray(canvas.connections) ? canvas.connections : [];
+  const groups = Array.isArray(canvas.groups) ? canvas.groups : [];
+  const blockIds = new Map();
+  const duplicateBlockIds = new Set();
+  const missingBlockIds = [];
+  const invalidConnections = [];
+  const invalidGroupRefs = [];
+
+  blocks.forEach((block, index) => {
+    const id = typeof block?.id === 'string' ? block.id.trim() : '';
+    if (!id) {
+      missingBlockIds.push(`#${index + 1}`);
+      return;
+    }
+    if (blockIds.has(id)) duplicateBlockIds.add(id);
+    blockIds.set(id, true);
+  });
+
+  connections.forEach((connection, index) => {
+    const fromId = typeof connection?.fromId === 'string' ? connection.fromId.trim() : '';
+    const toId = typeof connection?.toId === 'string' ? connection.toId.trim() : '';
+    if (!fromId || !toId || !blockIds.has(fromId) || !blockIds.has(toId)) {
+      invalidConnections.push(`#${index + 1}: ${fromId || '(empty)'} -> ${toId || '(empty)'}`);
+    }
+  });
+
+  groups.forEach((group, groupIndex) => {
+    if (!Array.isArray(group?.blockIds)) return;
+    group.blockIds.forEach((blockId) => {
+      if (!blockIds.has(blockId)) {
+        invalidGroupRefs.push(`#${groupIndex + 1}: ${blockId}`);
+      }
+    });
+  });
+
+  const errors = [];
+  if (missingBlockIds.length) {
+    errors.push(`存在缺少 id 的 blocks：${missingBlockIds.slice(0, 8).join(', ')}`);
+  }
+  if (duplicateBlockIds.size) {
+    errors.push(`存在重复 block id：${Array.from(duplicateBlockIds).slice(0, 8).join(', ')}`);
+  }
+  if (invalidConnections.length) {
+    errors.push(`存在指向不存在节点的 connections：${invalidConnections.slice(0, 8).join(', ')}`);
+  }
+  if (invalidGroupRefs.length) {
+    errors.push(`存在指向不存在节点的 groups.blockIds：${invalidGroupRefs.slice(0, 8).join(', ')}`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    duplicateBlockIds: Array.from(duplicateBlockIds),
+    missingBlockIds,
+    invalidConnections,
+    invalidGroupRefs,
+  };
+}
+
+export function assertCanvasIntegrity(canvas) {
+  const result = validateCanvasIntegrity(canvas);
+  if (!result.valid) {
+    throw new Error(result.errors.join('\n'));
+  }
+  return result;
+}
+
 /**
  * 从 AI 原始文本中提取 JSON
  * 兼容 markdown 代码块包裹、多余前后文等
@@ -232,7 +301,7 @@ export function executeOperations(canvas, operations) {
     return Boolean(block?.locked || block?.positionLocked);
   };
   const sanitizeChanges = (changes) => {
-    const { x, y, width, height, locked, positionLocked, ...safeChanges } = changes;
+    const { id, x, y, width, height, locked, positionLocked, ...safeChanges } = changes;
     return safeChanges;
   };
   const hasConnection = (fromId, toId) => canvas.connections.some(
@@ -240,7 +309,8 @@ export function executeOperations(canvas, operations) {
   );
 
   const addConnectionIfMissing = (fromId, toId) => {
-    if (!fromId || !toId || isLocked(fromId) || isLocked(toId) || hasConnection(fromId, toId)) return;
+    if (!fromId || !toId || !findBlock(fromId) || !findBlock(toId)) return;
+    if (isLocked(fromId) || isLocked(toId) || hasConnection(fromId, toId)) return;
     canvas.connections.push({
       id: crypto.randomUUID(),
       fromId,
@@ -252,6 +322,7 @@ export function executeOperations(canvas, operations) {
     switch (op.op) {
       case 'add': {
         if (op.parentId && isLocked(op.parentId)) break;
+        if (!op.block?.id || findBlock(op.block.id)) break;
 
         canvas.blocks.push(op.block);
         result.addedIds.push(op.block.id);
@@ -284,6 +355,13 @@ export function executeOperations(canvas, operations) {
           canvas.connections = canvas.connections.filter(
             c => c.fromId !== op.targetId && c.toId !== op.targetId
           );
+          if (Array.isArray(canvas.groups)) {
+            canvas.groups.forEach(group => {
+              if (Array.isArray(group.blockIds)) {
+                group.blockIds = group.blockIds.filter(id => id !== op.targetId);
+              }
+            });
+          }
           result.removedIds.push(op.targetId);
         }
         break;

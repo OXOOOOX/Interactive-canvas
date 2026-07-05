@@ -366,7 +366,7 @@ function useFreeTrialLlm() {
 }
 
 function hasDoubaoAsrCredentials(config = getConfig()) {
-  return !!config.doubaoApiKey;
+  return !!config.doubaoApiKey || !import.meta.env.DEV;
 }
 
 function hasDoubaoTtsCredentials(config = getConfig()) {

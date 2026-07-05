@@ -22,6 +22,10 @@ const MESSAGE_FLAGS = {
 const SERIALIZATION_JSON = 0x1;
 const COMPRESSION_GZIP = 0x1;
 
+function canUseServerDoubaoProxy() {
+  return !import.meta.env.DEV;
+}
+
 function createHeader(messageType, flags, serialization = SERIALIZATION_JSON, compression = COMPRESSION_GZIP) {
   return new Uint8Array([
     (0x1 << 4) | 0x1,
@@ -146,6 +150,11 @@ function buildProxyQuery(config) {
     return url.toString();
   }
 
+  if (canUseServerDoubaoProxy()) {
+    url.searchParams.set('mode', 'server');
+    return url.toString();
+  }
+
   throw new Error('鏈厤缃眴鍖?API Key');
 }
 
@@ -166,6 +175,13 @@ export function getDoubaoProxyHeaders(config, connectId = crypto.randomUUID()) {
   if (config.doubaoApiKey) {
     return {
       'X-Api-Key': config.doubaoApiKey,
+      'X-Api-Resource-Id': resourceId,
+      'X-Api-Connect-Id': connectId,
+    };
+  }
+
+  if (canUseServerDoubaoProxy()) {
+    return {
       'X-Api-Resource-Id': resourceId,
       'X-Api-Connect-Id': connectId,
     };

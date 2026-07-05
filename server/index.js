@@ -42,6 +42,7 @@ const DEFAULT_MODELS = {
 
 const freeSearchBuckets = new Map();
 const freeLlmBuckets = new Map();
+const freeDoubaoVoiceBuckets = new Map();
 
 function setupDoubaoAsrProxy(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -60,7 +61,21 @@ function setupDoubaoAsrProxy(server) {
     const target = requestUrl.searchParams.get('target') || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel';
     const resourceId = requestUrl.searchParams.get('resourceId') || 'volc.seedasr.sauc.duration';
     const connectId = requestUrl.searchParams.get('connectId') || randomUUID();
-    const apiKey = requestUrl.searchParams.get('apiKey') || '';
+    const userApiKey = requestUrl.searchParams.get('apiKey') || '';
+    const serverApiKey = process.env.DOUBAO_API_KEY || '';
+    const apiKey = userApiKey || serverApiKey;
+    if (!apiKey) {
+      clientSocket.close(1008, 'No Doubao API key is available.');
+      return;
+    }
+    if (!userApiKey) {
+      try {
+        consumeFreeDoubaoVoiceQuota(req);
+      } catch (error) {
+        clientSocket.close(1008, error.message);
+        return;
+      }
+    }
     const targetUrl = new URL(target);
 
     const headers = {
@@ -134,6 +149,11 @@ function sendSseError(res, status, message) {
   res.end();
 }
 
+function writeSseEvent(res, event, payload) {
+  if (event) res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
 function isLocalRequest(req) {
   const address = req.socket.remoteAddress || '';
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
@@ -180,7 +200,9 @@ async function proxyDoubaoTts(req, res) {
   }
 
   const endpoint = body.endpoint || 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
-  const apiKey = body.apiKey || '';
+  const userApiKey = body.apiKey || '';
+  const serverApiKey = process.env.DOUBAO_API_KEY || '';
+  const apiKey = userApiKey || serverApiKey;
   const resourceId = body.resourceId || 'seed-tts-2.0';
   const requestId = body.requestId || randomUUID();
   const payload = body.payload;
@@ -188,6 +210,15 @@ async function proxyDoubaoTts(req, res) {
   if (!apiKey || !payload) {
     sendJson(res, 400, { error: 'Missing Doubao TTS apiKey or payload.' });
     return;
+  }
+
+  if (!userApiKey) {
+    try {
+      consumeFreeDoubaoVoiceQuota(req);
+    } catch (error) {
+      sendJson(res, 429, { error: error.message });
+      return;
+    }
   }
 
   let upstream;
@@ -303,6 +334,28 @@ function consumeFreeLlmQuota(req) {
   if (bucket.count >= limit) {
     const hours = Math.max(1, Math.ceil((bucket.resetAt - now) / 3_600_000));
     throw new Error(`Free AI trial quota exceeded. Add your own LLM API Key in settings or retry in about ${hours} hours.`);
+  }
+
+  bucket.count += 1;
+}
+
+function consumeFreeDoubaoVoiceQuota(req) {
+  const limit = Math.max(0, Number(process.env.DOUBAO_VOICE_FREE_QUOTA_LIMIT || 20));
+  const windowMs = Math.max(60_000, Number(process.env.DOUBAO_VOICE_FREE_QUOTA_WINDOW_MS || 86_400_000));
+  if (limit === 0) return;
+
+  const now = Date.now();
+  const id = getClientId(req);
+  const bucket = freeDoubaoVoiceBuckets.get(id);
+
+  if (!bucket || bucket.resetAt <= now) {
+    freeDoubaoVoiceBuckets.set(id, { count: 1, resetAt: now + windowMs });
+    return;
+  }
+
+  if (bucket.count >= limit) {
+    const hours = Math.max(1, Math.ceil((bucket.resetAt - now) / 3_600_000));
+    throw new Error(`Free Doubao voice quota exceeded. Add your own Doubao API Key in settings or retry in about ${hours} hours.`);
   }
 
   bucket.count += 1;
@@ -425,6 +478,30 @@ async function proxyChatStream(req, res) {
   const searchMode = normalizeSearchMode(body.searchMode || config.searchMode);
   const isCanvas = Boolean(body.isCanvas);
   const query = String(body.searchQuery || body.userText || '').trim();
+  const isStreaming = body.stream !== false;
+  let sseStarted = false;
+  const ensureSse = (status = 200) => {
+    if (sseStarted || !isStreaming) return;
+    res.writeHead(status, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    sseStarted = true;
+  };
+  const writeStatus = (payload) => {
+    ensureSse();
+    writeSseEvent(res, 'status', payload);
+  };
+  const writeStreamError = (status, message) => {
+    if (!sseStarted) {
+      sendSseError(res, status, message);
+      return;
+    }
+    writeSseEvent(res, '', { error: message });
+    res.end();
+  };
 
   if (!endpoint) {
     sendSseError(res, 400, 'LLM endpoint is not configured.');
@@ -457,11 +534,14 @@ async function proxyChatStream(req, res) {
 
   if (!isCanvas && query && shouldUseExternalSearch(provider, searchMode, query, config) && !builtinSearch) {
     try {
-      searchContext = buildSearchContext(await runExternalSearch(query, req, config));
+      writeStatus({ phase: 'searching', label: 'Web Search', provider: config.searchProvider || process.env.SEARCH_PROVIDER || 'tavily' });
+      const searchResults = await runExternalSearch(query, req, config);
+      searchContext = buildSearchContext(searchResults);
+      writeStatus({ phase: 'thinking', label: 'Reading results', count: searchResults.length });
     } catch (error) {
       externalSearchError = error.message;
       if (searchMode === 'external') {
-        sendSseError(res, 424, externalSearchError);
+        writeStreamError(424, externalSearchError);
         return;
       }
     }
@@ -470,6 +550,9 @@ async function proxyChatStream(req, res) {
   }
 
   const payload = buildPayload({ body, provider, model, searchContext, builtinSearch });
+  if (builtinSearch) {
+    writeStatus({ phase: 'searching', label: 'Web Search', provider: 'tongyi' });
+  }
   if (usesServerKey) {
     const maxTokens = Number(process.env.FREE_LLM_MAX_OUTPUT_TOKENS || 2000);
     if (Number.isFinite(maxTokens) && maxTokens > 0) {
@@ -488,7 +571,7 @@ async function proxyChatStream(req, res) {
       body: JSON.stringify(payload),
     });
   } catch (error) {
-    sendSseError(res, 502, error.message);
+    writeStreamError(502, error.message);
     return;
   }
 
@@ -506,27 +589,22 @@ async function proxyChatStream(req, res) {
     return;
   }
 
-  res.writeHead(upstream.ok ? 200 : upstream.status, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+  ensureSse(upstream.ok ? 200 : upstream.status);
 
   if (externalSearchError) {
-    res.write(`event: warning\ndata: ${JSON.stringify({ warning: externalSearchError })}\n\n`);
+    writeSseEvent(res, 'warning', { warning: externalSearchError });
   }
 
   if (!upstream.ok) {
     const text = await upstream.text().catch(() => '');
-    res.write(`data: ${JSON.stringify({ error: `LLM request failed (${upstream.status}): ${text.slice(0, 300)}` })}\n\n`);
+    writeSseEvent(res, '', { error: `LLM request failed (${upstream.status}): ${text.slice(0, 300)}` });
     res.end();
     return;
   }
 
   if (!upstream.body) {
     const text = await upstream.text();
-    res.write(`data: ${JSON.stringify({ text })}\n\n`);
+    writeSseEvent(res, '', { text });
     res.write('data: [DONE]\n\n');
     res.end();
     return;
@@ -537,7 +615,7 @@ async function proxyChatStream(req, res) {
       res.write(chunk);
     }
   } catch (error) {
-    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    writeSseEvent(res, '', { error: error.message });
   } finally {
     res.end();
   }

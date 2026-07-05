@@ -62,13 +62,20 @@ docker run --rm -p 8080:8080 interactive-canvas
 NODE_ENV=production
 
 # LLM free-trial fallback. User-provided keys in Settings take priority.
-LLM_PROVIDER=deepseekV4Pro
-LLM_ENDPOINT=https://api.deepseek.com/chat/completions
-LLM_MODEL=deepseek-v4-pro
-LLM_API_KEY=your-server-side-llm-key
+# For Volcengine Ark / Doubao, LLM_MODEL should be a model ID enabled in your Ark account.
+# Some Ark accounts use endpoint-style IDs such as ep-xxxxxxxx; others use model IDs.
+LLM_PROVIDER=doubao
+LLM_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+LLM_MODEL=your-enabled-doubao-model-or-endpoint-id
+LLM_API_KEY=your-volcengine-ark-api-key
 FREE_LLM_QUOTA_LIMIT=5
 FREE_LLM_QUOTA_WINDOW_MS=86400000
 FREE_LLM_MAX_OUTPUT_TOKENS=2000
+
+# Optional Doubao ASR / TTS free-trial fallback for public users without their own Doubao key.
+DOUBAO_API_KEY=your-doubao-speech-api-key
+DOUBAO_VOICE_FREE_QUOTA_LIMIT=20
+DOUBAO_VOICE_FREE_QUOTA_WINDOW_MS=86400000
 
 # Server fallback search key. Users can still enter their own key in Settings.
 SEARCH_PROVIDER=tavily

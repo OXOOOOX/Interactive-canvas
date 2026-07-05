@@ -23,8 +23,12 @@ function getRequestId() {
     || `dreamcatcher-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function canUseServerDoubaoProxy() {
+  return !import.meta.env.DEV;
+}
+
 function validateDoubaoTtsConfig(config) {
-  if (config.doubaoApiKey) return;
+  if (config.doubaoApiKey || canUseServerDoubaoProxy()) return;
   throw new Error('未配置豆包 TTS 所需的 doubaoApiKey');
 }
 
@@ -63,7 +67,7 @@ function playAudioElement(audio) {
 }
 
 export function canUseDoubaoTts(config) {
-  return !!(config?.doubaoApiKey && getDoubaoEndpoint(config));
+  return !!((config?.doubaoApiKey || canUseServerDoubaoProxy()) && getDoubaoEndpoint(config));
 }
 
 export function getDoubaoTtsFallbackReason(config) {

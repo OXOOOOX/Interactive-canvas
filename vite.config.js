@@ -3,6 +3,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
+import { proxyChatStream } from './server/index.js'
 
 const port = Number(process.env.PORT || 8080)
 const host = '0.0.0.0'
@@ -222,10 +223,25 @@ function createDoubaoAsrProxyPlugin() {
   }
 }
 
+function createChatStreamProxyPlugin() {
+  return {
+    name: 'chat-stream-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/chat/stream', async (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'Method not allowed' })
+          return
+        }
+        await proxyChatStream(req, res)
+      })
+    },
+  }
+}
+
 export default defineConfig({
   root: '.',
   publicDir: 'public',
-  plugins: [createDoubaoTtsProxyPlugin(), createDoubaoAsrProxyPlugin()],
+  plugins: [createDoubaoTtsProxyPlugin(), createDoubaoAsrProxyPlugin(), createChatStreamProxyPlugin()],
   build: {
     outDir: 'dist',
     sourcemap: true,

@@ -115,6 +115,15 @@ export function extractAssistantText(payload) {
   return JSON.stringify(payload);
 }
 
+export function stripSearchToolMarkup(text = '') {
+  return String(text || '')
+    .replace(/<search\b[^>]*>[\s\S]*?(?:<\/search>|$)/gi, '')
+    .replace(/<query\b[^>]*>[\s\S]*?<\/query>/gi, '')
+    .replace(/^\s*(?:[-*]\s*)?(?:搜索词|查询词|query)\s*[:：].*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /**
  * 将普通文本中的 `**` 转为加粗并安全渲染
  */

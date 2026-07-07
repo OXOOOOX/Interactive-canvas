@@ -11,6 +11,7 @@ import {
   repairMarkdownFormatting,
   renderMarkdown,
   inspectMarkdownFormatting,
+  stripSearchToolMarkup,
   validateCanvasIntegrity,
 } from '../src/utils/parser.js';
 
@@ -35,6 +36,22 @@ test('extractAssistantText supports OpenAI-compatible message payloads', () => {
   });
 
   assert.equal(text, 'hello\nworld');
+});
+
+test('stripSearchToolMarkup removes internal search query blocks', () => {
+  const text = stripSearchToolMarkup([
+    '好的，我先核对一下。',
+    '',
+    '<search>',
+    '<query>上海浦东 飞 福冈 2026年9月 航班 时刻</query>',
+    '<query>PVG FUK flights September 2026 schedule</query>',
+    '</search>',
+    '',
+    '我查到的公开结果不够直接，建议以航司官网或订票平台为准。',
+  ].join('\n'));
+
+  assert.equal(text, '好的，我先核对一下。\n\n我查到的公开结果不够直接，建议以航司官网或订票平台为准。');
+  assert.doesNotMatch(text, /<search|<query|PVG FUK/i);
 });
 
 test('parseAiResponse normalizes operation responses', () => {

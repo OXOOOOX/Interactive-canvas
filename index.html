@@ -235,6 +235,7 @@
             <textarea id="markdownDraft" class="draft-textarea" rows="5" placeholder="这里保存 Agent 自动整理后的任务记忆、关键结论、待办和背景约束..."></textarea>
           </div>
           <div class="chat-suggestions" id="chatSuggestions" aria-live="polite"></div>
+          <div class="pending-message-queue" id="pendingMessageQueue" aria-live="polite" aria-label="待发送消息队列"></div>
           <div class="waveform-bar" id="waveformBar" aria-hidden="true">
             <canvas id="waveformCanvas" width="300" height="32"></canvas>
             <span class="wave-status" id="waveStatus"></span>
@@ -392,29 +393,32 @@
               <div class="cfg-subtitle full">搜索</div>
               <label class="cfg-label">搜索平台
                 <select id="searchProvider" class="cfg-input">
-                  <option value="tavily" selected>Tavily</option>
+                  <option value="auto" selected>自动（大陆百度 / 海外 Tavily）</option>
+                  <option value="baidu">百度千帆 AI Search</option>
+                  <option value="tavily">Tavily</option>
+                  <option value="bocha">Bocha（中文）</option>
                   <option value="serper">Serper</option>
                   <option value="bing">Bing</option>
                 </select>
               </label>
               <label class="cfg-label">搜索 API Key（可选）
                 <div style="display:flex;gap:8px;align-items:center">
-                  <input id="searchApiKey" type="password" class="cfg-input" placeholder="Tavily / Serper / Bing Search API Key" style="flex:1" />
+                  <input id="searchApiKey" type="password" class="cfg-input" placeholder="Baidu Qianfan / Tavily / Bocha / Serper / Bing Search API Key" style="flex:1" />
                   <button id="openSearchKeyPageBtn" type="button" class="btn-sm" style="white-space:nowrap">申请 Key</button>
                 </div>
                 <span class="cfg-hint">留空时使用服务器配置的限额兜底 Key；填入自己的 Key 后不消耗服务器免费额度。</span>
               </label>
-              <div class="cfg-subtitle full">ASR 语音识别</div>
+              <div class="cfg-subtitle full">ASR 语音识别 / TTS 语音合成</div>
               <label class="cfg-label full">豆包 API Key（用于 ASR / TTS）
                 <div style="display:flex;gap:8px;align-items:center">
                   <input id="doubaoApiKey" type="password" class="cfg-input" placeholder="Doubao API Key" style="flex:1" />
+                  <button id="openDoubaoKeyPageBtn" type="button" class="btn-sm" style="white-space:nowrap">申请 Key</button>
                   <button id="testDoubaoAsrBtn" type="button" class="btn-sm" style="white-space:nowrap">测试豆包 ASR</button>
                 </div>
               </label>
               <label class="cfg-label full">代理 URL（用于文件 STT，可选）
                 <input id="proxyUrl" type="url" class="cfg-input" placeholder="https://your-proxy/api" />
               </label>
-              <div class="cfg-subtitle full">TTS 语音合成</div>
               <div class="cfg-hint full">豆包 TTS 使用上面的“豆包 API Key（用于 ASR / TTS）”；浏览器内置 TTS 不需要 Key。</div>
             </div>
           </div>

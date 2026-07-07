@@ -105,6 +105,7 @@ const dom = {
   useFreeTrialBtn: $('useFreeTrialBtn'),
   openLlmKeyPageBtn: $('openLlmKeyPageBtn'),
   openSearchKeyPageBtn: $('openSearchKeyPageBtn'),
+  openDoubaoKeyPageBtn: $('openDoubaoKeyPageBtn'),
   globalMemoryBtn: $('globalMemoryBtn'),
   globalMemoryOverlay: $('globalMemoryOverlay'),
   closeGlobalMemory: $('closeGlobalMemory'),
@@ -151,6 +152,8 @@ const dom = {
 // 鈹€鈹€ Config Helper 鈹€鈹€
 let llmApiKeys = {};
 let lastLlmProvider = 'tongyi';
+let searchApiKeys = {};
+let lastSearchProvider = 'auto';
 let modelOptions = [];
 let apiKeyMissingPromptShown = false;
 
@@ -181,7 +184,8 @@ function getConfig() {
     llmApiKeys: getStoredLlmApiKeys(),
     doubaoApiKey: dom.doubaoApiKey.value,
     searchProvider: dom.searchProvider?.value || 'tavily',
-    searchApiKey: dom.searchApiKey?.value || '',
+    searchApiKey: dom.searchProvider?.value === 'auto' ? '' : (dom.searchApiKey?.value || ''),
+    searchApiKeys: getStoredSearchApiKeys(),
     proxyUrl: dom.proxyUrl?.value || '',
     searchMode: getSearchModeValue(),
     preferBuiltinSearch: Boolean(dom.preferBuiltinSearch?.checked),
@@ -214,7 +218,7 @@ function applyConfigDefaults(config = {}) {
     realtimeVoiceModel: ENDPOINT_PRESETS.doubao?.realtimeVoiceModel || '',
     searchMode: 'auto',
     preferBuiltinSearch: false,
-    searchProvider: 'tavily',
+    searchProvider: 'auto',
     ...config,
     voiceConfigVersion: 2,
   };
@@ -246,8 +250,22 @@ function normalizeLlmApiKeys(value) {
   }));
 }
 
+function normalizeSearchApiKeys(value) {
+  if (!value || typeof value !== 'object') return {};
+
+  return Object.fromEntries(Object.entries(value).map(([provider, key]) => {
+    if (typeof key === 'string') return [provider, key];
+    if (key && typeof key === 'object' && typeof key.slot1 === 'string') return [provider, key.slot1];
+    return [provider, ''];
+  }));
+}
+
 function getStoredLlmApiKeys() {
   return JSON.parse(JSON.stringify(llmApiKeys));
+}
+
+function getStoredSearchApiKeys() {
+  return JSON.parse(JSON.stringify(searchApiKeys));
 }
 
 function rememberCurrentLlmKey(provider = dom.llmProvider?.value) {
@@ -256,11 +274,32 @@ function rememberCurrentLlmKey(provider = dom.llmProvider?.value) {
   llmApiKeys[provider] = dom.llmApiKey.value;
 }
 
+function rememberCurrentSearchKey(provider = dom.searchProvider?.value) {
+  if (!provider || provider === 'auto' || !dom.searchApiKey) return;
+
+  searchApiKeys[provider] = dom.searchApiKey.value;
+}
+
 function loadLlmProviderKey(provider = dom.llmProvider?.value) {
   if (!dom.llmApiKey || !provider) return;
 
   dom.llmApiKey.value = llmApiKeys[provider] || '';
   lastLlmProvider = provider;
+}
+
+function loadSearchProviderKey(provider = dom.searchProvider?.value) {
+  if (!dom.searchApiKey || !provider) return;
+
+  if (provider === 'auto') {
+    dom.searchApiKey.value = '';
+    dom.searchApiKey.readOnly = true;
+    dom.searchApiKey.placeholder = '自动模式使用各平台已保存 Key 或服务器兜底 Key';
+  } else {
+    dom.searchApiKey.readOnly = false;
+    dom.searchApiKey.value = searchApiKeys[provider] || '';
+    dom.searchApiKey.placeholder = '当前搜索平台的 API Key';
+  }
+  lastSearchProvider = provider;
 }
 
 function applyLlmKeyConfig(config = {}) {
@@ -275,12 +314,28 @@ function applyLlmKeyConfig(config = {}) {
   loadLlmProviderKey(provider);
 }
 
+function applySearchKeyConfig(config = {}) {
+  searchApiKeys = normalizeSearchApiKeys(config.searchApiKeys);
+  const provider = config.searchProvider || dom.searchProvider?.value || 'auto';
+
+  if (config.searchApiKey && provider !== 'auto' && !searchApiKeys[provider]) {
+    searchApiKeys[provider] = config.searchApiKey;
+  }
+
+  loadSearchProviderKey(provider);
+}
+
 function handleLlmProviderChange() {
   rememberCurrentLlmKey(lastLlmProvider);
   applyProviderPreset(false);
   loadLlmProviderKey(dom.llmProvider.value);
   updateTongyiSearchVisibility();
   apiKeyMissingPromptShown = false;
+}
+
+function handleSearchProviderChange() {
+  rememberCurrentSearchKey(lastSearchProvider);
+  loadSearchProviderKey(dom.searchProvider?.value);
 }
 
 function getSearchModeValue() {
@@ -302,9 +357,8 @@ function toggleSearchMode() {
 
 function updateTongyiSearchVisibility() {
   if (!dom.tongyiSearchControl) return;
-  const visible = dom.llmProvider?.value === 'tongyi';
-  dom.tongyiSearchControl.classList.toggle('visible', visible);
-  dom.tongyiSearchControl.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  dom.tongyiSearchControl.classList.remove('visible');
+  dom.tongyiSearchControl.setAttribute('aria-hidden', 'true');
 }
 
 const LLM_KEY_URLS = {
@@ -316,10 +370,15 @@ const LLM_KEY_URLS = {
 };
 
 const SEARCH_KEY_URLS = {
+  auto: 'https://qianfan.cloud.baidu.com/',
+  baidu: 'https://qianfan.cloud.baidu.com/',
   tavily: 'https://app.tavily.com/home',
+  bocha: 'https://open.bochaai.com/',
   serper: 'https://serper.dev/',
-  bing: 'https://portal.azure.com/#create/Microsoft.BingSearch',
+  bing: 'https://portal.azure.com/#home',
 };
+
+const DOUBAO_SPEECH_KEY_URL = 'https://console.volcengine.com/speech/new/setting/apikeys?projectName=default';
 
 function openExternalKeyPage(url) {
   if (!url) return;
@@ -341,8 +400,13 @@ function openCurrentSearchKeyPage() {
   openExternalKeyPage(SEARCH_KEY_URLS[dom.searchProvider?.value] || SEARCH_KEY_URLS.tavily);
 }
 
+function openDoubaoKeyPage() {
+  openExternalKeyPage(DOUBAO_SPEECH_KEY_URL);
+}
+
 function saveCurrentConfig() {
   rememberCurrentLlmKey();
+  rememberCurrentSearchKey();
   saveConfig(getConfig());
 }
 
@@ -519,6 +583,16 @@ function announceAssistantSpeechDone(outputMode = getVoiceRouting().outputMode) 
   const message = outputMode === 'doubao' ? '豆包朗读完成，继续听你说' : '朗读完成，继续听你说';
   const variant = outputMode === 'doubao' ? 'success' : 'browser';
   showVoiceToast(message, variant, 2200);
+}
+
+function setAssistantPlaybackBusy(isBusy) {
+  const current = Number(window.__ASSISTANT_PLAYBACK_BUSY_COUNT__ || 0);
+  window.__ASSISTANT_PLAYBACK_BUSY_COUNT__ = Math.max(0, current + (isBusy ? 1 : -1));
+  window.__ASSISTANT_PLAYBACK_BUSY__ = window.__ASSISTANT_PLAYBACK_BUSY_COUNT__ > 0;
+  window.__CHAT_PENDING_STATUS_CHANGED__?.();
+  if (!window.__ASSISTANT_PLAYBACK_BUSY__) {
+    window.__CHAT_PENDING_DRAIN__?.();
+  }
 }
 
 function announceVoiceCaptured() {
@@ -1607,21 +1681,26 @@ async function playReplyWithResolvedConfig(reply, config = getConfig()) {
     lastVoiceFallbackReason = '';
   }
 
-  if (resolvedConfig.ttsProvider === 'browser') {
-    await playBrowserSpeech(reply, {
-      onStart: () => announceAssistantSpeechStart('browser'),
-      onDone: () => announceAssistantSpeechDone('browser'),
-    });
-    return;
-  }
-
-  announceAssistantSpeechStart('doubao');
+  setAssistantPlaybackBusy(true);
   try {
-    await speak(reply, resolvedConfig);
-    announceAssistantSpeechDone('doubao');
-  } catch (error) {
-    console.error('豆包语音合成失败', error);
-    showVoiceToast(`豆包播报失败：${error.message || '请检查 TTS 配置'}`, 'browser', 3200);
+    if (resolvedConfig.ttsProvider === 'browser') {
+      await playBrowserSpeech(reply, {
+        onStart: () => announceAssistantSpeechStart('browser'),
+        onDone: () => announceAssistantSpeechDone('browser'),
+      });
+      return;
+    }
+
+    announceAssistantSpeechStart('doubao');
+    try {
+      await speak(reply, resolvedConfig);
+      announceAssistantSpeechDone('doubao');
+    } catch (error) {
+      console.error('豆包语音合成失败', error);
+      showVoiceToast(`豆包播报失败：${error.message || '请检查 TTS 配置'}`, 'browser', 3200);
+    }
+  } finally {
+    setAssistantPlaybackBusy(false);
   }
 }
 
@@ -1672,6 +1751,58 @@ async function replayAssistantReply(reply) {
   await playReplyWithResolvedConfig(reply, getConfig());
 }
 
+let voiceTurnQueue = Promise.resolve();
+
+async function processVoiceTurn(transcribedText) {
+  const text = getVoiceSubmitText(transcribedText);
+  if (!isMeaningfulTranscript(text)) {
+    resumeListening();
+    return;
+  }
+
+  let voiceBriefPlayed = false;
+  const response = await sendText(text, {
+    voiceOutputEnabled: isTtsEnabled(getConfig()),
+    returnVoicePayload: true,
+    onAssistantStreamStart: () => {
+      void resumeListening();
+    },
+    onVoiceBrief: (voiceBrief) => {
+      if (voiceBriefPlayed || !voiceBrief || !isConversationActive) return;
+      voiceBriefPlayed = true;
+      void (async () => {
+        await resumeListening();
+        await playAssistantReply(voiceBrief);
+      })();
+    },
+  });
+  const reply = typeof response === 'string' ? response : response?.reply;
+  const voiceText = typeof response === 'string' ? response : response?.voiceText;
+  if (reply && isConversationActive) {
+    await resumeListening();
+    if (!voiceBriefPlayed && voiceText) {
+      await playAssistantReply(voiceText);
+    }
+  } else {
+    clearEarlyVoiceResumeTimer();
+    await resumeListening();
+  }
+}
+
+function enqueueVoiceTurn(transcribedText) {
+  voiceTurnQueue = voiceTurnQueue
+    .catch((error) => {
+      console.error('上一轮语音处理失败:', error);
+    })
+    .then(() => processVoiceTurn(transcribedText))
+    .catch(async (err) => {
+      clearEarlyVoiceResumeTimer();
+      console.error('语音转写或响应失败', err);
+      await resumeListening();
+    });
+  return voiceTurnQueue;
+}
+
 window.__VOICE_MODE_HELPERS__ = {
   shouldUseBrowserRecognition: () => shouldUseBrowserVoiceMode(getConfig()),
   isRecognitionEnabled: () => isSttEnabled(getConfig()),
@@ -1680,6 +1811,7 @@ window.__VOICE_MODE_HELPERS__ = {
 window.__GET_CONFIG__ = getConfig;
 window.__PLAY_ASSISTANT_REPLY__ = playAssistantReply;
 window.__GET_VOICE_LANGUAGE__ = getSpeechSynthesisLanguage;
+window.__VOICE_AUTO_SUBMIT_ALLOWED__ = () => window.__CHAT_MODEL_BUSY__ !== true && window.__ASSISTANT_PLAYBACK_BUSY__ !== true;
 window.__VOICE_FILE_TRANSCRIBE__ = handleAudioFileSelected;
 window.__VOICE_TRANSCRIPT_TEXT__ = getVoiceSubmitText;
 window.__VOICE_TRANSCRIPT_VALID__ = isMeaningfulTranscript;
@@ -1728,6 +1860,9 @@ function setConfig(config) {
       if (dom.preferBuiltinSearch) dom.preferBuiltinSearch.checked = Boolean(value);
       continue;
     }
+    if (key === 'llmApiKeys' || key === 'searchApiKeys') {
+      continue;
+    }
     if (key === 'sttEnabled' || key === 'ttsEnabled') {
       if (dom[key]) dom[key].value = value === false || value === 'false' ? 'false' : 'true';
       continue;
@@ -1735,6 +1870,7 @@ function setConfig(config) {
     if (dom[key] && typeof value === 'string') dom[key].value = value;
   }
   applyLlmKeyConfig(finalConfig);
+  applySearchKeyConfig(finalConfig);
   updateTongyiSearchVisibility();
   syncVoiceModeFallback();
   updateVoiceControlAvailability(getConfig());
@@ -2200,43 +2336,8 @@ function init() {
     onCreateBlock: handleCreateBlock,
   });
   initChat(getConfig);
-  initWaveform(async (transcribedText) => {
-    try {
-      const text = getVoiceSubmitText(transcribedText);
-      if (!isMeaningfulTranscript(text)) {
-        resumeListening();
-        return;
-      }
-
-      let voiceBriefPlayed = false;
-      const response = await sendText(text, {
-        voiceOutputEnabled: isTtsEnabled(getConfig()),
-        returnVoicePayload: true,
-        onVoiceBrief: (voiceBrief) => {
-          if (voiceBriefPlayed || !voiceBrief || !isConversationActive) return;
-          voiceBriefPlayed = true;
-          void (async () => {
-            await resumeListening();
-            await playAssistantReply(voiceBrief);
-          })();
-        },
-      });
-      const reply = typeof response === 'string' ? response : response?.reply;
-      const voiceText = typeof response === 'string' ? response : response?.voiceText;
-      if (reply && isConversationActive) {
-        await resumeListening();
-        if (!voiceBriefPlayed && voiceText) {
-          await playAssistantReply(voiceText);
-        }
-      } else {
-        clearEarlyVoiceResumeTimer();
-        await resumeListening();
-      }
-    } catch (err) {
-      clearEarlyVoiceResumeTimer();
-      console.error('璇煶杞啓鎴栧搷搴斿け璐?', err);
-      await resumeListening();
-    }
+  initWaveform((transcribedText) => {
+    void enqueueVoiceTurn(transcribedText);
   });
 
   // 4. Render canvas
@@ -2767,14 +2868,19 @@ function bindEvents() {
 
   // Provider presets
   dom.llmProvider.addEventListener('change', handleLlmProviderChange);
+  dom.searchProvider?.addEventListener('change', handleSearchProviderChange);
   dom.openLlmKeyPageBtn?.addEventListener('click', openCurrentLlmKeyPage);
   dom.openSearchKeyPageBtn?.addEventListener('click', openCurrentSearchKeyPage);
+  dom.openDoubaoKeyPageBtn?.addEventListener('click', openDoubaoKeyPage);
   dom.useFreeTrialBtn?.addEventListener('click', useFreeTrialLlm);
   dom.searchMode?.addEventListener('click', toggleSearchMode);
   dom.llmApiKey.addEventListener('input', () => {
     rememberCurrentLlmKey();
     if (dom.llmApiKey.value.trim()) apiKeyMissingPromptShown = false;
     if (dom.llmApiKey.value.trim() && dom.llmKeyNotice) dom.llmKeyNotice.hidden = true;
+  });
+  dom.searchApiKey?.addEventListener('input', () => {
+    rememberCurrentSearchKey();
   });
   dom.sttProvider.addEventListener('change', () => {
     applyProviderPreset(false);

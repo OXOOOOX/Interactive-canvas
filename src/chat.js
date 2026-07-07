@@ -15,6 +15,12 @@ let $messages, $input, $sendBtn, $draftPanel, $draftToggle, $markdownDraft, $dra
 let $sessionSelect, $newSessionBtn, $exportSessionBtn, $importSessionBtn;
 let getConfig = () => ({});
 
+function setChatModelBusy(isBusy) {
+  const current = Number(window.__CHAT_MODEL_BUSY_COUNT__ || 0);
+  window.__CHAT_MODEL_BUSY_COUNT__ = Math.max(0, current + (isBusy ? 1 : -1));
+  window.__CHAT_MODEL_BUSY__ = window.__CHAT_MODEL_BUSY_COUNT__ > 0;
+}
+
 function createSession(title = '新会话', messages = []) {
   const now = Date.now();
   return {
@@ -97,6 +103,46 @@ function buildFallbackVoiceBrief(text = '') {
     .trim();
   if (!cleaned) return '';
   return cleaned.length > 90 ? `${cleaned.slice(0, 90)}...` : cleaned;
+}
+
+function formatAgentStatus(status = {}) {
+  const phase = status?.phase || '';
+  if (phase === 'searching') return `正在 Web 搜索${status.provider ? `（${status.provider}）` : ''}`;
+  if (phase === 'searched') return `已搜索到 ${Number(status.count || 0)} 个网页`;
+  if (phase === 'search_needs_clarification') return '搜索条件不够明确，本轮未检索网页';
+  if (phase === 'search_no_relevant_results') return '没有找到匹配意图的网页';
+  if (phase === 'thinking' && status?.count) return `正在阅读 ${status.count} 条网页结果`;
+  if (phase === 'thinking') return '正在整理搜索结果';
+  if (phase === 'search_failed') return 'Web 搜索失败，本轮未使用网页结果';
+  if (phase === 'search_unavailable') return 'Web 搜索不可用，本轮未使用网页结果';
+  if (phase === 'builtin_searching') return '已请求通义内置搜索，结果数量由模型返回';
+  if (phase === 'canvas') return '大模型正在更新白板';
+  return status?.label || '';
+}
+
+function shouldShowInitialSearchStatus(config = {}) {
+  return false;
+}
+
+function getSearchStatusTitle(status = {}) {
+  const phase = status?.phase || '';
+  if (phase === 'searched') return `已搜索到 ${Number(status.count || 0)} 个网页`;
+  if (phase === 'search_needs_clarification') return '搜索条件不够明确';
+  if (phase === 'search_no_relevant_results') return '没有找到匹配意图的网页';
+  if (phase === 'search_failed') return 'Web 搜索失败';
+  if (phase === 'search_unavailable') return 'Web 搜索不可用';
+  if (phase === 'builtin_searching') return '已请求通义内置搜索';
+  return `正在 Web 搜索${status.provider ? `（${status.provider}）` : ''}`;
+}
+
+function getSearchStatusNote(status = {}) {
+  const phase = status?.phase || '';
+  if (phase === 'searched') return '以下结果已传给大模型参考，正文不再重复展示链接。';
+  if (phase === 'search_needs_clarification') return '本轮没有检索网页，需要先补充具体主题、品牌、对象或范围。';
+  if (phase === 'search_no_relevant_results') return status.error || '搜索返回了一些网页，但都不够贴合当前问题。';
+  if (phase === 'search_failed' || phase === 'search_unavailable') return status.error || '本轮未使用网页结果。';
+  if (phase === 'builtin_searching') return '内置搜索结果由模型供应商处理，应用无法读取网页列表或数量。';
+  return '正在检索网页结果...';
 }
 
 function getMissingVoiceBriefFallback() {
@@ -431,6 +477,8 @@ async function sendMessage(explicitText = null, options = {}) {
 
   const typing = showTyping();
   let assistantMessage = null;
+  setChatModelBusy(true);
+  let searchCard = null;
 
   try {
     const config = {
@@ -439,9 +487,20 @@ async function sendMessage(explicitText = null, options = {}) {
       globalMemory: loadGlobalMemory(),
       voiceOutputEnabled: Boolean(options.voiceOutputEnabled),
     };
+    if (shouldShowInitialSearchStatus(config)) {
+      typing.setStatus('已请求通义内置搜索，结果数量由模型返回', 'builtin_searching');
+      searchCard = createSearchStatusCard({
+        phase: 'builtin_searching',
+        provider: 'tongyi',
+      });
+    }
     let hasStreamText = false;
     let hasNotifiedStreamStart = false;
     let hasNotifiedVoiceBrief = false;
+    let hasShownSearchWarning = false;
+    let allowEarlyVoiceBrief = false;
+    let suppressEarlyVoiceBrief = false;
+    let voiceBriefDisabledForSearch = false;
 
     const ensureAssistantMessage = () => {
       if (!assistantMessage) assistantMessage = createMessageController('assistant');
@@ -449,6 +508,42 @@ async function sendMessage(explicitText = null, options = {}) {
     };
 
     const chatReply = await callChatLlmStream(config, appState.conversation, appState.canvas, {
+      onStatus(status) {
+        if (hasStreamText) return;
+        const label = formatAgentStatus(status);
+        if (label) typing.setStatus(label, status?.phase);
+        if (status?.phase === 'voice_brief_disabled') {
+          voiceBriefDisabledForSearch = true;
+          suppressEarlyVoiceBrief = true;
+          allowEarlyVoiceBrief = false;
+          return;
+        }
+        if (status?.phase === 'searching') {
+          suppressEarlyVoiceBrief = true;
+          allowEarlyVoiceBrief = false;
+        }
+        if (status?.phase === 'search_needs_clarification') {
+          allowEarlyVoiceBrief = true;
+          suppressEarlyVoiceBrief = false;
+        }
+        if (status?.phase && String(status.phase).includes('search')) {
+          if (!searchCard) searchCard = createSearchStatusCard(status);
+          else searchCard.update(status);
+        }
+        if (status?.phase === 'searched' || status?.phase === 'search_no_relevant_results' || status?.phase === 'search_failed' || status?.phase === 'search_unavailable') {
+          if (!searchCard) searchCard = createSearchStatusCard(status);
+          else searchCard.update(status);
+        }
+      },
+      onWarning(payload = {}) {
+        if (hasStreamText || hasShownSearchWarning) return;
+        hasShownSearchWarning = true;
+        const message = payload.warning || payload.message || 'Web 搜索失败，本轮未使用网页结果';
+        typing.setStatus(`Web 搜索失败，本轮未使用网页结果`, 'search_failed');
+        const status = { phase: 'search_failed', error: message, results: [] };
+        if (!searchCard) searchCard = createSearchStatusCard(status);
+        else searchCard.update(status);
+      },
       onDelta(fullText) {
         if (!hasStreamText) {
           typing.remove();
@@ -458,7 +553,7 @@ async function sendMessage(explicitText = null, options = {}) {
           hasNotifiedStreamStart = true;
           options.onAssistantStreamStart?.();
         }
-        if (config.voiceOutputEnabled && !hasNotifiedVoiceBrief) {
+        if (config.voiceOutputEnabled && !hasNotifiedVoiceBrief && allowEarlyVoiceBrief && !suppressEarlyVoiceBrief) {
           const voiceBrief = extractVoiceBrief(fullText);
           if (voiceBrief) {
             hasNotifiedVoiceBrief = true;
@@ -469,14 +564,14 @@ async function sendMessage(explicitText = null, options = {}) {
       }
     });
 
-    const voiceText = config.voiceOutputEnabled
+    const voiceText = config.voiceOutputEnabled && !voiceBriefDisabledForSearch
       ? (extractVoiceBrief(chatReply) || '')
       : '';
-    if (voiceText && !hasNotifiedVoiceBrief) {
+    if (voiceText && !hasNotifiedVoiceBrief && !suppressEarlyVoiceBrief) {
       hasNotifiedVoiceBrief = true;
       options.onVoiceBrief?.(voiceText);
     }
-    if (config.voiceOutputEnabled && !voiceText) {
+    if (config.voiceOutputEnabled && !voiceText && !voiceBriefDisabledForSearch) {
       console.warn('[voice] Missing VOICE_BRIEF in assistant response:', chatReply.slice(0, 240));
     }
     const visibleChatReply = stripVoiceBrief(chatReply);
@@ -487,6 +582,17 @@ async function sendMessage(explicitText = null, options = {}) {
     }
 
     const message = ensureAssistantMessage();
+    if (!visibleChatReply.trim()) {
+      const fallbackText = '本轮没有收到聊天回复，已停止白板更新。请重试或检查模型/搜索配置。';
+      message.setText(fallbackText);
+      appState.lastAssistantReply = fallbackText;
+      appState.conversation.push({ role: 'assistant', content: fallbackText });
+      assistantMessage?.setIndex(appState.conversation.length - 1);
+      persistActiveConversation();
+      return options.returnVoicePayload
+        ? { reply: fallbackText, voiceText: getMissingVoiceBriefFallback() }
+        : fallbackText;
+    }
 
     appState.lastAssistantReply = visibleChatReply;
 
@@ -501,7 +607,14 @@ async function sendMessage(explicitText = null, options = {}) {
       console.warn('Global memory suggestion failed:', error);
     });
 
-    const canvasRaw = await callCanvasLlm(config, appState.conversation, appState.canvas);
+    const canvasStatus = showTyping();
+    canvasStatus.setStatus('大模型正在更新白板', 'canvas');
+    let canvasRaw = '';
+    try {
+      canvasRaw = await callCanvasLlm(config, appState.conversation, appState.canvas);
+    } finally {
+      canvasStatus.remove();
+    }
     const parsed = parseAiResponse(canvasRaw);
     const parsedReply = parsed.reply || '';
 
@@ -568,7 +681,7 @@ async function sendMessage(explicitText = null, options = {}) {
     if (options.returnVoicePayload) {
       return {
         reply: appState.lastAssistantReply,
-        voiceText: voiceText || getMissingVoiceBriefFallback(),
+        voiceText: voiceText || buildFallbackVoiceBrief(appState.lastAssistantReply) || getMissingVoiceBriefFallback(),
       };
     }
     return appState.lastAssistantReply;
@@ -578,6 +691,8 @@ async function sendMessage(explicitText = null, options = {}) {
     appendMessage('system', `❌ ${err.message}`);
     console.error('Chat error:', err);
     return null;
+  } finally {
+    setChatModelBusy(false);
   }
 }
 
@@ -677,6 +792,62 @@ function createMessageController(role, text = '', opSummary = [], messageIndex =
 }
 
 /** 追加消息气泡 */
+function createSearchStatusCard(initialStatus = {}) {
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'chat-msg system search-status-msg';
+  const card = document.createElement('div');
+  card.className = 'search-status-card';
+  msgDiv.appendChild(card);
+  $messages.appendChild(msgDiv);
+
+  const state = { ...initialStatus };
+  const render = () => {
+    const phase = state.phase || 'searching';
+    const results = Array.isArray(state.results) ? state.results : [];
+    const count = Number.isFinite(Number(state.count)) ? Number(state.count) : results.length;
+    const provider = state.provider ? `<span class="search-provider">${escapeHtml(state.provider)}</span>` : '';
+    const resultHtml = results.length
+      ? `<div class="search-result-list">${results.map((item, index) => {
+          const title = item.title || item.url || `网页 ${index + 1}`;
+          const url = item.url || '';
+          const snippet = item.snippet || '';
+          return `
+            <a class="search-result-item" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">
+              <span class="search-result-title">${escapeHtml(title)}</span>
+              ${snippet ? `<span class="search-result-snippet">${escapeHtml(snippet)}</span>` : ''}
+              ${url ? `<span class="search-result-url">${escapeHtml(url)}</span>` : ''}
+            </a>
+          `;
+        }).join('')}</div>`
+      : '';
+
+    card.dataset.phase = phase;
+    card.innerHTML = `
+      <div class="search-status-head">
+        <span class="search-status-dot"></span>
+        <strong>${escapeHtml(getSearchStatusTitle({ ...state, count }))}</strong>
+        ${provider}
+      </div>
+      ${state.query ? `<div class="search-query">搜索词：${escapeHtml(state.query)}</div>` : ''}
+      <div class="search-status-note">${escapeHtml(getSearchStatusNote({ ...state, count }))}</div>
+      ${resultHtml}
+    `;
+    $messages.scrollTop = $messages.scrollHeight;
+  };
+
+  render();
+
+  return {
+    update(nextStatus = {}) {
+      Object.assign(state, nextStatus);
+      render();
+    },
+    remove() {
+      msgDiv.remove();
+    },
+  };
+}
+
 function appendMessage(role, text, opSummary = [], messageIndex = null) {
   return createMessageController(role, text, opSummary, messageIndex);
 }
@@ -688,6 +859,7 @@ function showTyping() {
   el.innerHTML = `
     <div class="chat-msg-bubble">
       <div class="typing-indicator">
+        <span class="typing-label" hidden></span>
         <span class="typing-dot"></span>
         <span class="typing-dot"></span>
         <span class="typing-dot"></span>
@@ -696,7 +868,19 @@ function showTyping() {
   `;
   $messages.appendChild(el);
   $messages.scrollTop = $messages.scrollHeight;
-  return el;
+  const label = el.querySelector('.typing-label');
+  return {
+    setStatus(text = '', phase = '') {
+      if (!label) return;
+      label.textContent = text;
+      label.hidden = !text;
+      el.dataset.phase = phase || '';
+      $messages.scrollTop = $messages.scrollHeight;
+    },
+    remove() {
+      el.remove();
+    },
+  };
 }
 
 function escapeHtml(text) {

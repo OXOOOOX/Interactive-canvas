@@ -18,7 +18,7 @@ Available Operations:
 - remove: {op:"remove", targetId:"id"}
 - addConnection: {op:"addConnection", fromId:"source", toId:"target"}
 - removeConnection: {op:"removeConnection", fromId:"source", toId:"target"}
-Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Use real JSON newline escapes in strings; never write visible \\n, /n, \\N, or /N markers for layout. Markdown tables must include a divider row and consistent column counts. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Blocks with positionLocked:true may have label/content updates, but their position and size MUST NOT change. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
+Rules: Use short english strings for new ids. You are allowed to use simple Markdown like **bold** in content. Use real JSON newline escapes in strings; never write visible \\n, /n, \\N, or /N markers for layout. Markdown tables must include a divider row and consistent column counts. If the user corrects, negates, replaces, or clarifies previous content, update or remove the stale existing block instead of adding a duplicate corrected block. Treat corrections as authoritative replacements for the same concept. Target blocks that are locked (locked:true) MUST NEVER be modified or removed. Blocks with positionLocked:true may have label/content updates, but their position and size MUST NOT change. Output ONLY valid JSON array wrapped in: {"operations": [...]}`;
 }
 
 /**
@@ -102,6 +102,7 @@ Please note:
 5. When Canvas Memory is provided, treat it as the editable working memory for this specific whiteboard. Continue from it instead of repeating it wholesale, and suggest precise incremental edits when useful.
 6. When Global User Memory is provided, use it only for stable user preferences and cross-topic habits. Do not treat it as task facts for the current canvas unless relevant.
 7. Use search capabilities only when the user asks for current facts, market/news/policy/source-backed claims, or when you explicitly propose and the user accepts a research step.
+8. If the user corrects or replaces earlier information, accept the correction as the current truth. Do not repeat the old version except to explicitly say it has been replaced.
 
 Conversation Stage: ${stage}
 
@@ -133,6 +134,7 @@ function getEndpoint(config) {
 
 function shouldUseServerProxy(config) {
   if (config.forceDirectLlm) return false;
+  if ((config.searchMode || 'off') !== 'off') return true;
   if (config.proxyUrl) return false;
   return !import.meta.env.DEV;
 }
@@ -152,6 +154,13 @@ function getDefaultModel(config) {
   return DEFAULT_LLM_MODELS[config.llmProvider] || 'qwen-max-latest';
 }
 
+function shouldUseDirectBuiltinSearch(config = {}) {
+  if (!config.forceDirectLlm) return false;
+  if (config.llmProvider !== 'tongyi') return false;
+  if (config.searchMode === 'builtin') return true;
+  return config.searchMode === 'auto' && Boolean(config.preferBuiltinSearch);
+}
+
 function buildPayload(config, messages, isCanvas = false, stream = false) {
   const payload = {
     model: config.llmModel || getDefaultModel(config),
@@ -162,7 +171,7 @@ function buildPayload(config, messages, isCanvas = false, stream = false) {
     payload.temperature = 0.2;
   } else {
     payload.temperature = 0.7;
-    if (config.llmProvider === 'tongyi' && config.searchMode !== 'off') {
+    if (shouldUseDirectBuiltinSearch(config)) {
       payload.enable_search = true;
     }
 
@@ -189,6 +198,8 @@ function buildProxyBody(config, messages, isCanvas = false, stream = false) {
       preferBuiltinSearch: config.preferBuiltinSearch,
       searchProvider: config.searchProvider,
       searchApiKey: config.searchApiKey,
+      searchApiKeys: config.searchApiKeys,
+      voiceOutputEnabled: Boolean(config.voiceOutputEnabled),
     },
   };
 }
@@ -250,14 +261,16 @@ function consumeSseBuffer(buffer, onEvent) {
     const rawEvent = rest.slice(0, boundary);
     rest = rest.slice(boundary + boundaryLength);
 
-    const dataLines = rawEvent
-      .split(/\r?\n/)
+    const lines = rawEvent.split(/\r?\n/);
+    const eventLine = lines.find(line => line.startsWith('event:'));
+    const eventName = eventLine ? eventLine.slice(6).trim() : 'message';
+    const dataLines = lines
       .filter(line => line.startsWith('data:'))
       .map(line => line.slice(5).trim())
       .filter(Boolean);
 
     if (dataLines.length === 0) continue;
-    onEvent(dataLines.join('\n'));
+    onEvent(dataLines.join('\n'), eventName);
   }
   return rest;
 }
@@ -295,7 +308,7 @@ async function sendRequest(config, messages, isCanvas = false) {
   return extractAssistantText(data);
 }
 
-async function sendStreamingChatRequest(config, messages, onDelta) {
+async function sendStreamingChatRequest(config, messages, handlers = {}) {
   if (shouldUseServerProxy(config)) {
     const res = await fetch(getServerProxyEndpoint(config), {
       method: 'POST',
@@ -307,7 +320,7 @@ async function sendStreamingChatRequest(config, messages, onDelta) {
       await handleErrorResponse(res);
     }
 
-    return await consumeStreamingResponse(res, onDelta);
+    return await consumeStreamingResponse(res, handlers);
   }
 
   const endpoint = getEndpoint(config);
@@ -323,14 +336,14 @@ async function sendStreamingChatRequest(config, messages, onDelta) {
     await handleErrorResponse(res);
   }
 
-  return await consumeStreamingResponse(res, onDelta);
+  return await consumeStreamingResponse(res, handlers);
 }
 
-async function consumeStreamingResponse(res, onDelta) {
+async function consumeStreamingResponse(res, handlers = {}) {
   if (!res.body) {
     const data = await res.json();
     const text = extractAssistantText(data);
-    onDelta?.(text, text);
+    handlers.onDelta?.(text, text);
     return text;
   }
 
@@ -340,11 +353,19 @@ async function consumeStreamingResponse(res, onDelta) {
   let fullText = '';
   let streamError = null;
 
-  const handleEvent = (dataLine) => {
+  const handleEvent = (dataLine, eventName = 'message') => {
     if (!dataLine || dataLine === '[DONE]') return;
 
     try {
       const payload = JSON.parse(dataLine);
+      if (eventName === 'status') {
+        handlers.onStatus?.(payload);
+        return;
+      }
+      if (eventName === 'warning') {
+        handlers.onWarning?.(payload);
+        return;
+      }
       if (payload?.error) {
         streamError = new Error(payload.error);
         return;
@@ -352,10 +373,10 @@ async function consumeStreamingResponse(res, onDelta) {
       const delta = extractStreamDelta(payload);
       if (!delta) return;
       fullText += delta;
-      onDelta?.(fullText, delta);
+      handlers.onDelta?.(fullText, delta);
     } catch {
       fullText += dataLine;
-      onDelta?.(fullText, dataLine);
+      handlers.onDelta?.(fullText, dataLine);
     }
   };
 
@@ -411,7 +432,7 @@ export async function callChatLlmStream(config, conversation, canvas, handlers =
     }] : []),
     ...conversation,
   ];
-  return await sendStreamingChatRequest(config, messages, handlers.onDelta);
+  return await sendStreamingChatRequest(config, messages, handlers);
 }
 
 export async function callDraftMemoryLlm(config, currentDraft, userText, assistantText, canvas) {
@@ -425,6 +446,7 @@ This memory is NOT a chat log. It should be a compact, deduplicated, editable br
 Rules:
 - Preserve important user intent, decisions, constraints, facts, open questions, and next actions.
 - Merge repeated ideas instead of appending messages.
+- When the latest turn corrects or replaces older information, rewrite the memory so the old version is removed rather than kept alongside the correction.
 - Remove stale chatter, greetings, and transient wording.
 - Keep the same primary language as the user.
 - Use Markdown headings and bullets.

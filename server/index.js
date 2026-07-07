@@ -3,7 +3,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import https from 'node:https';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const rootDir = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -261,30 +261,337 @@ function normalizeSearchMode(mode) {
   return 'off';
 }
 
-function shouldAutoSearch(query = '') {
-  const text = query.toLowerCase();
-  return /搜索|搜一下|查一下|联网|最新|最近|今天|昨日|今年|新闻|来源|引用|价格|行情|法规|政策|竞品|官网|current|latest|recent|today|news|source|cite|price|policy|competitor/.test(text)
-    || /\b202[4-9]\b/.test(text);
+const SEARCH_FRESH_PRODUCT_PATTERN = /新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|官方|官网|new product|new drink|menu/i;
+const SEARCH_REGION_PATTERN = /中国大陆|中国内地|内地|大陆|国内|中国市场|mainland/i;
+const SEARCH_ACTION_PATTERN = /搜索|直接搜|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下|最新|最近|今天|昨日|今年|新闻|来源|引用|价格|行情|法规|政策|竞品|官网|current|latest|recent|today|news|source|cite|price|policy|competitor/i;
+const SEARCH_COMMAND_PATTERN = /帮我|请|麻烦|帮忙|给我|能不能|可以|直接搜|搜索一下|搜索|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下/g;
+const GENERIC_SEARCH_TERMS_PATTERN = /中国大陆|中国内地|内地|大陆|国内|中国市场|mainland|地区|新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|官方|官网|产品|商品|服务|内容|信息|资料|新闻|消息|最近|最新|当前|现在|今天|昨日|今年|继续|再|这个|那个|它|上述|前面|刚才|一下|一些|相关|有关|关于|一期|当期|本期|最新一期|呢|current|latest|recent|today|news|menu|product|products|info|information/g;
+
+function normalizeSearchQueryText(value = '') {
+  return String(value || '')
+    .replace(/[“”"‘’'「」『』]/g, '')
+    .replace(/[，。！？、；：,.!?;:()[\]{}<>《》【】]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function hasExternalSearchKey(config = {}) {
-  return Boolean(config.searchApiKey || process.env.SEARCH_API_KEY);
+function getSpecificSearchTopic(query = '') {
+  return normalizeSearchQueryText(query)
+    .replace(SEARCH_COMMAND_PATTERN, ' ')
+    .replace(/第?\s*[0-9一二三四五六七八九十百千万]+\s*期/gi, ' ')
+    .replace(/20[2-9]\d\s*年\s*(?:0?[1-9]|1[0-2])\s*月|20[2-9]\d[-/.](?:0?[1-9]|1[0-2])/gi, ' ')
+    .replace(GENERIC_SEARCH_TERMS_PATTERN, ' ')
+    .replace(/[的地得]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function hasSpecificSearchTopic(query = '') {
+  const topic = getSpecificSearchTopic(query);
+  return /[a-z0-9]{2,}/i.test(topic) || /[\u4e00-\u9fff]{2,}/.test(topic);
+}
+
+function shouldAutoSearch(query = '') {
+  const text = query.toLowerCase();
+  const specificTopic = getSpecificSearchTopic(text);
+  const hasSpecificTopic = hasSpecificSearchTopic(text);
+  const hasFreshProduct = SEARCH_FRESH_PRODUCT_PATTERN.test(text);
+  const hasRegion = SEARCH_REGION_PATTERN.test(text);
+  const hasSearchAction = SEARCH_ACTION_PATTERN.test(text);
+  const hasDate = /20[2-9]\d\s*年|20[2-9]\d[-/.]/.test(text);
+
+  if (!hasSpecificTopic && (hasFreshProduct || hasRegion)) return false;
+
+  return (hasSearchAction && hasSpecificTopic)
+    || (hasSpecificTopic && hasRegion)
+    || (hasSpecificTopic && hasFreshProduct)
+    || (hasSpecificTopic && hasFreshProduct && hasDate);
+}
+
+function shouldUseBaiduForQuery(query = '') {
+  const text = normalizeSearchText(query);
+  return /中国大陆|中国内地|内地|大陆|国内|中国市场|中文|本地|小红书|微信|公众号|微博|抖音|百度|大陆/.test(text)
+    || /\.(cn)\b/.test(text);
+}
+
+function resolveSearchProvider(query = '', config = {}) {
+  const configured = (config.searchProvider || process.env.SEARCH_PROVIDER || 'auto').toLowerCase();
+  if (configured === 'auto') return shouldUseBaiduForQuery(query) ? 'baidu' : 'tavily';
+  if (configured === 'qianfan') return 'baidu';
+  return configured;
+}
+
+function getServerSearchApiKey(provider) {
+  if (provider === 'baidu') {
+    return process.env.BAIDU_SEARCH_API_KEY || process.env.QIANFAN_API_KEY || (String(process.env.SEARCH_PROVIDER || '').toLowerCase() === 'baidu' ? process.env.SEARCH_API_KEY : '');
+  }
+  return process.env.SEARCH_API_KEY || '';
+}
+
+function hasExternalSearchKey(config = {}, query = '') {
+  const provider = resolveSearchProvider(query, config);
+  return Boolean(config.searchApiKey || getServerSearchApiKey(provider));
 }
 
 function shouldUseBuiltinSearch(provider, mode, query, config = {}) {
   if (mode === 'builtin') return provider === 'tongyi';
-  return mode === 'auto'
-    && provider === 'tongyi'
-    && shouldAutoSearch(query)
-    && Boolean(config.preferBuiltinSearch);
+  return false;
 }
 
 function shouldUseExternalSearch(provider, mode, query, config = {}) {
   if (mode === 'external') return true;
   return mode === 'auto'
     && shouldAutoSearch(query)
-    && (!Boolean(config.preferBuiltinSearch) || provider !== 'tongyi')
-    && hasExternalSearchKey(config);
+    && hasExternalSearchKey(config, query);
+}
+
+function normalizeSearchText(value = '') {
+  return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isVagueFollowupSearch(query = '') {
+  const text = normalizeSearchText(query);
+  if (!text) return true;
+  if (hasSpecificSearchTopic(text)) {
+    return false;
+  }
+  return /^(挺好|好的|可以|继续|再搜|搜一下|查一下|帮我搜|帮我搜索|中国大陆的|大陆的|国内的)/.test(text)
+    || /^(这个|那个|它|上述|前面|刚才)(呢|也一样|继续|再来|再搜|查一下|搜一下)?$/.test(text)
+    || /(这个|那个|它|上述|前面|刚才).*(搜|查|搜索)/.test(text);
+}
+
+function getRecentUserMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter(message => message?.role === 'user' && typeof message.content === 'string')
+    .map(message => message.content.trim())
+    .filter(Boolean);
+}
+
+function buildContextualSearchQuery(query = '', messages = []) {
+  const cleaned = String(query || '').trim();
+  const userMessages = getRecentUserMessages(messages);
+  const previous = [...userMessages].reverse().find(message => message !== cleaned && !isVagueFollowupSearch(message));
+  const source = isVagueFollowupSearch(cleaned) && previous
+    ? `${previous} ${cleaned}`
+    : cleaned;
+
+  const dateMatch = source.match(/20[2-9]\d\s*年\s*(?:0?[1-9]|1[0-2])\s*月|20[2-9]\d[-/.](?:0?[1-9]|1[0-2])|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+20[2-9]\d/i);
+  if (dateMatch && !SEARCH_ACTION_PATTERN.test(source) && !SEARCH_FRESH_PRODUCT_PATTERN.test(source)) {
+    return dateMatch[0].replace(/\s+/g, '');
+  }
+
+  const topic = getSpecificSearchTopic(source);
+  const parts = topic ? [topic] : [];
+  if (SEARCH_REGION_PATTERN.test(source) && !parts.includes('中国大陆')) parts.push('中国大陆');
+  if (/新品|新饮品|上新|新品上市|new product|new drink/i.test(source) && !parts.includes('新品')) parts.push('新品');
+  if (/菜单|menu/i.test(source) && !parts.includes('菜单')) parts.push('菜单');
+  if (/官方|官网|小程序|app/i.test(source) && !parts.includes('官方')) parts.push('官方');
+  if (dateMatch) parts.push(dateMatch[0].replace(/\s+/g, ''));
+  else if (/最新|当前|现在|recent|latest|today/i.test(source) && !parts.includes('最新')) parts.push('最新');
+
+  const compact = parts.join(' ').trim();
+  return compact || normalizeSearchQueryText(source);
+}
+
+function extractJsonObject(text = '') {
+  const source = String(text || '').trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(source);
+  } catch {
+    const match = source.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractPlannerText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (typeof payload.output_text === 'string') return payload.output_text;
+  if (typeof payload.text === 'string') return payload.text;
+  const choice = payload.choices?.[0];
+  const content = choice?.message?.content ?? choice?.delta?.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === 'string') return part;
+      if (typeof part?.text === 'string') return part.text;
+      if (typeof part?.content === 'string') return part.content;
+      return '';
+    }).join('');
+  }
+  return '';
+}
+
+function normalizeSearchPlan(value = {}, fallbackQuery = '') {
+  const action = String(value.action || '').toLowerCase();
+  const normalizedAction = action === 'search' || action === 'clarify' || action === 'none'
+    ? action
+    : 'none';
+  const rawQuery = normalizeSearchQueryText(value.query || fallbackQuery);
+  const query = rawQuery || fallbackQuery;
+  return {
+    action: normalizedAction,
+    query,
+    question: String(value.question || '').trim(),
+    reason: String(value.reason || '').trim(),
+  };
+}
+
+function reconcileSearchPlan(plan = {}, fallbackPlan = {}) {
+  if (fallbackPlan.action === 'search' && plan.action !== 'search') {
+    return fallbackPlan;
+  }
+  if (fallbackPlan.action === 'clarify' && plan.action === 'none') {
+    return fallbackPlan;
+  }
+  if (plan.action === 'search' && !hasSpecificSearchTopic(plan.query)) {
+    return fallbackPlan;
+  }
+  return plan;
+}
+
+function buildFallbackSearchPlan(query = '', messages = []) {
+  const searchQuery = buildContextualSearchQuery(query, messages);
+  if (shouldAutoSearch(searchQuery)) {
+    return { action: 'search', query: searchQuery, question: '', reason: 'rule_fallback_search' };
+  }
+  if (SEARCH_ACTION_PATTERN.test(query) && !hasSpecificSearchTopic(searchQuery)) {
+    return { action: 'clarify', query: searchQuery, question: '', reason: 'rule_fallback_clarify' };
+  }
+  return { action: 'none', query: searchQuery, question: '', reason: 'rule_fallback_none' };
+}
+
+async function planSearchWithLlm({ query = '', messages = [], provider, endpoint, model, apiKey }) {
+  const recentMessages = (Array.isArray(messages) ? messages : [])
+    .filter(message => message && typeof message.content === 'string' && (message.role === 'user' || message.role === 'assistant'))
+    .slice(-8)
+    .map(message => ({ role: message.role, content: message.content.slice(0, 1000) }));
+  const fallbackPlan = buildFallbackSearchPlan(query, messages);
+
+  if (!endpoint || !apiKey || !query.trim()) return fallbackPlan;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const plannerMessages = [
+      {
+        role: 'system',
+        content: `You decide whether an assistant should use web search before answering.
+Return ONLY JSON with this exact shape:
+{"action":"search|clarify|none","query":"...","question":"...","reason":"..."}
+
+Rules:
+- Use "search" when current or source-backed information is needed, or the user explicitly asks to search.
+- Use "clarify" when the user asks to search but the subject/scope is too ambiguous for a reliable query.
+- Use "none" when web search is not needed.
+- If action is "search", write a concise search query. Remove command wrappers such as "help me search", "directly search", "latest issue", quotes, filler words, and conversational text. Preserve concrete entities, product/category names, regions, and freshness words such as "latest" when useful.
+- If action is "clarify", write one short clarification question in the user's language.
+- Current date: 2026-07-07.`
+      },
+      ...recentMessages,
+      { role: 'user', content: `Decide search plan for this latest user request:\n${query}` },
+    ];
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: plannerMessages,
+        temperature: 0,
+        stream: false,
+        max_tokens: 220,
+      }),
+    });
+    const text = await res.text();
+    if (!res.ok) return fallbackPlan;
+    let assistantText = '';
+    try {
+      assistantText = extractPlannerText(JSON.parse(text));
+    } catch {
+      assistantText = '';
+    }
+    const data = extractJsonObject(text) || extractJsonObject(assistantText);
+    if (!data) return fallbackPlan;
+    const plan = reconcileSearchPlan(normalizeSearchPlan(data, fallbackPlan.query), fallbackPlan);
+    if (plan.action === 'search' && !plan.query) return fallbackPlan;
+    return plan;
+  } catch {
+    return fallbackPlan;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function inferSearchIntent(query = '') {
+  const text = normalizeSearchText(query);
+  const monthMatch = text.match(/(20[2-9]\d)\s*年\s*(0?[1-9]|1[0-2])\s*月|20[2-9]\d[-/.](0?[1-9]|1[0-2])/);
+  const year = monthMatch ? (monthMatch[1] || text.match(/20[2-9]\d/)?.[0] || '') : (text.match(/20[2-9]\d/)?.[0] || '');
+  const month = monthMatch ? String(monthMatch[2] || monthMatch[3] || '').padStart(2, '0') : '';
+  return {
+    topic: getSpecificSearchTopic(query),
+    mainland: /中国大陆|中国内地|大陆|国内|中国市场|mainland/.test(text),
+    newProduct: /新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|new product|new drink/.test(text),
+    year,
+    month,
+  };
+}
+
+function scoreSearchResult(item, intent) {
+  const haystack = normalizeSearchText(`${item.title || ''} ${item.url || ''} ${item.snippet || ''}`);
+  let score = 0;
+
+  if (intent.topic) {
+    const topicTokens = intent.topic.split(/\s+/).filter(Boolean);
+    const matchedTokens = topicTokens.filter(token => haystack.includes(token.toLowerCase()));
+    if (matchedTokens.length === topicTokens.length) score += 4;
+    else if (matchedTokens.length > 0) score += 2;
+    else score -= 6;
+  }
+
+  if (intent.mainland) {
+    if (/中国大陆|中国内地|内地|大陆|中国市场|\.cn\//.test(haystack)) score += 3;
+    if (/台湾|臺灣|taiwan|starbucks\.com\.tw|香港|澳门|澳門|hong kong|macau/.test(haystack)) score -= 8;
+  }
+
+  if (intent.newProduct) {
+    if (/新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|星冰乐|拿铁|咖啡|new|menu|beverage|drink/.test(haystack)) score += 4;
+    else score -= 4;
+    if (/公司介绍|在中国|门店|融资|出售|股权|财报|业务|扩至|市场|wikipedia|维基百科/.test(haystack)) score -= 5;
+  }
+
+  if (intent.year) {
+    if (haystack.includes(intent.year)) score += 2;
+    if (/202[0-5]/.test(haystack) && !haystack.includes(intent.year)) score -= 4;
+  }
+  if (intent.year && intent.month) {
+    const monthNumber = String(Number(intent.month));
+    const monthPattern = new RegExp(`${intent.year}\\s*年\\s*0?${monthNumber}\\s*月|${intent.year}[-/.]${intent.month}|${intent.year}[-/.]${monthNumber}`);
+    if (monthPattern.test(haystack)) score += 3;
+  }
+
+  return score;
+}
+
+function filterSearchResults(results = [], query = '') {
+  const intent = inferSearchIntent(query);
+  const scored = results.map(item => ({ item, score: scoreSearchResult(item, intent) }));
+  const threshold = intent.topic || intent.mainland || intent.newProduct ? 2 : -2;
+  return scored
+    .filter(entry => entry.score >= threshold)
+    .sort((a, b) => b.score - a.score)
+    .map(entry => entry.item);
 }
 
 function getClientId(req) {
@@ -361,15 +668,58 @@ function consumeFreeDoubaoVoiceQuota(req) {
   bucket.count += 1;
 }
 
+function collectBaiduResultCandidates(value, out = []) {
+  if (!value || out.length > 30) return out;
+  if (Array.isArray(value)) {
+    value.forEach(item => collectBaiduResultCandidates(item, out));
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+
+  const url = value.url || value.link || value.href || value.source_url || value.web_url;
+  const title = value.title || value.name || value.source || value.site_name;
+  const snippet = value.snippet || value.summary || value.content || value.text || value.description;
+  if (typeof url === 'string' && url.startsWith('http')) {
+    out.push({
+      title: title || url,
+      url,
+      snippet: typeof snippet === 'string' ? snippet : '',
+    });
+  }
+
+  for (const key of ['references', 'citations', 'search_results', 'searchResults', 'web_search_results', 'results', 'sources', 'documents', 'data']) {
+    if (value[key]) collectBaiduResultCandidates(value[key], out);
+  }
+  if (value.choices) collectBaiduResultCandidates(value.choices, out);
+  if (value.message) collectBaiduResultCandidates(value.message, out);
+  return out;
+}
+
+function extractBaiduSearchResults(data, maxResults) {
+  const seen = new Set();
+  return collectBaiduResultCandidates(data)
+    .filter(item => {
+      if (!item.url || seen.has(item.url)) return false;
+      seen.add(item.url);
+      return true;
+    })
+    .slice(0, maxResults)
+    .map(item => ({
+      title: item.title || item.url || 'Untitled',
+      url: item.url || '',
+      snippet: item.snippet || '',
+    }));
+}
+
 async function runExternalSearch(query, req, config = {}) {
-  const provider = (config.searchProvider || process.env.SEARCH_PROVIDER || 'tavily').toLowerCase();
-  const userApiKey = config.searchApiKey || '';
-  const serverApiKey = process.env.SEARCH_API_KEY || '';
+  const provider = resolveSearchProvider(query, config);
+  const userApiKey = config.searchApiKeys?.[provider] || config.searchApiKey || '';
+  const serverApiKey = getServerSearchApiKey(provider);
   const apiKey = userApiKey || serverApiKey;
   const maxResults = Math.max(1, Math.min(8, Number(process.env.SEARCH_MAX_RESULTS || 5)));
 
   if (!apiKey) {
-    throw new Error('Search API key is not configured. Set SEARCH_API_KEY on the server or add your own Search API Key in settings.');
+    throw new Error(`Search API key is not configured for ${provider}. Set ${provider === 'baidu' ? 'BAIDU_SEARCH_API_KEY or QIANFAN_API_KEY' : 'SEARCH_API_KEY'} on the server or add your own Search API Key in settings.`);
   }
 
   if (!userApiKey) {
@@ -428,6 +778,47 @@ async function runExternalSearch(query, req, config = {}) {
     }));
   }
 
+  if (provider === 'bocha') {
+    const res = await fetch('https://api.bochaai.com/v1/web-search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        query,
+        summary: true,
+        freshness: 'oneYear',
+        count: maxResults,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || data?.error || `Bocha search failed (${res.status}).`);
+    const items = data?.data?.webPages?.value || data?.webPages?.value || data?.results || [];
+    return items.slice(0, maxResults).map(item => ({
+      title: item.name || item.title || item.url || 'Untitled',
+      url: item.url || item.link || '',
+      snippet: item.summary || item.snippet || item.content || '',
+    }));
+  }
+
+  if (provider === 'baidu') {
+    const res = await fetch('https://qianfan.baidubce.com/v2/ai_search/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: query }],
+        stream: false,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || data?.message || `Baidu AI Search failed (${res.status}).`);
+    return extractBaiduSearchResults(data, maxResults);
+  }
+
   throw new Error(`Unsupported SEARCH_PROVIDER: ${provider}`);
 }
 
@@ -439,18 +830,69 @@ function buildSearchContext(results = []) {
     const snippet = String(item.snippet || '').replace(/\s+/g, ' ').slice(0, 500);
     return `${index + 1}. ${title}\nURL: ${url}\nSnippet: ${snippet}`;
   });
-  return `Search results for reference. Use them only when relevant and cite URLs inline when making factual claims.\n${lines.join('\n\n')}`;
+  return `Search results for reference. Use them only when relevant. The app displays source links separately in the search result card, so do NOT repeat raw URLs in the assistant answer. Refer to source titles briefly only when needed.\n${lines.join('\n\n')}`;
 }
 
-function buildPayload({ body, provider, model, searchContext, builtinSearch }) {
+function buildSearchStatusResults(results = []) {
+  return results.slice(0, 8).map(item => ({
+    title: String(item.title || item.url || 'Untitled').slice(0, 140),
+    url: String(item.url || '').slice(0, 260),
+    snippet: String(item.snippet || '').replace(/\s+/g, ' ').slice(0, 220),
+  }));
+}
+
+function buildSearchFailureContext(message = '') {
+  if (!message) return '';
+  return `Web search was requested, but no web pages were retrieved for this turn.
+Search failure reason: ${message}
+Do not claim that you searched the web, read web pages, found sources, or verified current facts online. If current/source-backed information is needed, say clearly that web search failed and answer only from existing context or ask the user to retry/configure search.`;
+}
+
+function buildSearchClarificationContext(query = '') {
+  return `The user asked for web search, but the query is too broad or underspecified to search reliably.
+Current underspecified query: ${query}
+Do not claim that you searched the web, read web pages, found sources, or verified current facts online.
+Ask one concise clarification question for the missing subject, product, organization, place, or other concrete scope before searching.`;
+}
+
+function buildNoSearchContext(query = '') {
+  return `The user mentioned search, but no web search was executed for this turn.
+Current query: ${query}
+Do not claim that you searched the web, checked online sources, saw current pages, or verified current facts.
+If current information is needed, say that web search did not run and ask the user to retry or check search settings.`;
+}
+
+function disableVoiceBriefInMessages(messages = []) {
+  return messages
+    .filter(message => !String(message?.content || '').includes('Critical voice-mode rule:'))
+    .map(message => {
+      if (message?.role !== 'system' || typeof message.content !== 'string') return message;
+      if (!message.content.includes('Voice output is ON.')) return message;
+      return {
+        ...message,
+        content: message.content
+          .replace(/Voice output is ON\.[\s\S]*?Voice brief rules:[\s\S]*?Do not read the full answer aloud\. After the VOICE_BRIEF line, continue with the full visible answer normally\.\n/, 'Voice output is OFF.\nDo not output VOICE_BRIEF metadata. Write only the visible answer.\n')
+          .replace(/If voice output is ON, the required VOICE_BRIEF control line is allowed and must come first\./, 'Do not output VOICE_BRIEF metadata.'),
+      };
+    });
+}
+
+function buildPayload({ body, provider, model, searchContext, searchFailureContext, searchClarificationContext, noSearchContext, builtinSearch, disableVoiceBrief }) {
   const messages = Array.isArray(body.messages) ? [...body.messages] : [];
+  const finalMessages = disableVoiceBrief ? disableVoiceBriefInMessages(messages) : messages;
   if (searchContext) {
-    messages.splice(1, 0, { role: 'system', content: searchContext });
+    finalMessages.splice(1, 0, { role: 'system', content: searchContext });
+  } else if (searchFailureContext) {
+    finalMessages.splice(1, 0, { role: 'system', content: searchFailureContext });
+  } else if (searchClarificationContext) {
+    finalMessages.splice(1, 0, { role: 'system', content: searchClarificationContext });
+  } else if (noSearchContext) {
+    finalMessages.splice(1, 0, { role: 'system', content: noSearchContext });
   }
 
   const payload = {
     model,
-    messages,
+    messages: finalMessages,
     temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
     stream: body.stream !== false,
   };
@@ -462,7 +904,7 @@ function buildPayload({ body, provider, model, searchContext, builtinSearch }) {
   return payload;
 }
 
-async function proxyChatStream(req, res) {
+export async function proxyChatStream(req, res) {
   if (!authorize(req, res)) return;
 
   let body;
@@ -524,34 +966,128 @@ async function proxyChatStream(req, res) {
 
   let searchContext = '';
   let externalSearchError = '';
-  const builtinSearch = !isCanvas && shouldUseBuiltinSearch(provider, searchMode, query, config);
-  const wantsAutoSearch = !isCanvas && searchMode === 'auto' && query && shouldAutoSearch(query);
+  let searchClarificationContext = '';
+  let didAttemptExternalSearch = false;
+  const searchPlan = !isCanvas && searchMode === 'auto'
+    ? await planSearchWithLlm({ query, messages: body.messages, provider, endpoint, model, apiKey })
+    : buildFallbackSearchPlan(query, body.messages);
+  const searchQuery = searchMode === 'external'
+    ? buildContextualSearchQuery(query, body.messages)
+    : searchPlan.query;
+  const effectiveSearchProvider = resolveSearchProvider(searchQuery, config);
+  const builtinSearch = !isCanvas && shouldUseBuiltinSearch(provider, searchMode, searchQuery, config);
+  const wantsAutoSearch = !isCanvas && searchMode === 'auto' && searchPlan.action === 'search' && searchQuery;
+  const disableVoiceBriefForDirectSearch = Boolean(!isCanvas && config.voiceOutputEnabled && wantsAutoSearch);
+  const needsSearchClarification = !isCanvas
+    && searchMode === 'auto'
+    && query
+    && searchPlan.action === 'clarify';
 
   if (!isCanvas && searchMode === 'builtin' && !builtinSearch) {
     sendSseError(res, 400, 'LLM built-in search is currently supported only for Tongyi in this app. Use Auto or Independent Search for other providers.');
     return;
   }
 
-  if (!isCanvas && query && shouldUseExternalSearch(provider, searchMode, query, config) && !builtinSearch) {
+  if (disableVoiceBriefForDirectSearch) {
+    writeStatus({
+      phase: 'voice_brief_disabled',
+      label: 'Voice brief disabled during search',
+      reason: 'direct_search',
+    });
+  }
+
+  if (!isCanvas && searchQuery && (searchMode === 'external' || (wantsAutoSearch && hasExternalSearchKey(config, searchQuery))) && !builtinSearch) {
     try {
-      writeStatus({ phase: 'searching', label: 'Web Search', provider: config.searchProvider || process.env.SEARCH_PROVIDER || 'tavily' });
-      const searchResults = await runExternalSearch(query, req, config);
+      didAttemptExternalSearch = true;
+      writeStatus({
+        phase: 'searching',
+        label: 'Web Search',
+        provider: effectiveSearchProvider,
+        query: searchQuery,
+      });
+      const rawSearchResults = await runExternalSearch(searchQuery, req, config);
+      const searchResults = filterSearchResults(rawSearchResults, searchQuery);
+      if (!searchResults.length) {
+        externalSearchError = `Search returned ${rawSearchResults.length} pages, but none matched the requested brand / region / new-product intent closely enough. Query: ${searchQuery}`;
+        writeStatus({
+          phase: 'search_no_relevant_results',
+          label: 'No relevant search results',
+          count: 0,
+          rawCount: rawSearchResults.length,
+          query: searchQuery,
+          provider: config.searchProvider || process.env.SEARCH_PROVIDER || 'tavily',
+          error: externalSearchError,
+        });
+      }
       searchContext = buildSearchContext(searchResults);
-      writeStatus({ phase: 'thinking', label: 'Reading results', count: searchResults.length });
+      writeStatus({
+        phase: 'searched',
+        label: 'Search complete',
+        count: searchResults.length,
+        provider: effectiveSearchProvider,
+        query: searchQuery,
+        results: buildSearchStatusResults(searchResults),
+      });
+      if (searchResults.length) {
+        writeStatus({ phase: 'thinking', label: 'Reading results', count: searchResults.length });
+      }
     } catch (error) {
       externalSearchError = error.message;
+      writeStatus({
+        phase: 'search_failed',
+        label: 'Search failed',
+        error: externalSearchError,
+        query: searchQuery,
+        provider: effectiveSearchProvider,
+      });
       if (searchMode === 'external') {
         writeStreamError(424, externalSearchError);
         return;
       }
     }
-  } else if (wantsAutoSearch && !builtinSearch && !hasExternalSearchKey(config)) {
+  } else if (wantsAutoSearch && !builtinSearch && !hasExternalSearchKey(config, searchQuery)) {
     externalSearchError = 'Search is on, but no Search API Key is configured. Add a Tavily / Serper / Bing key in settings or configure SEARCH_API_KEY on the server.';
+    writeStatus({
+      phase: 'search_unavailable',
+      label: 'Search unavailable',
+      error: externalSearchError,
+    });
+  } else if (needsSearchClarification) {
+    searchClarificationContext = searchPlan.question
+      ? buildSearchClarificationContext(`${searchQuery}\nSuggested question: ${searchPlan.question}`)
+      : buildSearchClarificationContext(searchQuery);
+    writeStatus({
+      phase: 'search_needs_clarification',
+      label: 'Search needs clarification',
+      query: searchQuery,
+    });
   }
 
-  const payload = buildPayload({ body, provider, model, searchContext, builtinSearch });
+  const searchFailureContext = !searchContext && externalSearchError
+    ? buildSearchFailureContext(externalSearchError)
+    : '';
+  const noSearchContext = !searchContext
+    && !searchFailureContext
+    && !searchClarificationContext
+    && !didAttemptExternalSearch
+    && !builtinSearch
+    && searchMode === 'auto'
+    && SEARCH_ACTION_PATTERN.test(query)
+    ? buildNoSearchContext(searchQuery || query)
+    : '';
+  const payload = buildPayload({
+    body,
+    provider,
+    model,
+    searchContext,
+    searchFailureContext,
+    searchClarificationContext,
+    noSearchContext,
+    builtinSearch,
+    disableVoiceBrief: disableVoiceBriefForDirectSearch,
+  });
   if (builtinSearch) {
-    writeStatus({ phase: 'searching', label: 'Web Search', provider: 'tongyi' });
+    writeStatus({ phase: 'builtin_searching', label: 'Tongyi built-in search requested', provider: 'tongyi' });
   }
   if (usesServerKey) {
     const maxTokens = Number(process.env.FREE_LLM_MAX_OUTPUT_TOKENS || 2000);
@@ -644,7 +1180,8 @@ function serveStatic(req, res) {
   createReadStream(resolvedPath).pipe(res);
 }
 
-const server = createServer((req, res) => {
+function createInteractiveCanvasServer() {
+  const server = createServer((req, res) => {
   if (req.method === 'POST' && req.url?.startsWith('/api/doubao-tts')) {
     proxyDoubaoTts(req, res);
     return;
@@ -666,10 +1203,26 @@ const server = createServer((req, res) => {
   }
 
   serveStatic(req, res);
-});
+  });
 
-setupDoubaoAsrProxy(server);
+  setupDoubaoAsrProxy(server);
+  return server;
+}
 
-server.listen(port, host, () => {
-  console.log(`[server] Interactive Canvas listening on http://${host}:${port}`);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = createInteractiveCanvasServer();
+  server.listen(port, host, () => {
+    console.log(`[server] Interactive Canvas listening on http://${host}:${port}`);
+  });
+}
+
+export {
+  buildContextualSearchQuery,
+  buildFallbackSearchPlan,
+  isVagueFollowupSearch,
+  normalizeSearchPlan,
+  reconcileSearchPlan,
+  shouldAutoSearch,
+  shouldUseBuiltinSearch,
+  shouldUseExternalSearch,
+};

@@ -78,8 +78,9 @@ DOUBAO_VOICE_FREE_QUOTA_LIMIT=20
 DOUBAO_VOICE_FREE_QUOTA_WINDOW_MS=86400000
 
 # Server fallback search key. Users can still enter their own key in Settings.
-SEARCH_PROVIDER=tavily
+SEARCH_PROVIDER=auto  # auto routes mainland China queries to Baidu, overseas queries to Tavily
 SEARCH_API_KEY=your-server-side-tavily-key
+BAIDU_SEARCH_API_KEY=your-server-side-qianfan-ai-search-key
 SEARCH_MAX_RESULTS=5
 
 # Free fallback quota for users without their own Search API Key.

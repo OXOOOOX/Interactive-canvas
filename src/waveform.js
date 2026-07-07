@@ -7,6 +7,7 @@ import { startDoubaoStreamingRecognition } from './services/doubao-asr.js';
 const SILENCE_TIMEOUT_MS = 2800;
 const STARTUP_GRACE_MS = 1200;
 const AUDIO_ACTIVITY_THRESHOLD = 0.018;
+const MAX_RECENT_SUBMITTED_TRANSCRIPTS = 6;
 
 let analyser = null;
 let animFrameId = null;
@@ -29,6 +30,9 @@ let voiceSessionStartedAt = 0;
 let latestInterimTranscript = '';
 let latestFinalTranscript = '';
 let latestSubmittedTranscript = '';
+let latestSubmittedAt = 0;
+let recentSubmittedTranscripts = [];
+let autoSubmitBlockedTranscript = '';
 let lastTranscriptSnapshot = '';
 let turnCompleted = false;
 let silenceRecoveryTimer = null;
@@ -61,6 +65,13 @@ function getVoiceConfig() {
   return window.__GET_CONFIG__?.() || {};
 }
 
+function isVoiceAutoSubmitAllowed() {
+  if (window.__VOICE_AUTO_SUBMIT_ALLOWED__) {
+    return window.__VOICE_AUTO_SUBMIT_ALLOWED__() !== false;
+  }
+  return window.__CHAT_MODEL_BUSY__ !== true;
+}
+
 function getTranscriptText(text) {
   return window.__VOICE_TRANSCRIPT_TEXT__?.(text) ?? (text || '').trim();
 }
@@ -70,6 +81,121 @@ function isMeaningfulTranscript(text) {
     return window.__VOICE_TRANSCRIPT_VALID__(text);
   }
   return !!text && text.replace(/[^\w\u4e00-\u9fa5]/g, '').length > 0;
+}
+
+function normalizeTranscriptForDedupe(text = '') {
+  return getTranscriptText(text)
+    .toLowerCase()
+    .replace(/[^\w\u4e00-\u9fa5]/g, '');
+}
+
+function normalizeTranscriptWithMap(text = '') {
+  const source = getTranscriptText(text);
+  let normalized = '';
+  const map = [];
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i].toLowerCase();
+    if (/[\w\u4e00-\u9fa5]/.test(char)) {
+      normalized += char;
+      map.push(i);
+    }
+  }
+  return { source, normalized, map };
+}
+
+function stripLeadingTranscriptSeparator(text = '') {
+  return getTranscriptText(text).replace(/^[\s,\uFF0C.\u3002!\uFF01?\uFF1F;\uFF1B:\uFF1A\u3001-]+/, '');
+}
+
+function rememberSubmittedTranscript(text = '') {
+  const cleaned = getTranscriptText(text);
+  if (!isMeaningfulTranscript(cleaned)) return;
+  const normalized = normalizeTranscriptForDedupe(cleaned);
+  recentSubmittedTranscripts = [
+    cleaned,
+    ...recentSubmittedTranscripts.filter(item => normalizeTranscriptForDedupe(item) !== normalized),
+  ].slice(0, MAX_RECENT_SUBMITTED_TRANSCRIPTS);
+}
+
+function getSubmittedTranscriptAnchors() {
+  const seen = new Set();
+  return [latestSubmittedTranscript, ...recentSubmittedTranscripts]
+    .map(item => getTranscriptText(item))
+    .filter(Boolean)
+    .filter(item => {
+      const normalized = normalizeTranscriptForDedupe(item);
+      if (normalized.length < 2 || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+}
+
+function getNewTranscriptAfterSubmitted(text = '') {
+  if (!turnCompleted || !latestSubmittedTranscript) return getTranscriptText(text);
+
+  const incoming = normalizeTranscriptWithMap(text);
+  const submitted = normalizeTranscriptWithMap(latestSubmittedTranscript);
+  if (!incoming.normalized || !submitted.normalized) return incoming.source;
+
+  const submittedIndex = incoming.normalized.lastIndexOf(submitted.normalized);
+  if (submittedIndex >= 0) {
+    const endNormalizedIndex = submittedIndex + submitted.normalized.length - 1;
+    const endSourceIndex = incoming.map[endNormalizedIndex] ?? -1;
+    return getTranscriptText(incoming.source.slice(endSourceIndex + 1).replace(/^[\s,，.。!！?？;；:：、-]+/, ''));
+  }
+
+  if (
+    incoming.normalized === submitted.normalized ||
+    submitted.normalized.startsWith(incoming.normalized)
+  ) {
+    return '';
+  }
+
+  if (incoming.normalized.startsWith(submitted.normalized)) {
+    const endIndex = incoming.map[submitted.normalized.length - 1] ?? -1;
+    return getTranscriptText(incoming.source.slice(endIndex + 1).replace(/^[\s,，.。!！?？;；:：、-]+/, ''));
+  }
+
+  return incoming.source;
+}
+
+function getFreshTranscriptAfterSubmitted(text = '') {
+  const anchors = getSubmittedTranscriptAnchors();
+  if (!anchors.length) return getTranscriptText(text);
+
+  const incoming = normalizeTranscriptWithMap(text);
+  if (!incoming.normalized) return incoming.source;
+
+  let bestEndNormalizedIndex = -1;
+  for (const anchor of anchors) {
+    const anchorNormalized = normalizeTranscriptForDedupe(anchor);
+    const anchorIndex = incoming.normalized.lastIndexOf(anchorNormalized);
+    if (anchorIndex >= 0) {
+      bestEndNormalizedIndex = Math.max(bestEndNormalizedIndex, anchorIndex + anchorNormalized.length - 1);
+    }
+  }
+
+  if (bestEndNormalizedIndex >= 0) {
+    const endSourceIndex = incoming.map[bestEndNormalizedIndex] ?? -1;
+    return stripLeadingTranscriptSeparator(incoming.source.slice(endSourceIndex + 1));
+  }
+
+  for (const anchor of anchors) {
+    const anchorData = normalizeTranscriptWithMap(anchor);
+    if (!anchorData.normalized) continue;
+    if (
+      incoming.normalized === anchorData.normalized ||
+      anchorData.normalized.startsWith(incoming.normalized)
+    ) {
+      return '';
+    }
+    if (incoming.normalized.startsWith(anchorData.normalized)) {
+      const endIndex = incoming.map[anchorData.normalized.length - 1] ?? -1;
+      return stripLeadingTranscriptSeparator(incoming.source.slice(endIndex + 1));
+    }
+  }
+
+  return incoming.source;
 }
 
 function shouldUseBrowserRecognition() {
@@ -131,7 +257,12 @@ function resetTurnState({ clearSubmitted = false } = {}) {
   latestFinalTranscript = '';
   lastTranscriptSnapshot = '';
   turnCompleted = false;
-  if (clearSubmitted) latestSubmittedTranscript = '';
+  if (clearSubmitted) {
+    latestSubmittedTranscript = '';
+    latestSubmittedAt = 0;
+    recentSubmittedTranscripts = [];
+    autoSubmitBlockedTranscript = '';
+  }
 }
 
 function scheduleSilenceRecoveryFallback() {
@@ -151,9 +282,24 @@ function hasPendingMeaningfulTranscript() {
   return isMeaningfulTranscript(getPendingTranscript());
 }
 
+function blockAutoSubmitForCurrentPending() {
+  const pending = getPendingTranscript();
+  if (!isMeaningfulTranscript(pending)) return;
+  autoSubmitBlockedTranscript = normalizeTranscriptForDedupe(pending);
+  silenceStopRequested = false;
+  hasDetectedSpeech = false;
+  lastTranscriptAt = Date.now();
+  lastAudioActivityAt = Date.now();
+  voiceSessionStartedAt = Date.now();
+}
+
 function flushPendingTranscriptIfNeeded() {
   if (!silenceStopRequested || turnCompleted || !isConversationActive) return false;
   if (!hasPendingMeaningfulTranscript()) return false;
+  if (!isVoiceAutoSubmitAllowed()) {
+    blockAutoSubmitForCurrentPending();
+    return false;
+  }
   const pending = getPendingTranscript();
   clearSilenceRecoveryTimer();
   clearPendingAutoSubmitTimer();
@@ -189,6 +335,18 @@ function markTranscriptActivity(text, { final = false } = {}) {
     latestInterimTranscript = cleaned;
   }
   if (isMeaningfulTranscript(cleaned)) {
+    if (
+      autoSubmitBlockedTranscript &&
+      normalizeTranscriptForDedupe(cleaned) !== autoSubmitBlockedTranscript
+    ) {
+      autoSubmitBlockedTranscript = '';
+    }
+    if (
+      turnCompleted &&
+      normalizeTranscriptForDedupe(cleaned) !== normalizeTranscriptForDedupe(latestSubmittedTranscript)
+    ) {
+      turnCompleted = false;
+    }
     if (cleaned !== lastTranscriptSnapshot) {
       lastTranscriptSnapshot = cleaned;
       lastTranscriptAt = Date.now();
@@ -249,6 +407,18 @@ function appendFinalTranscript(text) {
   latestFinalTranscript = combined;
   latestInterimTranscript = '';
   if (isMeaningfulTranscript(combined)) {
+    if (
+      autoSubmitBlockedTranscript &&
+      normalizeTranscriptForDedupe(combined) !== autoSubmitBlockedTranscript
+    ) {
+      autoSubmitBlockedTranscript = '';
+    }
+    if (
+      turnCompleted &&
+      normalizeTranscriptForDedupe(combined) !== normalizeTranscriptForDedupe(latestSubmittedTranscript)
+    ) {
+      turnCompleted = false;
+    }
     if (combined !== lastTranscriptSnapshot) {
       lastTranscriptSnapshot = combined;
       lastTranscriptAt = Date.now();
@@ -390,21 +560,31 @@ function pauseListeningForPlayback() {
 function submitRecognizedText(text, { autoStopped = false } = {}) {
   const cleaned = getTranscriptText(text);
   if (!isMeaningfulTranscript(cleaned)) return false;
-  if (turnCompleted && latestSubmittedTranscript === cleaned) return false;
+  if (autoStopped && !isVoiceAutoSubmitAllowed()) {
+    blockAutoSubmitForCurrentPending();
+    return false;
+  }
+  if (turnCompleted && normalizeTranscriptForDedupe(latestSubmittedTranscript) === normalizeTranscriptForDedupe(cleaned)) return false;
+  if (latestSubmittedTranscript === cleaned && Date.now() - latestSubmittedAt < 2500) return false;
 
-  pauseListeningUiOnly('等待模型回复');
   clearTranscriptSilenceTimer();
   clearPendingAutoSubmitTimer();
-  stopBrowserRecognition();
-  stopDoubaoRecognition();
 
-  turnCompleted = true;
   latestSubmittedTranscript = cleaned;
-  latestFinalTranscript = cleaned;
+  latestSubmittedAt = Date.now();
+  rememberSubmittedTranscript(cleaned);
+  autoSubmitBlockedTranscript = '';
+  turnCompleted = true;
+  latestFinalTranscript = '';
   latestInterimTranscript = '';
-  lastTranscriptSnapshot = cleaned;
+  lastTranscriptSnapshot = '';
   silenceStopRequested = false;
+  hasDetectedSpeech = false;
+  lastTranscriptAt = Date.now();
+  lastAudioActivityAt = Date.now();
+  voiceSessionStartedAt = Date.now();
   bindInputInterim('');
+  setVoiceVisualState('listening');
 
   if (autoStopped) {
     notifyVoiceAutoStopped();
@@ -418,18 +598,18 @@ function submitRecognizedText(text, { autoStopped = false } = {}) {
 
 function requestSilenceStop() {
   if (!isConversationActive || isPaused || silenceStopRequested) return;
+  if (turnCompleted) return;
   if (!hasDetectedSpeech) return;
   if (Date.now() - voiceSessionStartedAt < STARTUP_GRACE_MS) return;
+  if (!isVoiceAutoSubmitAllowed()) {
+    blockAutoSubmitForCurrentPending();
+    return;
+  }
 
   silenceStopRequested = true;
   clearTranscriptSilenceTimer();
   const submitted = flushPendingTranscriptIfNeeded();
   if (submitted) {
-    if (usingDoubaoRecognition) {
-      stopDoubaoRecognition();
-    } else {
-      stopBrowserRecognition();
-    }
     return;
   }
 
@@ -455,8 +635,10 @@ function submitCurrentVoiceTurn() {
 
 function shouldAutoStopForSilence() {
   if (!isConversationActive || isPaused || silenceStopRequested) return false;
+  if (turnCompleted) return false;
   if (!hasDetectedSpeech) return false;
   if (!hasPendingMeaningfulTranscript()) return false;
+  if (autoSubmitBlockedTranscript && normalizeTranscriptForDedupe(getPendingTranscript()) === autoSubmitBlockedTranscript) return false;
   if (Date.now() - voiceSessionStartedAt < STARTUP_GRACE_MS) return false;
   return Date.now() - lastTranscriptAt >= SILENCE_TIMEOUT_MS;
 }
@@ -477,6 +659,7 @@ function createBrowserRecognition(SRec) {
   recognition.interimResults = true;
 
   recognition.onresult = (event) => {
+    if (!isConversationActive) return;
     if (isPaused && !silenceStopRequested) return;
 
     let interimTranscript = '';
@@ -491,13 +674,17 @@ function createBrowserRecognition(SRec) {
     }
 
     if (interimTranscript) {
-      const combinedInterim = mergeTranscriptText(latestFinalTranscript, interimTranscript);
-      bindInputInterim(combinedInterim);
-      markTranscriptActivity(combinedInterim, { final: false });
+      const combinedInterim = getFreshTranscriptAfterSubmitted(mergeTranscriptText(latestFinalTranscript, interimTranscript));
+      if (combinedInterim) {
+        bindInputInterim(combinedInterim);
+        markTranscriptActivity(combinedInterim, { final: false });
+      }
     }
 
     if (finalTranscript) {
-      const combinedFinal = appendFinalTranscript(finalTranscript);
+      const filteredFinal = getFreshTranscriptAfterSubmitted(finalTranscript);
+      if (!filteredFinal) return;
+      const combinedFinal = appendFinalTranscript(filteredFinal);
       bindInputInterim(combinedFinal);
       if (silenceStopRequested) {
         submitRecognizedText(combinedFinal, { autoStopped: true });
@@ -543,15 +730,23 @@ async function startDoubaoConversation({ resetTimer = true } = {}) {
   const config = getVoiceConfig();
   const session = await startDoubaoStreamingRecognition(config, {
     onInterim(text) {
+      if (!isConversationActive) return;
       if (isPaused && !silenceStopRequested) return;
-      const combinedInterim = mergeTranscriptText(latestFinalTranscript, text);
+      const combinedInterim = getFreshTranscriptAfterSubmitted(mergeTranscriptText(latestFinalTranscript, text));
+      if (!combinedInterim) return;
       bindInputInterim(combinedInterim);
       markTranscriptActivity(combinedInterim, { final: false });
     },
     onFinal(fullText) {
+      if (!isConversationActive) return;
       if (!isMeaningfulTranscript(fullText)) return;
-      if (turnCompleted && latestSubmittedTranscript === getTranscriptText(fullText)) return;
-      const mergedFinal = mergeTranscriptText(latestFinalTranscript, fullText);
+      if (
+        turnCompleted &&
+        normalizeTranscriptForDedupe(latestSubmittedTranscript) === normalizeTranscriptForDedupe(fullText)
+      ) return;
+      const filteredFinal = getFreshTranscriptAfterSubmitted(fullText);
+      if (!filteredFinal) return;
+      const mergedFinal = mergeTranscriptText(latestFinalTranscript, filteredFinal);
       markTranscriptActivity(mergedFinal, { final: true });
       bindInputInterim(mergedFinal);
       if (silenceStopRequested) {
@@ -562,14 +757,23 @@ async function startDoubaoConversation({ resetTimer = true } = {}) {
       console.error('[waveform] Doubao onError:', error);
     },
     onComplete(finalText) {
-      if (finalText) {
-        markTranscriptActivity(mergeTranscriptText(latestFinalTranscript, finalText), { final: true });
+      if (!isConversationActive) return;
+      const filteredFinal = getFreshTranscriptAfterSubmitted(finalText);
+      if (filteredFinal) {
+        markTranscriptActivity(mergeTranscriptText(latestFinalTranscript, filteredFinal), { final: true });
       }
       flushPendingTranscriptIfNeeded();
     },
     onClose(finalText) {
-      if (finalText) {
-        markTranscriptActivity(mergeTranscriptText(latestFinalTranscript, finalText), { final: true });
+      if (!isConversationActive) {
+        if (doubaoSession === session) {
+          doubaoSession = null;
+        }
+        return;
+      }
+      const filteredFinal = getFreshTranscriptAfterSubmitted(finalText);
+      if (filteredFinal) {
+        markTranscriptActivity(mergeTranscriptText(latestFinalTranscript, filteredFinal), { final: true });
       }
       if (doubaoSession === session) {
         doubaoSession = null;
@@ -697,6 +901,10 @@ export async function stopConversation() {
   turnCompleted = false;
   latestInterimTranscript = '';
   latestFinalTranscript = '';
+  latestSubmittedTranscript = '';
+  latestSubmittedAt = 0;
+  recentSubmittedTranscripts = [];
+  autoSubmitBlockedTranscript = '';
   lastTranscriptSnapshot = '';
   clearTranscriptSilenceTimer();
   clearPendingAutoSubmitTimer();

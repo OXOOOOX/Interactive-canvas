@@ -4,21 +4,43 @@
 
 import { appState, pushHistory, saveCurrentCanvas, loadGlobalMemory } from './state.js';
 import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callGlobalMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
-import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting, assertCanvasIntegrity } from './utils/parser.js';
+import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting, assertCanvasIntegrity, stripSearchToolMarkup } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
 import { renderBlocks, syncBlockSizes } from './canvas.js';
+import { isEmptyGlobalMemorySuggestion } from './utils/memory.js';
 
 const DRAFT_STORAGE_KEY = 'canvas-studio-markdown-draft-v1';
 const DRAFT_AUTO_APPEND_KEY = 'canvas-studio-draft-auto-append-v1';
 
-let $messages, $input, $sendBtn, $draftPanel, $draftToggle, $markdownDraft, $draftAutoAppend;
+let $messages, $input, $sendBtn, $pendingQueue, $draftPanel, $draftToggle, $markdownDraft, $draftAutoAppend;
 let $sessionSelect, $newSessionBtn, $exportSessionBtn, $importSessionBtn;
 let getConfig = () => ({});
+let canvasUpdateQueue = Promise.resolve();
+let canvasUpdateSeq = 0;
+let pendingQueue = [];
+let pendingQueueDraining = false;
+let pendingQueueDrainScheduled = false;
+let pendingMessageSeq = 0;
+
+function isChatModelBusy() {
+  return window.__CHAT_MODEL_BUSY__ === true;
+}
+
+function isAssistantPlaybackBusy() {
+  return window.__ASSISTANT_PLAYBACK_BUSY__ === true;
+}
+
+function shouldQueueMessage(options = {}) {
+  if (options.bypassPendingQueue) return false;
+  return isChatModelBusy() || isAssistantPlaybackBusy();
+}
 
 function setChatModelBusy(isBusy) {
   const current = Number(window.__CHAT_MODEL_BUSY_COUNT__ || 0);
   window.__CHAT_MODEL_BUSY_COUNT__ = Math.max(0, current + (isBusy ? 1 : -1));
   window.__CHAT_MODEL_BUSY__ = window.__CHAT_MODEL_BUSY_COUNT__ > 0;
+  renderPendingQueue();
+  if (!window.__CHAT_MODEL_BUSY__) schedulePendingQueueDrain();
 }
 
 function createSession(title = '新会话', messages = []) {
@@ -154,6 +176,7 @@ export function initChat(configGetter) {
   $messages = document.getElementById('chatMessages');
   $input = document.getElementById('chatInput');
   $sendBtn = document.getElementById('sendBtn');
+  $pendingQueue = document.getElementById('pendingMessageQueue');
   $draftPanel = document.getElementById('draftPanel');
   $draftToggle = document.getElementById('draftToggle');
   $markdownDraft = document.getElementById('markdownDraft');
@@ -232,6 +255,143 @@ function initDraftPanel() {
     appState.canvas.memory = '';
     saveCurrentCanvas();
   });
+
+  window.__CHAT_PENDING_DRAIN__ = schedulePendingQueueDrain;
+  window.__CHAT_PENDING_STATUS_CHANGED__ = renderPendingQueue;
+}
+
+function getBusyQueueReason() {
+  if (isChatModelBusy()) return '助手回复中';
+  if (isAssistantPlaybackBusy()) return '语音播报中';
+  return '等待发送';
+}
+
+function renderPendingQueue() {
+  if (!$pendingQueue) return;
+  $pendingQueue.innerHTML = '';
+  $pendingQueue.hidden = pendingQueue.length === 0;
+
+  for (const item of pendingQueue) {
+    const row = document.createElement('div');
+    row.className = 'pending-message-item';
+    row.dataset.id = String(item.id);
+    row.classList.toggle('is-sending', item.status === 'sending');
+
+    const meta = document.createElement('div');
+    meta.className = 'pending-message-meta';
+    meta.textContent = item.status === 'sending'
+      ? '正在发送'
+      : `待发送 · ${getBusyQueueReason()}`;
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'pending-message-text';
+    textarea.rows = 2;
+    textarea.value = item.text;
+    textarea.disabled = item.status === 'sending';
+    textarea.setAttribute('aria-label', '编辑待发送消息');
+    textarea.addEventListener('input', () => {
+      item.text = textarea.value;
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'pending-message-actions';
+
+    const sendNow = document.createElement('button');
+    sendNow.type = 'button';
+    sendNow.className = 'pending-message-action primary';
+    sendNow.textContent = '发送';
+    sendNow.disabled = item.status === 'sending' || shouldQueueMessage({});
+    sendNow.title = shouldQueueMessage({}) ? '助手空闲后会自动发送' : '发送这条待发送消息';
+    sendNow.addEventListener('click', () => {
+      schedulePendingQueueDrain();
+    });
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'pending-message-action';
+    cancel.textContent = '撤销';
+    cancel.disabled = item.status === 'sending';
+    cancel.title = '撤销这条待发送消息';
+    cancel.addEventListener('click', () => cancelPendingMessage(item.id));
+
+    actions.appendChild(sendNow);
+    actions.appendChild(cancel);
+    row.appendChild(meta);
+    row.appendChild(textarea);
+    row.appendChild(actions);
+    $pendingQueue.appendChild(row);
+  }
+}
+
+function enqueuePendingMessage(text, options = {}) {
+  return new Promise((resolve, reject) => {
+    pendingQueue.push({
+      id: ++pendingMessageSeq,
+      text,
+      options,
+      status: 'pending',
+      resolve,
+      reject,
+    });
+    renderPendingQueue();
+  });
+}
+
+function cancelPendingMessage(id) {
+  const index = pendingQueue.findIndex(item => item.id === id);
+  if (index < 0) return;
+  const [item] = pendingQueue.splice(index, 1);
+  item.resolve?.(null);
+  renderPendingQueue();
+}
+
+function schedulePendingQueueDrain() {
+  if (pendingQueueDraining || pendingQueueDrainScheduled) return;
+  pendingQueueDrainScheduled = true;
+  setTimeout(() => {
+    pendingQueueDrainScheduled = false;
+    renderPendingQueue();
+    void drainPendingQueue();
+  }, 0);
+}
+
+async function drainPendingQueue() {
+  if (pendingQueueDraining) return;
+  pendingQueueDraining = true;
+
+  try {
+    while (pendingQueue.length) {
+      const item = pendingQueue[0];
+      if (shouldQueueMessage({})) break;
+
+      const text = (item.text || '').trim();
+      pendingQueue[0].status = 'sending';
+      renderPendingQueue();
+
+      if (!text) {
+        pendingQueue.shift();
+        item.resolve?.(null);
+        renderPendingQueue();
+        continue;
+      }
+
+      try {
+        const result = await sendMessage(text, {
+          ...item.options,
+          bypassPendingQueue: true,
+        });
+        pendingQueue.shift();
+        item.resolve?.(result);
+      } catch (error) {
+        pendingQueue.shift();
+        item.reject?.(error);
+      } finally {
+        renderPendingQueue();
+      }
+    }
+  } finally {
+    pendingQueueDraining = false;
+  }
 }
 
 function initSessionControls() {
@@ -408,9 +568,7 @@ async function updateDraftMemory(config, userText, assistantText) {
 async function suggestGlobalMemory(config, userText, assistantText) {
   const currentMemory = loadGlobalMemory();
   const updated = (await callGlobalMemoryLlm(config, currentMemory, userText, assistantText)).trim();
-  const normalized = updated.replace(/[。.\s]/g, '').toLowerCase();
-  if (!updated || updated === currentMemory.trim()) return;
-  if (['empty', 'none', 'null', '无', '无更新', '不更新', '无需更新'].includes(normalized)) return;
+  if (isEmptyGlobalMemorySuggestion(updated) || updated === currentMemory.trim()) return;
 
   window.dispatchEvent(new CustomEvent('global-memory:suggest', {
     detail: {
@@ -457,9 +615,143 @@ async function repairOperationMarkdown(config, operations) {
 }
 
 /** 发送用户消息并处理 AI 响应 */
+function createConversationSnapshot(conversation = []) {
+  return conversation.map(message => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+function createCanvasPromptSnapshot(canvas = {}) {
+  return {
+    id: canvas.id,
+    title: canvas.title,
+    activeSessionId: canvas.activeSessionId,
+    blocks: Array.isArray(canvas.blocks)
+      ? canvas.blocks.map(block => ({
+        id: block.id,
+        type: block.type,
+        label: block.label,
+        content: block.content,
+        locked: block.locked,
+        positionLocked: block.positionLocked,
+      }))
+      : [],
+    connections: Array.isArray(canvas.connections)
+      ? canvas.connections.map(conn => ({
+        id: conn.id,
+        fromId: conn.fromId,
+        toId: conn.toId,
+      }))
+      : [],
+    groups: Array.isArray(canvas.groups) ? canvas.groups.map(group => ({ ...group })) : [],
+  };
+}
+
+function enqueueCanvasUpdate(task) {
+  canvasUpdateQueue = canvasUpdateQueue
+    .catch(error => {
+      console.warn('Previous canvas update failed:', error);
+    })
+    .then(task);
+  return canvasUpdateQueue;
+}
+
+async function applyCanvasOperations(config, operations) {
+  const repairResult = await repairOperationMarkdown(config, operations);
+  const tempBlocks = [...appState.canvas.blocks];
+  const tempConns = [...appState.canvas.connections];
+
+  for (const op of operations) {
+    if (op.op !== 'add' || !op.block) continue;
+
+    const pos = findFreePosition(tempBlocks, op.parentId, tempConns);
+    if (typeof op.block.x !== 'number' || op.block.x === 200) op.block.x = pos.x;
+    if (typeof op.block.y !== 'number' || op.block.y === 100) op.block.y = pos.y;
+    tempBlocks.push(op.block);
+    if (op.parentId) {
+      tempConns.push({ fromId: op.parentId, toId: op.block.id });
+    }
+  }
+
+  const result = executeOperations(appState.canvas, operations);
+  dedupeConnections(appState.canvas);
+  assertCanvasIntegrity(appState.canvas);
+  pushHistory();
+
+  const changedIds = [...result.addedIds, ...result.updatedIds];
+  if (changedIds.length > 0) {
+    for (const block of appState.canvas.blocks) {
+      if (!changedIds.includes(block.id)) continue;
+      delete block.height;
+    }
+  }
+
+  renderBlocks(result.addedIds);
+  syncBlockSizes({ adaptForAutoLayout: true });
+  autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+  renderBlocks(result.addedIds);
+  syncBlockSizes();
+  renderBlocks(result.addedIds);
+
+  const summaryParts = [];
+  if (result.addedIds.length) summaryParts.push(`新增 ${result.addedIds.length} 个块`);
+  if (result.updatedIds.length) summaryParts.push(`更新 ${result.updatedIds.length} 个块`);
+  if (result.removedIds.length) summaryParts.push(`删除 ${result.removedIds.length} 个块`);
+  if (repairResult.repairedByModel) summaryParts.push(`修复 ${repairResult.repairedByModel} 处格式`);
+  saveCurrentCanvas();
+  return summaryParts;
+}
+
+function scheduleCanvasUpdate({ config, conversationSnapshot, canvasSnapshot, message }) {
+  const taskId = ++canvasUpdateSeq;
+  const status = showTyping();
+  status.setStatus('另一路大模型正在更新白板...', 'canvas');
+
+  enqueueCanvasUpdate(async () => {
+    try {
+      if (appState.canvas.id !== canvasSnapshot.id) {
+        console.info('[canvas update] Skip stale task after canvas switch:', taskId);
+        return;
+      }
+
+      status.setStatus('另一路大模型正在更新白板...', 'canvas');
+      const canvasRaw = await callCanvasLlm(config, conversationSnapshot, canvasSnapshot);
+      const parsed = parseAiResponse(canvasRaw);
+
+      if (parsed.operations && parsed.operations.length > 0) {
+        const summaryParts = await applyCanvasOperations(config, parsed.operations);
+        message.setSummary(summaryParts.length ? summaryParts : ['白板已检查，无需更新']);
+      } else {
+        message.setSummary(['白板已检查，无需更新']);
+        persistActiveConversation();
+      }
+
+      document.dispatchEvent(new CustomEvent('boardChanged'));
+      generateSuggestions();
+    } catch (error) {
+      console.warn('Canvas background update failed:', error);
+      message.setSummary(['白板更新失败']);
+    } finally {
+      status.remove();
+    }
+  });
+}
+
 async function sendMessage(explicitText = null, options = {}) {
   const text = (typeof explicitText === 'string' ? explicitText : $input.value).trim();
   if (!text) return null;
+
+  if (shouldQueueMessage(options)) {
+    if (typeof explicitText !== 'string') {
+      $input.value = '';
+      $input.style.height = 'auto';
+    } else if ($input.value.trim() === text) {
+      $input.value = '';
+      $input.style.height = 'auto';
+    }
+    return enqueuePendingMessage(text, options);
+  }
 
   if (typeof explicitText !== 'string') {
     $input.value = '';
@@ -560,12 +852,13 @@ async function sendMessage(explicitText = null, options = {}) {
             options.onVoiceBrief?.(voiceBrief);
           }
         }
-        ensureAssistantMessage().setText(stripVoiceBrief(fullText));
+        ensureAssistantMessage().setText(stripSearchToolMarkup(stripVoiceBrief(fullText)));
       }
     });
 
+    const visibleChatReply = stripSearchToolMarkup(stripVoiceBrief(chatReply));
     const voiceText = config.voiceOutputEnabled && !voiceBriefDisabledForSearch
-      ? (extractVoiceBrief(chatReply) || '')
+      ? stripSearchToolMarkup(extractVoiceBrief(chatReply) || '')
       : '';
     if (voiceText && !hasNotifiedVoiceBrief && !suppressEarlyVoiceBrief) {
       hasNotifiedVoiceBrief = true;
@@ -574,8 +867,6 @@ async function sendMessage(explicitText = null, options = {}) {
     if (config.voiceOutputEnabled && !voiceText && !voiceBriefDisabledForSearch) {
       console.warn('[voice] Missing VOICE_BRIEF in assistant response:', chatReply.slice(0, 240));
     }
-    const visibleChatReply = stripVoiceBrief(chatReply);
-
     if (!hasStreamText) {
       typing.remove();
       ensureAssistantMessage().setText(visibleChatReply);
@@ -607,77 +898,15 @@ async function sendMessage(explicitText = null, options = {}) {
       console.warn('Global memory suggestion failed:', error);
     });
 
-    const canvasStatus = showTyping();
-    canvasStatus.setStatus('大模型正在更新白板', 'canvas');
-    let canvasRaw = '';
-    try {
-      canvasRaw = await callCanvasLlm(config, appState.conversation, appState.canvas);
-    } finally {
-      canvasStatus.remove();
-    }
-    const parsed = parseAiResponse(canvasRaw);
-    const parsedReply = parsed.reply || '';
+    void draftPromise;
+    void globalMemoryPromise;
+    scheduleCanvasUpdate({
+      config,
+      conversationSnapshot: createConversationSnapshot(appState.conversation),
+      canvasSnapshot: createCanvasPromptSnapshot(appState.canvas),
+      message,
+    });
 
-    if (!visibleChatReply && parsedReply) {
-      message.setText(parsedReply);
-      appState.lastAssistantReply = parsedReply;
-      appState.conversation[appState.conversation.length - 1] = { role: 'assistant', content: parsedReply };
-      persistActiveConversation();
-    }
-
-    if (parsed.operations && parsed.operations.length > 0) {
-      const repairResult = await repairOperationMarkdown(config, parsed.operations);
-      const tempBlocks = [...appState.canvas.blocks];
-      const tempConns = [...appState.canvas.connections];
-
-      for (const op of parsed.operations) {
-        if (op.op === 'add' && op.block) {
-          const pos = findFreePosition(tempBlocks, op.parentId, tempConns);
-          if (typeof op.block.x !== 'number' || op.block.x === 200) op.block.x = pos.x;
-          if (typeof op.block.y !== 'number' || op.block.y === 100) op.block.y = pos.y;
-          tempBlocks.push(op.block);
-          if (op.parentId) {
-            tempConns.push({ fromId: op.parentId, toId: op.block.id });
-          }
-        }
-      }
-
-      const result = executeOperations(appState.canvas, parsed.operations);
-      dedupeConnections(appState.canvas);
-      assertCanvasIntegrity(appState.canvas);
-      pushHistory();
-
-      const changedIds = [...result.addedIds, ...result.updatedIds];
-      if (changedIds.length > 0) {
-        for (const block of appState.canvas.blocks) {
-          if (!changedIds.includes(block.id)) continue;
-          delete block.height;
-        }
-      }
-
-      renderBlocks(result.addedIds);
-      syncBlockSizes({ adaptForAutoLayout: true });
-      autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
-      renderBlocks(result.addedIds);
-      syncBlockSizes();
-      renderBlocks(result.addedIds);
-
-      const summaryParts = [];
-      if (result.addedIds.length) summaryParts.push(`新增 ${result.addedIds.length} 个块`);
-      if (result.updatedIds.length) summaryParts.push(`更新 ${result.updatedIds.length} 个块`);
-      if (result.removedIds.length) summaryParts.push(`删除 ${result.removedIds.length} 个块`);
-      if (repairResult.repairedByModel) summaryParts.push(`修复 ${repairResult.repairedByModel} 处格式`);
-      message.setSummary(summaryParts);
-      saveCurrentCanvas();
-    } else {
-      message.setSummary([]);
-      persistActiveConversation();
-    }
-
-    await draftPromise;
-    await globalMemoryPromise;
-    document.dispatchEvent(new CustomEvent('boardChanged'));
-    generateSuggestions();
     if (options.returnVoicePayload) {
       return {
         reply: appState.lastAssistantReply,
@@ -685,6 +914,7 @@ async function sendMessage(explicitText = null, options = {}) {
       };
     }
     return appState.lastAssistantReply;
+
   } catch (err) {
     typing.remove();
     assistantMessage?.remove();

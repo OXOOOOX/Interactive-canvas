@@ -208,7 +208,10 @@ function isRecognitionEnabled() {
 
 function bindInputInterim(text) {
   const chatInput = document.getElementById('chatInput');
-  if (chatInput) chatInput.value = text || '';
+  if (!chatInput) return;
+  chatInput.value = text || '';
+  chatInput.style.height = 'auto';
+  chatInput.style.height = text ? `${Math.min(chatInput.scrollHeight, 120)}px` : 'auto';
 }
 
 function clearSilenceRecoveryTimer() {

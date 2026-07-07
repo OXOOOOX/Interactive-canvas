@@ -67,6 +67,37 @@ function getConversationStage(conversation = [], markdownDraft = '') {
   return 'working';
 }
 
+function formatDateInTimeZone(date = new Date(), timeZone = '') {
+  try {
+    const options = {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      ...(timeZone ? { timeZone } : {}),
+    };
+    const parts = new Intl.DateTimeFormat('en-US', options)
+      .formatToParts(date)
+      .reduce((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+    if (parts.year && parts.month && parts.day) {
+      return `${parts.year}-${parts.month}-${parts.day}`;
+    }
+  } catch {
+    // Fall back to UTC if the runtime does not support the detected time zone.
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function getCurrentDatePromptContext() {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+  const date = formatDateInTimeZone(new Date(), timeZone);
+  return `Current runtime date: ${date}.
+Current runtime time zone: ${timeZone}.
+Treat the runtime date above as authoritative for "today", "now", and relative dates. Do not infer the current date from model knowledge cutoff or training data.`;
+}
+
 function buildChatSystemPrompt(canvasOutline, canvasMemory = '', conversation = [], options = {}) {
   const canvasMemorySection = canvasMemory
     ? `\nCurrent Canvas Memory:\n${canvasMemory}\n`
@@ -94,6 +125,7 @@ Do not output VOICE_BRIEF metadata. Write only the visible answer.
 `;
   return `You are a highly professional and friendly 'Voice Chat Copilot'.
 The user is brainstorming and exploring ideas with you via voice.
+${getCurrentDatePromptContext()}
 Please note:
 1. Your responses must be logical and insightful, but do not jump into long essays too early.
 2. There is a separate Canvas Agent handling whiteboard drawing, so DO NOT output any layout or drawing JSON commands.

@@ -40,6 +40,39 @@ const DEFAULT_MODELS = {
   deepseekV4Flash: 'deepseek-v4-flash',
 };
 
+function getServerPromptTimeZone() {
+  return process.env.APP_TIME_ZONE
+    || process.env.TZ
+    || Intl.DateTimeFormat().resolvedOptions().timeZone
+    || 'UTC';
+}
+
+function formatDateInTimeZone(date = new Date(), timeZone = getServerPromptTimeZone()) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone,
+    }).formatToParts(date).reduce((acc, part) => {
+      acc[part.type] = part.value;
+      return acc;
+    }, {});
+    if (parts.year && parts.month && parts.day) {
+      return `${parts.year}-${parts.month}-${parts.day}`;
+    }
+  } catch {
+    // Fall back to UTC if an environment-provided time zone is invalid.
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function buildCurrentDatePromptContext(date = new Date(), timeZone = getServerPromptTimeZone()) {
+  return `Current runtime date: ${formatDateInTimeZone(date, timeZone)}.
+Current runtime time zone: ${timeZone}.
+Treat the runtime date above as authoritative for "today", "now", and relative dates. Do not infer the current date from model knowledge cutoff or training data.`;
+}
+
 const freeSearchBuckets = new Map();
 const freeLlmBuckets = new Map();
 const freeDoubaoVoiceBuckets = new Map();
@@ -263,9 +296,10 @@ function normalizeSearchMode(mode) {
 
 const SEARCH_FRESH_PRODUCT_PATTERN = /新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|官方|官网|new product|new drink|menu/i;
 const SEARCH_REGION_PATTERN = /中国大陆|中国内地|内地|大陆|国内|中国市场|mainland/i;
-const SEARCH_ACTION_PATTERN = /搜索|直接搜|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下|最新|最近|今天|昨日|今年|新闻|来源|引用|价格|行情|法规|政策|竞品|官网|current|latest|recent|today|news|source|cite|price|policy|competitor/i;
-const SEARCH_COMMAND_PATTERN = /帮我|请|麻烦|帮忙|给我|能不能|可以|直接搜|搜索一下|搜索|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下/g;
-const GENERIC_SEARCH_TERMS_PATTERN = /中国大陆|中国内地|内地|大陆|国内|中国市场|mainland|地区|新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|官方|官网|产品|商品|服务|内容|信息|资料|新闻|消息|最近|最新|当前|现在|今天|昨日|今年|继续|再|这个|那个|它|上述|前面|刚才|一下|一些|相关|有关|关于|一期|当期|本期|最新一期|呢|current|latest|recent|today|news|menu|product|products|info|information/g;
+const SEARCH_ACTION_PATTERN = /搜索|直接搜|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下|重新搜|重新查|重新跑|再跑|最新|最近|今天|昨日|今年|新闻|来源|引用|价格|行情|法规|政策|竞品|官网|current|latest|recent|today|news|source|cite|price|policy|competitor/i;
+const SEARCH_COMMAND_PATTERN = /帮我|帮|请|麻烦|帮忙|给我|能不能|可以|直接搜|搜索一下|搜索|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下|重新搜|重新查|重新跑|再跑/g;
+const GENERIC_SEARCH_TERMS_PATTERN = /中国大陆|中国内地|内地|大陆|国内|中国市场|mainland|地区|新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|官方|官网|产品|商品|服务|内容|信息|资料|新闻|消息|最近|最新|当前|现在|今天|昨日|今年|继续|再|重新|重跑|跑一趟|一趟|一次|一遍|跑|这个|那个|它|该|这家|那家|上述|前面|刚才|那么|然后|嗯|呃|额|还有|另外|其他|别的|什么|吗|么|嘛|有没有|有无|比如|例如|像是|之类|类似|配套|搭配|同期|同款|同系列|同活动|一下|一些|相关|有关|关于|一期|当期|本期|最新一期|公司|企业|机构|呢|current|latest|recent|today|news|menu|product|products|info|information/g;
+const CONTEXTUAL_FOLLOWUP_PATTERN = /^(那么|那|嗯|呃|额|还有|另外|其他|别的|顺便|再看看|再查|再搜|重新搜|重新查|重新跑|再跑)|还有什么|配套|搭配|同期|同款|同系列|同活动|之类|类似|这个公司|这家公司|该公司|那个公司|那家公司|这个企业|该企业|它的|重新跑一趟|重跑/;
 
 function normalizeSearchQueryText(value = '') {
   return String(value || '')
@@ -352,12 +386,25 @@ function normalizeSearchText(value = '') {
 function isVagueFollowupSearch(query = '') {
   const text = normalizeSearchText(query);
   if (!text) return true;
+  if (CONTEXTUAL_FOLLOWUP_PATTERN.test(text)) {
+    return true;
+  }
   if (hasSpecificSearchTopic(text)) {
     return false;
   }
   return /^(挺好|好的|可以|继续|再搜|搜一下|查一下|帮我搜|帮我搜索|中国大陆的|大陆的|国内的)/.test(text)
     || /^(这个|那个|它|上述|前面|刚才)(呢|也一样|继续|再来|再搜|查一下|搜一下)?$/.test(text)
     || /(这个|那个|它|上述|前面|刚才).*(搜|查|搜索)/.test(text);
+}
+
+function isContextualFollowupSearch(query = '') {
+  const text = normalizeSearchText(query);
+  return CONTEXTUAL_FOLLOWUP_PATTERN.test(text);
+}
+
+function getSearchDateText(query = '') {
+  const match = String(query || '').match(/20[2-9]\d\s*年\s*(?:0?[1-9]|1[0-2])\s*月|20[2-9]\d[-/.](?:0?[1-9]|1[0-2])|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+20[2-9]\d/i);
+  return match ? match[0].replace(/\s+/g, '') : '';
 }
 
 function getRecentUserMessages(messages = []) {
@@ -371,13 +418,17 @@ function buildContextualSearchQuery(query = '', messages = []) {
   const cleaned = String(query || '').trim();
   const userMessages = getRecentUserMessages(messages);
   const previous = [...userMessages].reverse().find(message => message !== cleaned && !isVagueFollowupSearch(message));
-  const source = isVagueFollowupSearch(cleaned) && previous
+  const shouldReuseFullPrevious = isVagueFollowupSearch(cleaned) && previous;
+  const shouldReuseStablePrevious = !shouldReuseFullPrevious && previous && isContextualFollowupSearch(cleaned);
+  const source = shouldReuseFullPrevious
     ? `${previous} ${cleaned}`
-    : cleaned;
+    : shouldReuseStablePrevious
+      ? `${previous} ${cleaned}`
+      : cleaned;
 
-  const dateMatch = source.match(/20[2-9]\d\s*年\s*(?:0?[1-9]|1[0-2])\s*月|20[2-9]\d[-/.](?:0?[1-9]|1[0-2])|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+20[2-9]\d/i);
-  if (dateMatch && !SEARCH_ACTION_PATTERN.test(source) && !SEARCH_FRESH_PRODUCT_PATTERN.test(source)) {
-    return dateMatch[0].replace(/\s+/g, '');
+  const dateText = getSearchDateText(source);
+  if (dateText && !SEARCH_ACTION_PATTERN.test(source) && !SEARCH_FRESH_PRODUCT_PATTERN.test(source)) {
+    return dateText;
   }
 
   const topic = getSpecificSearchTopic(source);
@@ -386,7 +437,7 @@ function buildContextualSearchQuery(query = '', messages = []) {
   if (/新品|新饮品|上新|新品上市|new product|new drink/i.test(source) && !parts.includes('新品')) parts.push('新品');
   if (/菜单|menu/i.test(source) && !parts.includes('菜单')) parts.push('菜单');
   if (/官方|官网|小程序|app/i.test(source) && !parts.includes('官方')) parts.push('官方');
-  if (dateMatch) parts.push(dateMatch[0].replace(/\s+/g, ''));
+  if (dateText) parts.push(dateText);
   else if (/最新|当前|现在|recent|latest|today/i.test(source) && !parts.includes('最新')) parts.push('最新');
 
   const compact = parts.join(' ').trim();
@@ -434,8 +485,8 @@ function normalizeSearchPlan(value = {}, fallbackQuery = '') {
   const normalizedAction = action === 'search' || action === 'clarify' || action === 'none'
     ? action
     : 'none';
-  const rawQuery = normalizeSearchQueryText(value.query || fallbackQuery);
-  const query = rawQuery || fallbackQuery;
+  const rawQuery = normalizeSearchQueryText(value.query || '');
+  const query = rawQuery || (normalizedAction === 'search' ? fallbackQuery : '');
   return {
     action: normalizedAction,
     query,
@@ -445,21 +496,32 @@ function normalizeSearchPlan(value = {}, fallbackQuery = '') {
 }
 
 function reconcileSearchPlan(plan = {}, fallbackPlan = {}) {
-  if (fallbackPlan.action === 'search' && plan.action !== 'search') {
-    return fallbackPlan;
-  }
-  if (fallbackPlan.action === 'clarify' && plan.action === 'none') {
+  if (fallbackPlan.reason === 'rule_fallback_contextual_search' && plan.action !== 'search') {
     return fallbackPlan;
   }
   if (plan.action === 'search' && !hasSpecificSearchTopic(plan.query)) {
-    return fallbackPlan;
+    if (fallbackPlan.action === 'search' && hasSpecificSearchTopic(fallbackPlan.query)) {
+      return fallbackPlan;
+    }
+    return {
+      action: 'clarify',
+      query: plan.query || fallbackPlan.query || '',
+      question: plan.question || '你想搜索哪个具体主题或对象？',
+      reason: plan.reason || fallbackPlan.reason || 'planner_search_query_too_vague',
+    };
   }
   return plan;
 }
 
 function buildFallbackSearchPlan(query = '', messages = []) {
   const searchQuery = buildContextualSearchQuery(query, messages);
-  if (shouldAutoSearch(searchQuery)) {
+  const userMessages = getRecentUserMessages(messages);
+  const hasPreviousTopic = userMessages.some(message => message !== String(query || '').trim() && !isVagueFollowupSearch(message));
+  const isContextualRetry = hasPreviousTopic && isVagueFollowupSearch(query) && SEARCH_ACTION_PATTERN.test(query);
+  if (isContextualRetry && hasSpecificSearchTopic(searchQuery)) {
+    return { action: 'search', query: searchQuery, question: '', reason: 'rule_fallback_contextual_search' };
+  }
+  if (shouldAutoSearch(searchQuery) || (SEARCH_ACTION_PATTERN.test(query) && hasSpecificSearchTopic(searchQuery))) {
     return { action: 'search', query: searchQuery, question: '', reason: 'rule_fallback_search' };
   }
   if (SEARCH_ACTION_PATTERN.test(query) && !hasSpecificSearchTopic(searchQuery)) {
@@ -491,9 +553,14 @@ Rules:
 - Use "search" when current or source-backed information is needed, or the user explicitly asks to search.
 - Use "clarify" when the user asks to search but the subject/scope is too ambiguous for a reliable query.
 - Use "none" when web search is not needed.
-- If action is "search", write a concise search query. Remove command wrappers such as "help me search", "directly search", "latest issue", quotes, filler words, and conversational text. Preserve concrete entities, product/category names, regions, and freshness words such as "latest" when useful.
+- If action is "search", write a concise search-engine query, not a natural-language sentence.
+- Use the conversation history to resolve pronouns, ellipsis, and follow-ups. Reuse concrete constraints from earlier turns, such as entity, product, place, region, date, version, platform, audience, budget, or task type.
+- For follow-ups such as "anything matching it", "what about nearby hotels", "for example ice cream", or "same for React", keep the stable context from the previous topic and combine it with the new scope from the latest message.
+- Remove command wrappers, filler words, greetings, quotes, and conversational text. Do not include words like "help me search", "what else", "for example", "um", or "please" in the query.
+- Preserve domain-specific terms even if they are unfamiliar. Do not rely on a fixed set of product categories.
+- If the latest message appears garbled, incomplete, or mostly filler after ASR/transcription, use "clarify" instead of searching a query made from those filler words.
 - If action is "clarify", write one short clarification question in the user's language.
-- Current date: 2026-07-07.`
+- ${buildCurrentDatePromptContext()}`
       },
       ...recentMessages,
       { role: 'user', content: `Decide search plan for this latest user request:\n${query}` },
@@ -522,7 +589,7 @@ Rules:
     } catch {
       assistantText = '';
     }
-    const data = extractJsonObject(text) || extractJsonObject(assistantText);
+    const data = extractJsonObject(assistantText) || extractJsonObject(text);
     if (!data) return fallbackPlan;
     const plan = reconcileSearchPlan(normalizeSearchPlan(data, fallbackPlan.query), fallbackPlan);
     if (plan.action === 'search' && !plan.query) return fallbackPlan;
@@ -539,8 +606,11 @@ function inferSearchIntent(query = '') {
   const monthMatch = text.match(/(20[2-9]\d)\s*年\s*(0?[1-9]|1[0-2])\s*月|20[2-9]\d[-/.](0?[1-9]|1[0-2])/);
   const year = monthMatch ? (monthMatch[1] || text.match(/20[2-9]\d/)?.[0] || '') : (text.match(/20[2-9]\d/)?.[0] || '');
   const month = monthMatch ? String(monthMatch[2] || monthMatch[3] || '').padStart(2, '0') : '';
+  const topic = getSpecificSearchTopic(query);
+  const keywords = Array.from(new Set(topic.split(/\s+/).map(token => token.trim().toLowerCase()).filter(Boolean)));
   return {
-    topic: getSpecificSearchTopic(query),
+    topic,
+    keywords,
     mainland: /中国大陆|中国内地|大陆|国内|中国市场|mainland/.test(text),
     newProduct: /新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|new product|new drink/.test(text),
     year,
@@ -548,16 +618,28 @@ function inferSearchIntent(query = '') {
   };
 }
 
+function tokenMatchesHaystack(token = '', haystack = '') {
+  if (!token) return false;
+  if (haystack.includes(token)) return true;
+  if (/[\u4e00-\u9fff]/.test(token) && token.length >= 4) {
+    for (let size = Math.min(4, token.length - 1); size >= 2; size -= 1) {
+      for (let index = 0; index <= token.length - size; index += 1) {
+        if (haystack.includes(token.slice(index, index + size))) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function scoreSearchResult(item, intent) {
   const haystack = normalizeSearchText(`${item.title || ''} ${item.url || ''} ${item.snippet || ''}`);
   let score = 0;
 
-  if (intent.topic) {
-    const topicTokens = intent.topic.split(/\s+/).filter(Boolean);
-    const matchedTokens = topicTokens.filter(token => haystack.includes(token.toLowerCase()));
-    if (matchedTokens.length === topicTokens.length) score += 4;
-    else if (matchedTokens.length > 0) score += 2;
-    else score -= 6;
+  if (intent.keywords?.length) {
+    const matchedTokens = intent.keywords.filter(token => tokenMatchesHaystack(token, haystack));
+    score += matchedTokens.length * 3;
+    if (matchedTokens.length === 0) score -= 3;
+    if (intent.keywords.length > 1 && matchedTokens.length >= Math.ceil(intent.keywords.length / 2)) score += 2;
   }
 
   if (intent.mainland) {
@@ -567,8 +649,6 @@ function scoreSearchResult(item, intent) {
 
   if (intent.newProduct) {
     if (/新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|星冰乐|拿铁|咖啡|new|menu|beverage|drink/.test(haystack)) score += 4;
-    else score -= 4;
-    if (/公司介绍|在中国|门店|融资|出售|股权|财报|业务|扩至|市场|wikipedia|维基百科/.test(haystack)) score -= 5;
   }
 
   if (intent.year) {
@@ -587,11 +667,81 @@ function scoreSearchResult(item, intent) {
 function filterSearchResults(results = [], query = '') {
   const intent = inferSearchIntent(query);
   const scored = results.map(item => ({ item, score: scoreSearchResult(item, intent) }));
-  const threshold = intent.topic || intent.mainland || intent.newProduct ? 2 : -2;
+  const threshold = intent.keywords?.length ? 1 : -2;
   return scored
     .filter(entry => entry.score >= threshold)
     .sort((a, b) => b.score - a.score)
     .map(entry => entry.item);
+}
+
+async function selectSearchResultsWithLlm({ query = '', results = [], endpoint, model, apiKey }) {
+  if (!endpoint || !apiKey || !query.trim() || !results.length) return null;
+
+  const candidates = results.slice(0, 8).map((item, index) => ({
+    index,
+    title: String(item.title || item.url || 'Untitled').slice(0, 180),
+    url: String(item.url || '').slice(0, 240),
+    snippet: String(item.snippet || '').replace(/\s+/g, ' ').slice(0, 700),
+  }));
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: `You judge whether web search results are relevant to a user's query.
+Return ONLY JSON with this exact shape:
+{"keep":[0,1],"reason":"..."}
+
+Rules:
+- Keep results that can help answer the query, even if they match only aliases, abbreviations, translated names, event names, industry terms, or partial Chinese terms.
+- Drop clearly unrelated results.
+- If several results are broadly about the same requested event/company/topic, keep the best ones.
+- If the query asks for current/news/company/background information, broad reputable news or official event pages can be relevant.
+- Do not require exact keyword overlap when the title/snippet is semantically related.
+- Keep at most 5 results.`,
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({ query, candidates }, null, 2),
+          },
+        ],
+        temperature: 0,
+        stream: false,
+        max_tokens: 180,
+      }),
+    });
+    const text = await res.text();
+    if (!res.ok) return null;
+    let assistantText = '';
+    try {
+      assistantText = extractPlannerText(JSON.parse(text));
+    } catch {
+      assistantText = '';
+    }
+    const data = extractJsonObject(assistantText) || extractJsonObject(text);
+    if (!data || !Array.isArray(data.keep)) return null;
+    const seen = new Set();
+    const selected = data.keep
+      .map(index => Number(index))
+      .filter(index => Number.isInteger(index) && index >= 0 && index < candidates.length && !seen.has(index) && seen.add(index))
+      .map(index => results[index]);
+    return selected;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getClientId(req) {
@@ -830,7 +980,14 @@ function buildSearchContext(results = []) {
     const snippet = String(item.snippet || '').replace(/\s+/g, ' ').slice(0, 500);
     return `${index + 1}. ${title}\nURL: ${url}\nSnippet: ${snippet}`;
   });
-  return `Search results for reference. Use them only when relevant. The app displays source links separately in the search result card, so do NOT repeat raw URLs in the assistant answer. Refer to source titles briefly only when needed.\n${lines.join('\n\n')}`;
+  return `Web search has already been executed for this turn. Use the results below only when relevant.
+The visible answer should summarize what was found in user-friendly language.
+Do NOT output search plans, alternate queries, XML/tool tags, or blocks such as <search>, <query>, <tool>, or code fences containing search queries.
+Do NOT say you are going to search again. If the results are weak or off-topic, say that the retrieved pages did not directly answer the request and suggest what the user should verify on official booking sites.
+The app displays source links separately in the search result card, so do NOT repeat raw URLs in the assistant answer. Refer to source titles briefly only when needed.
+
+Search results for reference:
+${lines.join('\n\n')}`;
 }
 
 function buildSearchStatusResults(results = []) {
@@ -968,11 +1125,11 @@ export async function proxyChatStream(req, res) {
   let externalSearchError = '';
   let searchClarificationContext = '';
   let didAttemptExternalSearch = false;
-  const searchPlan = !isCanvas && searchMode === 'auto'
+  const searchPlan = !isCanvas && (searchMode === 'auto' || searchMode === 'external')
     ? await planSearchWithLlm({ query, messages: body.messages, provider, endpoint, model, apiKey })
     : buildFallbackSearchPlan(query, body.messages);
   const searchQuery = searchMode === 'external'
-    ? buildContextualSearchQuery(query, body.messages)
+    ? (searchPlan.query || buildContextualSearchQuery(query, body.messages))
     : searchPlan.query;
   const effectiveSearchProvider = resolveSearchProvider(searchQuery, config);
   const builtinSearch = !isCanvas && shouldUseBuiltinSearch(provider, searchMode, searchQuery, config);
@@ -1006,9 +1163,18 @@ export async function proxyChatStream(req, res) {
         query: searchQuery,
       });
       const rawSearchResults = await runExternalSearch(searchQuery, req, config);
-      const searchResults = filterSearchResults(rawSearchResults, searchQuery);
+      const llmSelectedResults = await selectSearchResultsWithLlm({
+        query: searchQuery,
+        results: rawSearchResults,
+        endpoint,
+        model,
+        apiKey,
+      });
+      const searchResults = Array.isArray(llmSelectedResults)
+        ? llmSelectedResults
+        : filterSearchResults(rawSearchResults, searchQuery);
       if (!searchResults.length) {
-        externalSearchError = `Search returned ${rawSearchResults.length} pages, but none matched the requested brand / region / new-product intent closely enough. Query: ${searchQuery}`;
+        externalSearchError = `Search returned ${rawSearchResults.length} pages, but none matched the requested topic closely enough. Query: ${searchQuery}`;
         writeStatus({
           phase: 'search_no_relevant_results',
           label: 'No relevant search results',
@@ -1217,11 +1383,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 export {
+  buildCurrentDatePromptContext,
   buildContextualSearchQuery,
   buildFallbackSearchPlan,
+  buildSearchContext,
+  filterSearchResults,
   isVagueFollowupSearch,
   normalizeSearchPlan,
+  planSearchWithLlm,
   reconcileSearchPlan,
+  selectSearchResultsWithLlm,
   shouldAutoSearch,
   shouldUseBuiltinSearch,
   shouldUseExternalSearch,

@@ -585,6 +585,16 @@ function announceAssistantSpeechDone(outputMode = getVoiceRouting().outputMode) 
   showVoiceToast(message, variant, 2200);
 }
 
+function setAssistantPlaybackBusy(isBusy) {
+  const current = Number(window.__ASSISTANT_PLAYBACK_BUSY_COUNT__ || 0);
+  window.__ASSISTANT_PLAYBACK_BUSY_COUNT__ = Math.max(0, current + (isBusy ? 1 : -1));
+  window.__ASSISTANT_PLAYBACK_BUSY__ = window.__ASSISTANT_PLAYBACK_BUSY_COUNT__ > 0;
+  window.__CHAT_PENDING_STATUS_CHANGED__?.();
+  if (!window.__ASSISTANT_PLAYBACK_BUSY__) {
+    window.__CHAT_PENDING_DRAIN__?.();
+  }
+}
+
 function announceVoiceCaptured() {
   showVoiceToast('已识别到语音，正在发送', 'success', 1800);
 }
@@ -1671,21 +1681,26 @@ async function playReplyWithResolvedConfig(reply, config = getConfig()) {
     lastVoiceFallbackReason = '';
   }
 
-  if (resolvedConfig.ttsProvider === 'browser') {
-    await playBrowserSpeech(reply, {
-      onStart: () => announceAssistantSpeechStart('browser'),
-      onDone: () => announceAssistantSpeechDone('browser'),
-    });
-    return;
-  }
-
-  announceAssistantSpeechStart('doubao');
+  setAssistantPlaybackBusy(true);
   try {
-    await speak(reply, resolvedConfig);
-    announceAssistantSpeechDone('doubao');
-  } catch (error) {
-    console.error('豆包语音合成失败', error);
-    showVoiceToast(`豆包播报失败：${error.message || '请检查 TTS 配置'}`, 'browser', 3200);
+    if (resolvedConfig.ttsProvider === 'browser') {
+      await playBrowserSpeech(reply, {
+        onStart: () => announceAssistantSpeechStart('browser'),
+        onDone: () => announceAssistantSpeechDone('browser'),
+      });
+      return;
+    }
+
+    announceAssistantSpeechStart('doubao');
+    try {
+      await speak(reply, resolvedConfig);
+      announceAssistantSpeechDone('doubao');
+    } catch (error) {
+      console.error('豆包语音合成失败', error);
+      showVoiceToast(`豆包播报失败：${error.message || '请检查 TTS 配置'}`, 'browser', 3200);
+    }
+  } finally {
+    setAssistantPlaybackBusy(false);
   }
 }
 
@@ -1796,6 +1811,7 @@ window.__VOICE_MODE_HELPERS__ = {
 window.__GET_CONFIG__ = getConfig;
 window.__PLAY_ASSISTANT_REPLY__ = playAssistantReply;
 window.__GET_VOICE_LANGUAGE__ = getSpeechSynthesisLanguage;
+window.__VOICE_AUTO_SUBMIT_ALLOWED__ = () => window.__CHAT_MODEL_BUSY__ !== true && window.__ASSISTANT_PLAYBACK_BUSY__ !== true;
 window.__VOICE_FILE_TRANSCRIBE__ = handleAudioFileSelected;
 window.__VOICE_TRANSCRIPT_TEXT__ = getVoiceSubmitText;
 window.__VOICE_TRANSCRIPT_VALID__ = isMeaningfulTranscript;

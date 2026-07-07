@@ -1503,6 +1503,95 @@ body.chat-resizing {
   border-color: #000;
 }
 
+.pending-message-queue {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pending-message-queue:empty,
+.pending-message-queue[hidden] {
+  display: none;
+}
+
+.pending-message-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  padding: 8px;
+  border: 2px solid #000;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.pending-message-item.is-sending {
+  opacity: 0.72;
+}
+
+.pending-message-meta {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.pending-message-text {
+  min-width: 0;
+  min-height: 44px;
+  max-height: 96px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 2px solid #000;
+  border-radius: 4px;
+  background: var(--grad-brand-soft);
+  color: var(--text-primary);
+  font: 12px/1.45 var(--font-body);
+  outline: none;
+}
+
+.pending-message-text:focus {
+  background: #fff;
+}
+
+.pending-message-text:disabled {
+  opacity: 0.8;
+  resize: none;
+}
+
+.pending-message-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pending-message-action {
+  min-width: 48px;
+  height: 26px;
+  padding: 0 8px;
+  border: 2px solid #000;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pending-message-action.primary {
+  background: var(--grad-brand);
+}
+
+.pending-message-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.pending-message-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .waveform-bar {
   display: none;
   align-items: center;

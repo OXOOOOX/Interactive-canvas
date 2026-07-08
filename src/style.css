@@ -3224,6 +3224,17 @@ select.cfg-input {
 }
 
 /* Ctrl 键按下时的连线交互状态 */
+.link-layer path.link-conn[data-dash-role="fan"] {
+  stroke-dasharray: none;
+  animation: none;
+  opacity: 0.55;
+}
+
+.link-layer path[data-link-role="fan-trunk"],
+.link-layer path[data-link-role="fan-rail"] {
+  opacity: 0.55;
+}
+
 .link-layer path.ctrl-hover {
   stroke: #ef4444 !important;
   stroke-width: 5 !important;

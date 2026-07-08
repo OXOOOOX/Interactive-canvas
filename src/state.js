@@ -9,9 +9,10 @@ const CURRENT_CANVAS_ID_KEY = 'canvas-studio-current-id-v1';
 const GLOBAL_MEMORY_KEY = 'canvas-studio-global-memory-v1';
 const MAX_HISTORY = 40;
 
-function normalizeCanvas(canvas) {
+export function normalizeCanvas(canvas) {
   if (!canvas || typeof canvas !== 'object') return canvas;
   if (!Array.isArray(canvas.groups)) canvas.groups = [];
+  if (!['auto', 'comb', 'fan'].includes(canvas.linkRoutingMode)) canvas.linkRoutingMode = 'auto';
   if (typeof canvas.memory !== 'string') canvas.memory = '';
   if (!Array.isArray(canvas.sessions)) canvas.sessions = [];
   canvas.sessions = canvas.sessions
@@ -110,6 +111,7 @@ export const appState = {
     blocks: [],       // { id, type, label, content, x, y, groupId?, color? }
     connections: [],   // { id, fromId, toId }
     groups: [],        // { id, blockIds: [], color: string }
+    linkRoutingMode: 'auto',
     memory: '',
     sessions: [],
     activeSessionId: '',
@@ -254,6 +256,7 @@ export function createCanvas(title = '未命名白板') {
     blocks: [],
     connections: [],
     groups: [],
+    linkRoutingMode: 'auto',
     memory: '',
     sessions: [{
       id: crypto.randomUUID(),

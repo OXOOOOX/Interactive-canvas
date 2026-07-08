@@ -11,12 +11,13 @@ import {
   saveCurrentCanvas, switchCanvas, getCurrentCanvasId, renameCanvas,
   loadGlobalMemory, saveGlobalMemory,
   ENDPOINT_PRESETS,
+  normalizeCanvas,
   createGroup, deleteGroup, getGroupBlocks, isBlockInGroup, getBlockGroup, getBlockGroups, renameGroup, suggestGroupName,
 } from './state.js';
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar, syncBlockSizes } from './canvas.js';
 import { initChat, sendText, syncCanvasMemoryDraft, syncChatSessionUI } from './chat.js';
 import { initWaveform, resumeListening, isConversationActive, isListeningActive } from './waveform.js';
-import { autoLayout, findFreePosition, getBoundingBox } from './utils/layout.js';
+import { autoLayout, compactLayout, findFreePosition, getBoundingBox } from './utils/layout.js';
 import { transcribe } from './services/stt.js';
 import { speak, canUseDoubaoTts, getDoubaoTtsFallbackReason } from './services/tts.js';
 import { testDoubaoAsrConnection } from './services/doubao-asr.js';
@@ -49,6 +50,8 @@ const dom = {
 
   // Canvas controls
   autoLayoutBtn: $('autoLayoutBtn'),
+  compactLayoutBtn: $('compactLayoutBtn'),
+  linkRoutingModeBtn: $('linkRoutingModeBtn'),
   aiOrganizeBtn: $('aiOrganizeBtn'),
   layoutLockBtn: $('layoutLockBtn'),
   fileUploadBtn: $('fileUploadBtn'),
@@ -813,6 +816,49 @@ function updateLayoutLockButton() {
   }
 }
 
+const LINK_ROUTING_MODES = ['auto', 'comb', 'fan'];
+const LINK_ROUTING_META = {
+  auto: {
+    label: '自动',
+    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="2.1" y="11.8" font-size="8" font-family="Arial, sans-serif" font-weight="700" fill="currentColor">A</text><path d="M8 4h2.2c1 0 1.8.8 1.8 1.8V7M12 9v2.2c0 1-.8 1.8-1.8 1.8H8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  },
+  comb: {
+    label: 'Comb',
+    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M5 4v8M9 4v8M13 4v8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="1.5" y="10.5" width="3" height="3" stroke="currentColor" stroke-width="1.1"/><rect x="7.5" y="10.5" width="3" height="3" stroke="currentColor" stroke-width="1.1"/><rect x="11.5" y="10.5" width="3" height="3" stroke="currentColor" stroke-width="1.1"/></svg>',
+  },
+  fan: {
+    label: 'Fan',
+    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 3v10M2 8h3M5 5h8M5 8h8M5 11h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="12" y="3.5" width="3" height="3" stroke="currentColor" stroke-width="1.1"/><rect x="12" y="9.5" width="3" height="3" stroke="currentColor" stroke-width="1.1"/></svg>',
+  },
+};
+
+function getLinkRoutingMode() {
+  return LINK_ROUTING_MODES.includes(appState.canvas.linkRoutingMode)
+    ? appState.canvas.linkRoutingMode
+    : 'auto';
+}
+
+function updateLinkRoutingModeButton() {
+  const btn = dom.linkRoutingModeBtn;
+  if (!btn) return;
+  const mode = getLinkRoutingMode();
+  const meta = LINK_ROUTING_META[mode];
+  btn.innerHTML = meta.icon;
+  btn.title = `布线模式：${meta.label}`;
+  btn.setAttribute('aria-label', btn.title);
+  btn.dataset.mode = mode;
+  btn.classList.toggle('active', mode !== 'auto');
+}
+
+function cycleLinkRoutingMode() {
+  const current = getLinkRoutingMode();
+  const next = LINK_ROUTING_MODES[(LINK_ROUTING_MODES.indexOf(current) + 1) % LINK_ROUTING_MODES.length];
+  appState.canvas.linkRoutingMode = next;
+  updateLinkRoutingModeButton();
+  renderBlocks();
+  saveCurrentCanvas();
+}
+
 function setCanvasLayoutLocked(locked) {
   if (appState.canvas.blocks.length === 0) return;
 
@@ -838,6 +884,7 @@ function toggleCanvasLayoutLock() {
 function syncCanvasAfterRender(newIds) {
   renderBlocks(newIds);
   updateLayoutLockButton();
+  updateLinkRoutingModeButton();
 }
 
 function snapshotLockedBlockGeometry() {
@@ -879,6 +926,34 @@ function runManualAutoLayout() {
     renderBlocks();
     syncBlockSizes({ adaptForAutoLayout: true });
     autoLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups);
+    renderBlocks();
+    syncBlockSizes();
+    renderBlocks();
+    fitToView();
+    layoutCompleted = true;
+  } finally {
+    if (layoutCompleted) pushHistory();
+    syncCanvasAfterRender();
+    saveCurrentCanvas();
+  }
+}
+
+function runCompactLayout() {
+  try {
+    assertCanvasIntegrity(appState.canvas);
+  } catch (err) {
+    alert('紧凑布局前检查失败：\n' + err.message);
+    return;
+  }
+
+  let layoutCompleted = false;
+
+  try {
+    renderBlocks();
+    syncBlockSizes({ adaptForAutoLayout: true });
+    compactLayout(appState.canvas.blocks, appState.canvas.connections, appState.canvas.groups, {
+      routingMode: getLinkRoutingMode(),
+    });
     renderBlocks();
     syncBlockSizes();
     renderBlocks();
@@ -2310,6 +2385,7 @@ function init() {
           blocks: [],
           connections: [],
           groups: [],
+          linkRoutingMode: 'auto',
           memory: '',
           sessions: [],
           activeSessionId: '',
@@ -2317,6 +2393,7 @@ function init() {
       }
     }
   }
+  normalizeCanvas(appState.canvas);
   // 纭繚 groups 瀛楁瀛樺湪
   if (!appState.canvas.groups) {
     appState.canvas.groups = [];
@@ -2637,12 +2714,20 @@ function bindEvents() {
   if (dom.layoutLockBtn) {
     dom.layoutLockBtn.addEventListener('click', toggleCanvasLayoutLock);
   }
+  if (dom.linkRoutingModeBtn) {
+    dom.linkRoutingModeBtn.addEventListener('click', cycleLinkRoutingMode);
+  }
   if (dom.fileUploadBtn) {
     dom.fileUploadBtn.addEventListener('click', showFileUploadMenu);
   }
   dom.autoLayoutBtn.addEventListener('click', () => {
     runManualAutoLayout();
   });
+  if (dom.compactLayoutBtn) {
+    dom.compactLayoutBtn.addEventListener('click', () => {
+      runCompactLayout();
+    });
+  }
   
   if (dom.aiOrganizeBtn) {
     dom.aiOrganizeBtn.addEventListener('click', async () => {
@@ -3099,10 +3184,12 @@ function applyCanvasFixture(canvas, fitDelay = 500) {
   appState.canvas = {
     ...canvas,
     groups: canvas.groups || [],
+    linkRoutingMode: canvas.linkRoutingMode || 'auto',
     memory: canvas.memory || '',
     sessions: canvas.sessions || [],
     activeSessionId: canvas.activeSessionId || '',
   };
+  normalizeCanvas(appState.canvas);
   dom.boardTitle.textContent = appState.canvas.title;
   syncCanvasMemoryDraft();
   syncChatSessionUI();
@@ -3342,10 +3429,12 @@ function handleImportJson(content) {
       blocks: data.blocks,
       connections: data.connections,
       groups: data.groups || [],
+      linkRoutingMode: data.linkRoutingMode || 'auto',
       memory: data.memory || '',
       sessions: data.sessions || [],
       activeSessionId: data.activeSessionId || '',
     };
+    normalizeCanvas(appState.canvas);
     repairCanvasTextFormatting(appState.canvas);
 
     // 鏇存柊 UI
@@ -3369,6 +3458,7 @@ function handleImportMarkdown(content) {
     appState.canvas.memory = '';
     appState.canvas.sessions = [];
     appState.canvas.activeSessionId = '';
+    normalizeCanvas(appState.canvas);
     dom.boardTitle.textContent = canvasData.title;
     syncCanvasMemoryDraft();
     syncChatSessionUI();

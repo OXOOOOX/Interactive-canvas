@@ -26,6 +26,7 @@ const LEAF_CLUSTER_MIN = 3;      // 叶子聚类最小数量阈值
 const ROUTING_RAIL_TO_CHILD_GAP = 96;
 const ROUTING_PARENT_TO_RAIL_MIN_GAP = 36;
 const ROUTING_RAIL_TO_CHILD_MIN_GAP = 18;
+const COMPACT_COMB_RAIL_CLEARANCE = ROUTING_PARENT_TO_RAIL_MIN_GAP + ROUTING_RAIL_TO_CHILD_GAP + 24;
 const TALL_LEAF_HEIGHT_THRESHOLD = 500;
 const TALL_LEAF_OFFSET = 60;
 const LEAF_DIMENSION_SIMILARITY_THRESHOLD = 1.2;
@@ -2656,6 +2657,247 @@ export function autoLayout(blocks, connections, groups = []) {
 /**
  * 为新增节点找到一个不重叠的位置
  */
+function getMovableBlocks(blocks) {
+  return blocks.filter(block => !isPositionLocked(block));
+}
+
+function getLongestChain(blocks, connections) {
+  const blockIds = new Set(blocks.map(block => block.id));
+  const childrenByParent = new Map();
+  const incomingCount = new Map();
+
+  for (const block of blocks) {
+    childrenByParent.set(block.id, []);
+    incomingCount.set(block.id, 0);
+  }
+
+  for (const conn of connections) {
+    if (!blockIds.has(conn.fromId) || !blockIds.has(conn.toId)) continue;
+    childrenByParent.get(conn.fromId)?.push(conn.toId);
+    incomingCount.set(conn.toId, (incomingCount.get(conn.toId) || 0) + 1);
+  }
+
+  const memo = new Map();
+  const visiting = new Set();
+  const walk = (id) => {
+    if (memo.has(id)) return memo.get(id);
+    if (visiting.has(id)) return [id];
+    visiting.add(id);
+
+    let best = [id];
+    const children = childrenByParent.get(id) || [];
+    for (const childId of children) {
+      const candidate = [id, ...walk(childId)];
+      if (candidate.length > best.length) best = candidate;
+    }
+
+    visiting.delete(id);
+    memo.set(id, best);
+    return best;
+  };
+
+  const roots = blocks
+    .filter(block => (incomingCount.get(block.id) || 0) === 0)
+    .map(block => block.id);
+  const starts = roots.length > 0 ? roots : blocks.map(block => block.id);
+
+  let longest = [];
+  for (const id of starts) {
+    const chain = walk(id);
+    if (chain.length > longest.length) longest = chain;
+  }
+
+  return longest;
+}
+
+function placeCompactBranches(blocks, connections, mainChainIds, blockMap, options = {}) {
+  const mainSet = new Set(mainChainIds);
+  const placed = new Set(mainChainIds);
+  const branchCounts = new Map();
+  const reserveCombRail = options.routingMode === 'comb';
+
+  for (const conn of connections) {
+    if (!mainSet.has(conn.fromId) || mainSet.has(conn.toId)) continue;
+    const parent = blockMap[conn.fromId];
+    const child = blockMap[conn.toId];
+    if (!parent || !child || isPositionLocked(child)) continue;
+
+    const index = branchCounts.get(parent.id) || 0;
+    branchCounts.set(parent.id, index + 1);
+
+    const parentWidth = getBlockWidth(parent);
+    const childWidth = getBlockWidth(child);
+    const side = reserveCombRail ? 1 : (parent.y < 0 ? -1 : 1);
+    const row = Math.floor(index / 2);
+    const slot = index % 2 === 0 ? -1 : 1;
+    child.x = parent.x + parentWidth / 2 - childWidth / 2 + slot * (childWidth + 40);
+    const branchGap = reserveCombRail ? COMPACT_COMB_RAIL_CLEARANCE : 90;
+    child.y = parent.y + side * (getBlockHeight(parent) + branchGap + row * (getBlockHeight(child) + 40));
+    placed.add(child.id);
+  }
+
+  const remaining = blocks.filter(block => !placed.has(block.id) && !isPositionLocked(block));
+  const bbox = getBoundingBox(blocks.filter(block => placed.has(block.id)));
+  remaining.forEach((block, index) => {
+    const width = getBlockWidth(block);
+    block.x = bbox.x + (index % 4) * (width + MIN_H_GAP);
+    block.y = bbox.y + bbox.height + 140 + Math.floor(index / 4) * (getBlockHeight(block) + MIN_V_GAP);
+  });
+}
+
+function getDominantStarRoot(blocks, connections) {
+  const blockIds = new Set(blocks.map(block => block.id));
+  const incomingCount = new Map(blocks.map(block => [block.id, 0]));
+  const childrenByParent = new Map(blocks.map(block => [block.id, []]));
+
+  for (const conn of connections) {
+    if (!blockIds.has(conn.fromId) || !blockIds.has(conn.toId)) continue;
+    incomingCount.set(conn.toId, (incomingCount.get(conn.toId) || 0) + 1);
+    childrenByParent.get(conn.fromId)?.push(conn.toId);
+  }
+
+  let best = null;
+  for (const block of blocks) {
+    const children = childrenByParent.get(block.id) || [];
+    if ((incomingCount.get(block.id) || 0) !== 0) continue;
+    if (!best || children.length > best.children.length) {
+      best = { id: block.id, children };
+    }
+  }
+
+  if (!best) return null;
+  const threshold = Math.max(4, Math.ceil((blocks.length - 1) * 0.55));
+  return best.children.length >= threshold ? best : null;
+}
+
+function applyCompactStarLayout(blocks, starRoot, blockMap, options = {}) {
+  const root = blockMap[starRoot.id];
+  if (!root) return false;
+  const reserveCombRail = options.routingMode === 'comb';
+
+  const children = starRoot.children
+    .map(id => blockMap[id])
+    .filter(block => block && !isPositionLocked(block));
+  if (children.length === 0) return false;
+
+  const rootWidth = getBlockWidth(root);
+  const rootHeight = getBlockHeight(root);
+  if (!isPositionLocked(root)) {
+    root.x = 100;
+    root.y = 80;
+  }
+
+  const widestChild = Math.max(...children.map(child => getBlockWidth(child)));
+  const columnCount = children.length <= 10 || widestChild >= 520
+    ? 2
+    : Math.min(3, Math.max(2, Math.ceil(Math.sqrt(children.length))));
+  const columns = Array.from({ length: columnCount }, () => ({ blocks: [], height: 0, width: 0 }));
+  const orderedChildren = [...children].sort((a, b) => getBlockHeight(b) - getBlockHeight(a));
+
+  for (const child of orderedChildren) {
+    const target = columns.reduce((best, column) => (column.height < best.height ? column : best), columns[0]);
+    target.blocks.push(child);
+    target.height += getBlockHeight(child) + MIN_V_GAP;
+    target.width = Math.max(target.width, getBlockWidth(child));
+  }
+
+  const columnGap = reserveCombRail ? 110 : 80;
+  const rowGap = reserveCombRail ? 72 : 56;
+  const maxColumnHeight = Math.max(...columns.map(column => Math.max(0, column.height - MIN_V_GAP)));
+  const rootCenterY = root.y + rootHeight / 2;
+  const startY = reserveCombRail
+    ? Math.max(80, root.y + rootHeight + COMPACT_COMB_RAIL_CLEARANCE)
+    : Math.max(80, rootCenterY - maxColumnHeight / 2);
+  let x = root.x + rootWidth + 140;
+
+  for (const column of columns) {
+    let y = startY;
+    for (const child of column.blocks) {
+      const width = getBlockWidth(child);
+      child.x = x + (column.width - width) / 2;
+      child.y = y;
+      y += getBlockHeight(child) + rowGap;
+    }
+    x += column.width + columnGap;
+  }
+
+  const totalChildHeight = maxColumnHeight;
+  if (!reserveCombRail && !isPositionLocked(root)) {
+    root.y = startY + Math.max(0, (totalChildHeight - rootHeight) / 2);
+  }
+
+  return true;
+}
+
+/**
+ * Compact layout for linear itineraries, timelines, and light flow charts.
+ * Locked and positionLocked blocks stay fixed; regular blocks are reflowed
+ * because the user explicitly requested this layout mode.
+ */
+export function compactLayout(blocks, connections, groups = [], options = {}) {
+  if (blocks.length === 0) return;
+  if (!validateLayoutInput(blocks)) return;
+
+  const lockedGeometry = snapshotLockedBlockGeometry(blocks);
+  const movableBlocks = getMovableBlocks(blocks);
+  if (movableBlocks.length === 0) return;
+
+  const blockMap = {};
+  for (const block of blocks) blockMap[block.id] = block;
+
+  const starRoot = getDominantStarRoot(movableBlocks, connections);
+  if (starRoot && applyCompactStarLayout(blocks, starRoot, blockMap, options)) {
+    normalizeLayoutBounds(blocks, {}, blockMap);
+    restoreLockedBlockGeometry(blocks, lockedGeometry);
+    return;
+  }
+
+  const mainChainIds = getLongestChain(movableBlocks, connections);
+  const chain = mainChainIds.map(id => blockMap[id]).filter(Boolean);
+  const chainBlocks = chain.length > 0 ? chain : movableBlocks;
+
+  const avgWidth = chainBlocks.reduce((sum, block) => sum + getBlockWidth(block), 0) / chainBlocks.length;
+  const avgHeight = chainBlocks.reduce((sum, block) => sum + getBlockHeight(block), 0) / chainBlocks.length;
+  const targetColumns = Math.max(2, Math.ceil(Math.sqrt(chainBlocks.length * 16 / 9)));
+  const columnGap = Math.max(MIN_H_GAP, avgWidth * 0.55);
+  const bandGap = options.routingMode === 'comb'
+    ? Math.max(COMPACT_COMB_RAIL_CLEARANCE, avgHeight * 1.55)
+    : Math.max(MIN_V_GAP, avgHeight * 1.25);
+
+  chainBlocks.forEach((block, index) => {
+    if (isPositionLocked(block)) return;
+    const col = index % targetColumns;
+    const band = Math.floor(index / targetColumns);
+    const side = index % 2 === 0 ? -1 : 1;
+    const width = getBlockWidth(block);
+    block.x = col * (avgWidth + columnGap) - width / 2;
+    block.y = side * (bandGap / 2 + band * (avgHeight + bandGap));
+  });
+
+  placeCompactBranches(blocks, connections, mainChainIds, blockMap, options);
+
+  if (groups && groups.length > 0) {
+    groups.forEach(group => {
+      const representative = blockMap[group.blockIds[0]];
+      if (!representative) return;
+      const repWidth = getBlockWidth(representative);
+      const repCx = representative.x + repWidth / 2;
+      const repCy = representative.y;
+
+      group.blockIds.forEach((id, index) => {
+        const block = blockMap[id];
+        if (!block || block.id === representative.id || isPositionLocked(block)) return;
+        const width = getBlockWidth(block);
+        block.x = repCx - width / 2 + (index % 2 === 0 ? -1 : 1) * (width + 36);
+        block.y = repCy + Math.ceil(index / 2) * (getBlockHeight(block) + 36);
+      });
+    });
+  }
+
+  normalizeLayoutBounds(blocks, {}, blockMap);
+  restoreLockedBlockGeometry(blocks, lockedGeometry);
+}
+
 export function findFreePosition(blocks, parentId, connections) {
   const parent = blocks.find(b => b.id === parentId);
   if (!parent) {

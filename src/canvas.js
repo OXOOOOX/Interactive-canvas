@@ -1273,31 +1273,66 @@ function renderLinks() {
     return [...hitIds].map(id => blockRects.find(r => r.id === id)).filter(Boolean);
   }
 
-  function createBundleBgPath(d, stroke, role) {
+  function getBundleBgWidth(count = 1) {
+    return Math.max(4, Math.min(12, 3 + Math.sqrt(Math.max(1, count)) * 2.2));
+  }
+
+  function getStructureWidth(count = 1) {
+    return Math.max(2, Math.min(6, 1.5 + Math.sqrt(Math.max(1, count)) * 1.05));
+  }
+
+  function createBundleBgPath(d, stroke, role, { count = 1, opacity = 0.65 } = {}) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
     path.setAttribute('stroke', stroke || '#000');
-    path.setAttribute('stroke-width', '8');
+    path.setAttribute('stroke-width', String(getBundleBgWidth(count)));
     path.setAttribute('stroke-linecap', 'round');
     path.setAttribute('fill', 'none');
     path.setAttribute('data-link-role', `bundle-bg-${role}`);
+    path.setAttribute('data-bundle-count', String(count));
     path.style.pointerEvents = 'none';
-    path.style.opacity = '0.8';
+    path.style.opacity = String(opacity);
     $linkLayer.appendChild(path);
     return path;
   }
 
-  function createStructuralPath(d, stroke, role) {
+  function createStructuralPath(d, stroke, role, { count = 1, opacity = null } = {}) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
     path.setAttribute('stroke', stroke || '#000');
-    path.setAttribute('stroke-width', '3');
+    path.setAttribute('stroke-width', String(getStructureWidth(count)));
     path.setAttribute('fill', 'none');
     path.setAttribute('data-link-role', role);
+    path.setAttribute('data-bundle-count', String(count));
     path.classList.add('link-structure');
     path.style.pointerEvents = 'none';
+    if (opacity !== null) path.style.opacity = String(opacity);
+    path.style.strokeWidth = String(getStructureWidth(count));
     $linkLayer.appendChild(path);
     return path;
+  }
+
+  function createWeightedRailPaths(leftmost, rightmost, attachX, childCxList, y, stroke, role, createPath) {
+    const points = [...new Set([leftmost, rightmost, attachX, ...childCxList]
+      .filter(Number.isFinite)
+      .map(x => Math.round(x * 100) / 100))]
+      .sort((a, b) => a - b);
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const x1 = points[i];
+      const x2 = points[i + 1];
+      if (Math.abs(x2 - x1) < 1) continue;
+
+      const midX = (x1 + x2) / 2;
+      const count = childCxList.filter(childX => {
+        const minX = Math.min(attachX, childX);
+        const maxX = Math.max(attachX, childX);
+        return midX >= minX && midX <= maxX;
+      }).length;
+
+      if (count <= 0) continue;
+      createPath(`M ${x1} ${y} L ${x2} ${y}`, stroke, role, { count });
+    }
   }
 
   function buildStructuralSegmentPath(sx, sy, ex, ey, fromId = null, toId = null) {
@@ -1307,12 +1342,125 @@ function renderLinks() {
   }
 
   function isNearlyVerticalPath(sx, sy, ex, ey) {
-    return Math.abs(sx - ex) <= 24 && ey > sy;
+    return Math.abs(sx - ex) <= 24 && Math.abs(ey - sy) > 8;
   }
 
   function canUseStraightVerticalPath(sx, sy, ex, ey, fromId, toId) {
     if (!isNearlyVerticalPath(sx, sy, ex, ey)) return false;
     return findObstacles(sx, sy, ex, ey, fromId, toId, { strict: true }).length === 0;
+  }
+
+  function getBlockVisualHeight(block) {
+    const el = block ? $blockCanvas.querySelector(`[data-id="${block.id}"]`) : null;
+    return el ? el.offsetHeight : BLOCK_MIN_H;
+  }
+
+  function getSideFanDirection(from, conns) {
+    if (!from || conns.length < 2) return null;
+    const mode = appState.canvas.linkRoutingMode || 'auto';
+    if (mode === 'comb') return null;
+    if (mode !== 'fan' && conns.length < 4) return null;
+    const threshold = mode === 'fan'
+      ? Math.max(1, Math.ceil(conns.length * 0.5))
+      : Math.ceil(conns.length * 0.7);
+    const fromLeft = from.x;
+    const fromRight = from.x + getBlockWidth(from);
+    let rightCount = 0;
+    let leftCount = 0;
+    for (const conn of conns) {
+      const child = blockMap[conn.toId];
+      if (child && child.x >= fromRight + 80) rightCount++;
+      if (child && child.x + getBlockWidth(child) <= fromLeft - 80) leftCount++;
+    }
+    if (rightCount >= threshold && rightCount >= leftCount) return 'right';
+    if (leftCount >= threshold && leftCount > rightCount) return 'left';
+    return null;
+  }
+
+  function buildSideHierarchy(from, conns, direction = 'right') {
+    const fromLeft = from.x;
+    const fromRight = from.x + getBlockWidth(from);
+    const fromSideX = direction === 'left' ? fromLeft : fromRight;
+    const fromCy = from.y + getBlockVisualHeight(from) / 2;
+    const children = conns
+      .map(conn => blockMap[conn.toId])
+      .filter(Boolean)
+      .map(child => ({
+        block: child,
+        left: child.x,
+        right: child.x + getBlockWidth(child),
+        cy: child.y + getBlockVisualHeight(child) / 2,
+      }))
+      .filter(item => direction === 'left'
+        ? item.right <= fromLeft - 80
+        : item.left >= fromRight + 80);
+
+    if (children.length === 0) return null;
+
+    const minLeft = Math.min(...children.map(item => item.left));
+    const maxRight = Math.max(...children.map(item => item.right));
+    const railX = direction === 'left'
+      ? Math.min(fromLeft - 90, maxRight + 70)
+      : Math.max(fromRight + 90, minLeft - 70);
+    const railYs = [fromCy];
+    for (const child of children) {
+      const corner = Math.min(18, Math.max(8, Math.abs(child.cy - fromCy) / 8));
+      if (child.cy >= fromCy) {
+        railYs.push(child.cy - corner);
+      } else {
+        railYs.push(child.cy + corner);
+      }
+    }
+
+    return {
+      direction,
+      fromSideX,
+      fromCy,
+      railX,
+      minCy: Math.min(...railYs),
+      maxCy: Math.max(...railYs),
+    };
+  }
+
+  function buildSideFanPath(from, to, hierarchy = null) {
+    const direction = hierarchy?.direction || 'right';
+    const fromLeft = from.x;
+    const fromRight = from.x + getBlockWidth(from);
+    const fromSideX = direction === 'left' ? fromLeft : fromRight;
+    const fromCy = from.y + getBlockVisualHeight(from) / 2;
+    const toLeft = to.x;
+    const toRight = to.x + getBlockWidth(to);
+    const toSideX = direction === 'left' ? toRight : toLeft;
+    const toCy = to.y + getBlockVisualHeight(to) / 2;
+    if (hierarchy) {
+      const corner = Math.min(18, Math.max(8, Math.abs(toCy - hierarchy.fromCy) / 8));
+      const verticalDir = toCy >= hierarchy.fromCy ? 1 : -1;
+      const horizontalDir = direction === 'left' ? -1 : 1;
+      return {
+        d: `M ${fromSideX} ${fromCy} ` +
+           `L ${hierarchy.railX - horizontalDir * corner} ${fromCy} ` +
+           `Q ${hierarchy.railX} ${fromCy}, ${hierarchy.railX} ${fromCy + verticalDir * corner} ` +
+           `L ${hierarchy.railX} ${toCy - verticalDir * corner} ` +
+           `Q ${hierarchy.railX} ${toCy}, ${hierarchy.railX + horizontalDir * corner} ${toCy} ` +
+           `L ${toSideX} ${toCy}`,
+        startX: fromSideX,
+        startY: fromCy,
+        endX: toSideX,
+        endY: toCy,
+      };
+    }
+
+    const gap = Math.max(80, Math.abs(toSideX - fromSideX));
+    const horizontalDir = direction === 'left' ? -1 : 1;
+    const c1x = fromSideX + horizontalDir * gap * 0.45;
+    const c2x = toSideX - horizontalDir * gap * 0.45;
+    return {
+      d: `M ${fromSideX} ${fromCy} C ${c1x} ${fromCy}, ${c2x} ${toCy}, ${toSideX} ${toCy}`,
+      startX: fromSideX,
+      startY: fromCy,
+      endX: toSideX,
+      endY: toCy,
+    };
   }
 
   function bezierCubicX(t, p0, p1, p2, p3) {
@@ -1335,7 +1483,18 @@ function renderLinks() {
       return `M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`;
     }
 
-    const sorted = [...obstacles].sort((a, b) => a.top - b.top);
+    const yDir = ey >= sy ? 1 : -1;
+    const toRouteY = (y) => y * yDir;
+    const fromRouteY = (y) => y * yDir;
+    const routeSy = toRouteY(sy);
+    const routeEy = toRouteY(ey);
+    const routeObstacles = obstacles.map(obs => ({
+      ...obs,
+      top: yDir === 1 ? obs.top : -obs.bottom,
+      bottom: yDir === 1 ? obs.bottom : -obs.top,
+    }));
+
+    const sorted = [...routeObstacles].sort((a, b) => a.top - b.top);
     const corridorLeft = Math.min(sx, ex);
     const corridorRight = Math.max(sx, ex);
     const sidePadding = 24;
@@ -1356,10 +1515,10 @@ function renderLinks() {
     const rightCost = Math.abs(sx - rightLane) + Math.abs(ex - rightLane);
     const detourX = leftCost <= rightCost ? leftLane : rightLane;
 
-    const entryBase = Math.min(firstObs.top - verticalInset, sy + 36);
-    const exitBase = Math.max(lastObs.bottom + verticalInset, ey - 36);
-    const entryY = Math.max(sy + 8, Math.min(entryBase, ey - 24));
-    const exitY = Math.min(ey - 8, Math.max(exitBase, sy + 24));
+    const entryBase = Math.min(firstObs.top - verticalInset, routeSy + 36);
+    const exitBase = Math.max(lastObs.bottom + verticalInset, routeEy - 36);
+    const entryY = Math.max(routeSy + 8, Math.min(entryBase, routeEy - 24));
+    const exitY = Math.min(routeEy - 8, Math.max(exitBase, routeSy + 24));
     const effectiveEntryY = Math.min(entryY, exitY - 16);
     const effectiveExitY = Math.max(exitY, effectiveEntryY + 16);
 
@@ -1373,14 +1532,14 @@ function renderLinks() {
     const dirToEnd = ex >= detourX ? 1 : -1;
 
     return `M ${sx} ${sy} ` +
-           `L ${sx} ${effectiveEntryY} ` +
-           `Q ${sx} ${effectiveEntryY + availableCorner}, ${sx + dirFromStart * availableCorner} ${effectiveEntryY + availableCorner} ` +
-           `L ${detourX - dirFromStart * availableCorner} ${effectiveEntryY + availableCorner} ` +
-           `Q ${detourX} ${effectiveEntryY + availableCorner}, ${detourX} ${effectiveEntryY + 2 * availableCorner} ` +
-           `L ${detourX} ${effectiveExitY - availableCorner} ` +
-           `Q ${detourX} ${effectiveExitY}, ${detourX + dirToEnd * availableCorner} ${effectiveExitY} ` +
-           `L ${ex - dirToEnd * availableCorner} ${effectiveExitY} ` +
-           `Q ${ex} ${effectiveExitY}, ${ex} ${effectiveExitY + availableCorner} ` +
+           `L ${sx} ${fromRouteY(effectiveEntryY)} ` +
+           `Q ${sx} ${fromRouteY(effectiveEntryY + availableCorner)}, ${sx + dirFromStart * availableCorner} ${fromRouteY(effectiveEntryY + availableCorner)} ` +
+           `L ${detourX - dirFromStart * availableCorner} ${fromRouteY(effectiveEntryY + availableCorner)} ` +
+           `Q ${detourX} ${fromRouteY(effectiveEntryY + availableCorner)}, ${detourX} ${fromRouteY(effectiveEntryY + 2 * availableCorner)} ` +
+           `L ${detourX} ${fromRouteY(effectiveExitY - availableCorner)} ` +
+           `Q ${detourX} ${fromRouteY(effectiveExitY)}, ${detourX + dirToEnd * availableCorner} ${fromRouteY(effectiveExitY)} ` +
+           `L ${ex - dirToEnd * availableCorner} ${fromRouteY(effectiveExitY)} ` +
+           `Q ${ex} ${fromRouteY(effectiveExitY)}, ${ex} ${fromRouteY(effectiveExitY + availableCorner)} ` +
            `L ${ex} ${ey}`;
   }
 
@@ -1397,11 +1556,33 @@ function renderLinks() {
 
   // ====== 源端汇聚（父 → 多子）======
   const junctionYMap = {};
+  const sideHierarchyMap = {};
   const bundledFromSet = new Set();
 
   for (const [fromId, conns] of Object.entries(connsByFrom)) {
     if (conns.length < 2) continue;
     const from = blockMap[fromId];
+    const sideFanDirection = getSideFanDirection(from, conns);
+    if (sideFanDirection) {
+      const hierarchy = buildSideHierarchy(from, conns, sideFanDirection);
+      if (hierarchy) {
+        sideHierarchyMap[fromId] = hierarchy;
+        const bundleColor = from.color || '#000';
+        createStructuralPath(
+          `M ${hierarchy.fromSideX} ${hierarchy.fromCy} L ${hierarchy.railX} ${hierarchy.fromCy}`,
+          bundleColor,
+          'fan-trunk',
+          { count: conns.length, opacity: 0.55 }
+        );
+        createStructuralPath(
+          `M ${hierarchy.railX} ${hierarchy.minCy} L ${hierarchy.railX} ${hierarchy.maxCy}`,
+          bundleColor,
+          'fan-rail',
+          { count: conns.length, opacity: 0.55 }
+        );
+      }
+      continue;
+    }
     const fromEl = $blockCanvas.querySelector(`[data-id="${from.id}"]`);
     const fromH = fromEl ? fromEl.offsetHeight : BLOCK_MIN_H;
     const parentCx = from.x + getBlockWidth(from) / 2;
@@ -1439,37 +1620,52 @@ function renderLinks() {
       createBundleBgPath(
         buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
-        'bundle-trunk'
+        'bundle-trunk',
+        { count: conns.length }
       );
-      createBundleBgPath(
-        `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`,
+      const railAttachX = Math.max(leftmost, Math.min(rightmost, parentCx));
+      createWeightedRailPaths(
+        leftmost,
+        rightmost,
+        railAttachX,
+        childCxList,
+        junctionY,
         bundleColor,
-        'bundle-rail'
+        'bundle-rail',
+        createBundleBgPath
       );
       if (parentCx < leftmost || parentCx > rightmost) {
         const railEnd = parentCx < leftmost ? leftmost : rightmost;
         createBundleBgPath(
           `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`,
           bundleColor,
-          'bundle-elbow'
+          'bundle-elbow',
+          { count: conns.length }
         );
       }
       createStructuralPath(
         buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
-        'bundle-trunk'
+        'bundle-trunk',
+        { count: conns.length }
       );
-      createStructuralPath(
-        `M ${leftmost} ${junctionY} L ${rightmost} ${junctionY}`,
+      createWeightedRailPaths(
+        leftmost,
+        rightmost,
+        railAttachX,
+        childCxList,
+        junctionY,
         bundleColor,
-        'bundle-rail'
+        'bundle-rail',
+        createStructuralPath
       );
       if (parentCx < leftmost || parentCx > rightmost) {
         const railEnd = parentCx < leftmost ? leftmost : rightmost;
         createStructuralPath(
           `M ${parentCx} ${junctionY} L ${railEnd} ${junctionY}`,
           bundleColor,
-          'bundle-elbow'
+          'bundle-elbow',
+          { count: conns.length }
         );
       }
     } else {
@@ -1477,12 +1673,14 @@ function renderLinks() {
       createBundleBgPath(
         buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
-        'bundle-trunk'
+        'bundle-trunk',
+        { count: conns.length }
       );
       createStructuralPath(
         buildStructuralSegmentPath(parentCx, parentBottom, parentCx, junctionY, from.id),
         bundleColor,
-        'bundle-trunk'
+        'bundle-trunk',
+        { count: conns.length }
       );
     }
   }
@@ -1514,12 +1712,14 @@ function renderLinks() {
     createBundleBgPath(
       `M ${toCx} ${gatherY} L ${toCx} ${to.y}`,
       gatherColor,
-      'gather-trunk'
+      'gather-trunk',
+      { count: conns.length }
     );
     createStructuralPath(
       `M ${toCx} ${gatherY} L ${toCx} ${to.y}`,
       gatherColor,
-      'gather-trunk'
+      'gather-trunk',
+      { count: conns.length }
     );
   }
 
@@ -1541,10 +1741,12 @@ function renderLinks() {
     const y1 = from.y + fromH;
     const childCx = to.x + toW / 2;
     const y2 = to.y;
+    const fromConns = connsByFrom[conn.fromId] || [];
+    const sideFanDirection = getSideFanDirection(from, fromConns);
+    const useSideFan = Boolean(sideFanDirection);
 
     // 判断是否参与源端梳状布线
     const jY = junctionYMap[conn.fromId];
-    const fromConns = connsByFrom[conn.fromId] || [];
     const isCombRouting = jY !== undefined && fromConns.length >= 4;
     let spread = 0;
     if (isCombRouting) {
@@ -1595,7 +1797,15 @@ function renderLinks() {
 
     let pathD;
     let routeType;
-    if (canGoStraightDown) {
+    if (useSideFan) {
+      routeType = 'fan';
+      const fanPath = buildSideFanPath(from, to, sideHierarchyMap[conn.fromId]);
+      pathD = fanPath.d;
+      startX = fanPath.startX;
+      startY = fanPath.startY;
+      endX = fanPath.endX;
+      endY = fanPath.endY;
+    } else if (canGoStraightDown) {
       routeType = 'direct';
       pathD = `M ${startX} ${startY} L ${endX} ${endY}`;
     } else if (obstacles.length > 0) {
@@ -1630,7 +1840,7 @@ function renderLinks() {
     }
 
     const isStructuredRoute = routeType === 'bundle' || routeType === 'bundle-gather' || routeType === 'comb' || routeType === 'comb-gather' || routeType === 'gather';
-    const dashRole = routeType === 'detour' ? 'detour' : (isStructuredRoute ? 'structured' : 'flow');
+    const dashRole = routeType === 'fan' ? 'fan' : (routeType === 'detour' ? 'detour' : (isStructuredRoute ? 'structured' : 'flow'));
 
     let path = $linkLayer.querySelector(`path[data-conn-id="${conn.id}"]`);
     if (!path) {

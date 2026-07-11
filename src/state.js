@@ -55,9 +55,9 @@ export async function suggestGroupName(blockIds, config = null) {
 
     console.log('[AI 组名] 完整配置:', config);
 
-    const endpoint = config?.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm;
+    const endpoint = config?.llmEndpoint || ENDPOINT_PRESETS.deepseekV4Pro.llm;
     const apiKey = config?.llmApiKey || '';
-    const model = config?.llmModel || 'qwen-plus';
+    const model = config?.llmModel || ENDPOINT_PRESETS.deepseekV4Pro.llmModel || 'deepseek-v4-pro';
 
     console.log('[AI 组名] 使用配置:', { endpoint, model, apiKey: apiKey ? `${apiKey.slice(0, 8)}...` : '空' });
 

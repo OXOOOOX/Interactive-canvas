@@ -11,6 +11,7 @@ import {
   normalizeSearchPlan,
   planSearchWithLlm,
   reconcileSearchPlan,
+  runResearchAgent,
   selectSearchResultsWithLlm,
   shouldAutoSearch,
   shouldUseBuiltinSearch,
@@ -121,6 +122,19 @@ test('contextual company info request reuses previous company topic', () => {
   assert.equal(plan.reason, 'rule_fallback_contextual_search');
   assert.match(plan.query, /上海智能算力/);
   assert.match(plan.query, /智算科技/);
+});
+
+test('contextual company search skips greeting and uses assistant-mentioned entity', () => {
+  const messages = [
+    { role: 'user', content: '你好。' },
+    { role: 'assistant', content: '你好！我这边随时准备着。刚才我们在聊的是，你想查上海智能算力科技有限公司的详细信息。' },
+    { role: 'user', content: '帮我搜索一下这个公司的资料。' },
+  ];
+  const plan = buildFallbackSearchPlan('帮我搜索一下这个公司的资料。', messages);
+
+  assert.equal(plan.action, 'search');
+  assert.doesNotMatch(plan.query, /你好/);
+  assert.match(plan.query, /上海智能算力/);
 });
 
 test('retry search request reuses previous concrete search topic', () => {
@@ -397,4 +411,115 @@ test('search context tells assistant to summarize results instead of outputting 
   assert.match(context, /Do NOT output search plans/);
   assert.match(context, /<search>.*<query>/s);
   assert.match(context, /summarize what was found/);
+});
+
+test('runResearchAgent executes auto search and emits ordered status events', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    const content = fetchCalls === 1
+      ? { action: 'search', query: '上海智能算力 科技有限公司 资料', question: '', reason: 'explicit search' }
+      : { keep: [0], reason: 'company result is relevant' };
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(content) } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  try {
+    const result = await runResearchAgent({
+      query: '帮我搜索一下这个公司的资料。',
+      messages: [
+        { role: 'assistant', content: '我们刚才聊的是上海智能算力科技有限公司。' },
+        { role: 'user', content: '帮我搜索一下这个公司的资料。' },
+      ],
+      searchMode: 'auto',
+      provider: 'deepseekV4Pro',
+      endpoint: 'https://example.test/chat/completions',
+      model: 'test-model',
+      apiKey: 'test-key',
+      config: { searchApiKey: 'search-key' },
+      hasExternalSearchKey: () => true,
+      resolveSearchProvider: () => 'baidu',
+      runExternalSearch: async () => [
+        { title: '上海智能算力科技有限公司官网', url: 'https://example.test/company', snippet: '公司资料。' },
+      ],
+    });
+
+    assert.equal(result.action, 'search');
+    assert.equal(result.results.length, 1);
+    assert.deepEqual(result.statusEvents.map(event => event.phase), ['searching', 'searched', 'thinking']);
+    assert.match(result.searchContext, /Web search has already been executed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runResearchAgent reports clarification without external search', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{
+      message: {
+        content: JSON.stringify({
+          action: 'clarify',
+          query: '',
+          question: '你想搜索哪个公司的资料？',
+          reason: 'missing company entity',
+        }),
+      },
+    }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  try {
+    let searched = false;
+    const result = await runResearchAgent({
+      query: '帮我搜这个',
+      messages: [{ role: 'user', content: '帮我搜这个' }],
+      searchMode: 'auto',
+      provider: 'deepseekV4Pro',
+      endpoint: 'https://example.test/chat/completions',
+      model: 'test-model',
+      apiKey: 'test-key',
+      config: { searchApiKey: 'search-key' },
+      hasExternalSearchKey: () => true,
+      resolveSearchProvider: () => 'baidu',
+      runExternalSearch: async () => {
+        searched = true;
+        return [];
+      },
+    });
+
+    assert.equal(searched, false);
+    assert.equal(result.action, 'clarify');
+    assert.match(result.searchClarificationContext, /你想搜索哪个公司的资料/);
+    assert.deepEqual(result.statusEvents.map(event => event.phase), ['search_needs_clarification']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runResearchAgent does nothing when search mode is off', async () => {
+  let searched = false;
+  const result = await runResearchAgent({
+    query: '帮我搜索麦当劳最新汉堡',
+    messages: [{ role: 'user', content: '帮我搜索麦当劳最新汉堡' }],
+    searchMode: 'off',
+    provider: 'deepseekV4Pro',
+    endpoint: 'https://example.test/chat/completions',
+    model: 'test-model',
+    apiKey: 'test-key',
+    config: { searchApiKey: 'search-key' },
+    hasExternalSearchKey: () => true,
+    resolveSearchProvider: () => 'baidu',
+    runExternalSearch: async () => {
+      searched = true;
+      return [];
+    },
+  });
+
+  assert.equal(searched, false);
+  assert.equal(result.action, 'none');
+  assert.equal(result.reason, 'search_disabled');
+  assert.equal(result.statusEvents.length, 0);
+  assert.equal(result.searchContext, '');
 });

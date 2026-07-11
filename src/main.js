@@ -16,7 +16,7 @@ import {
 } from './state.js';
 import { initCanvas, renderBlocks, zoomIn, zoomOut, fitToView, hideNodeToolbar, syncBlockSizes } from './canvas.js';
 import { initChat, sendText, syncCanvasMemoryDraft, syncChatSessionUI } from './chat.js';
-import { initWaveform, resumeListening, isConversationActive, isListeningActive } from './waveform.js';
+import { initWaveform, pauseListening, resumeListening, isConversationActive, isListeningActive } from './waveform.js';
 import { autoLayout, compactLayout, findFreePosition, getBoundingBox } from './utils/layout.js';
 import { transcribe } from './services/stt.js';
 import { speak, canUseDoubaoTts, getDoubaoTtsFallbackReason } from './services/tts.js';
@@ -25,6 +25,7 @@ import { buildOAuthUrl, exchangeOAuthCode } from './services/oauth.js';
 import { callOrganizeLlm, callRefineLlm, callNamingLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections, repairCanvasTextFormatting, repairMarkdownFormatting, assertCanvasIntegrity } from './utils/parser.js';
 import { createCopyAttachment, createMappedAttachment, getAttachmentFile, listAttachments, supportsMappedFiles, updateAttachmentBlob } from './services/file-store.js';
+import { AGENT_RESEARCH_DEMO_PROMPT, createAgentResearchDemoCanvas } from './utils/agent-demo.js';
 import { PDFDocument } from 'pdf-lib';
 
 // 鈹€鈹€ DOM References 鈹€鈹€
@@ -135,6 +136,7 @@ const dom = {
   recordBtn: $('recordBtn'),
   speakBtn: $('speakBtn'),
   voiceMode: $('voiceMode'),
+  doubaoAlwaysOnAsr: $('doubaoAlwaysOnAsr'),
   sttEnabled: $('sttEnabled'),
   ttsEnabled: $('ttsEnabled'),
   voiceLanguage: $('voiceLanguage'),
@@ -154,7 +156,7 @@ const dom = {
 
 // 鈹€鈹€ Config Helper 鈹€鈹€
 let llmApiKeys = {};
-let lastLlmProvider = 'tongyi';
+let lastLlmProvider = 'deepseekV4Pro';
 let searchApiKeys = {};
 let lastSearchProvider = 'auto';
 let modelOptions = [];
@@ -167,6 +169,7 @@ function getConfig() {
     sttProvider: dom.sttProvider.value,
     ttsProvider: dom.ttsProvider.value,
     voiceMode: dom.voiceMode.value,
+    doubaoAlwaysOnAsr: Boolean(dom.doubaoAlwaysOnAsr?.checked),
     sttEnabled: dom.sttEnabled?.value !== 'false',
     ttsEnabled: dom.ttsEnabled?.value !== 'false',
     voiceLanguage: dom.voiceLanguage.value,
@@ -210,6 +213,7 @@ function applyConfigDefaults(config = {}) {
     sttEnabled: true,
     ttsEnabled: true,
     voiceLanguage: 'zh-CN',
+    doubaoAlwaysOnAsr: false,
     asrEndpoint: ENDPOINT_PRESETS.doubao?.stt || '',
     asrModel: ENDPOINT_PRESETS.doubao?.sttModel || '',
     asrResourceId: 'volc.seedasr.sauc.duration',
@@ -308,7 +312,7 @@ function loadSearchProviderKey(provider = dom.searchProvider?.value) {
 function applyLlmKeyConfig(config = {}) {
   llmApiKeys = normalizeLlmApiKeys(config.llmApiKeys);
 
-  const provider = config.llmProvider || dom.llmProvider?.value || 'tongyi';
+  const provider = config.llmProvider || dom.llmProvider?.value || 'deepseekV4Pro';
 
   if (config.llmApiKey && !llmApiKeys[provider]) {
     llmApiKeys[provider] = config.llmApiKey;
@@ -1480,14 +1484,14 @@ async function handleSplitNode() {
   try {
     const config = getConfig();
     // 璋冪敤 LLM 杩涜鎷嗗垎
-    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.deepseekV4Pro.llm, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
-        model: config.llmModel || 'qwen-plus',
+        model: config.llmModel || ENDPOINT_PRESETS.deepseekV4Pro.llmModel || 'deepseek-v4-pro',
         messages: [{
           role: 'user',
           content: `Split the following content into 2-4 semantically independent blocks. Requirements:
@@ -1595,14 +1599,14 @@ async function handleMergeNode() {
     const config = getConfig();
 
     // 璋冪敤 LLM 杩涜鍚堝苟
-    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.deepseekV4Pro.llm, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
-        model: config.llmModel || 'qwen-plus',
+        model: config.llmModel || ENDPOINT_PRESETS.deepseekV4Pro.llmModel || 'deepseek-v4-pro',
         messages: [{
           role: 'user',
           content: `Merge the following content into one block. Requirements:
@@ -1808,12 +1812,23 @@ function scheduleEarlyVoiceResumeDuringModelReply() {
 
 async function playAssistantReply(reply) {
   clearEarlyVoiceResumeTimer();
-  if (!reply || !isTtsEnabled()) {
+  const config = getConfig();
+  if (!reply || !isTtsEnabled(config)) {
     await safeResumeListening();
     return;
   }
 
-  await playReplyWithResolvedConfig(reply, getConfig());
+  const playbackConfig = resolveSpeechPlaybackConfig(config);
+  if (playbackConfig.ttsProvider === 'off') {
+    await safeResumeListening();
+    return;
+  }
+
+  const pauseReason = playbackConfig.ttsProvider === 'browser'
+    ? '\u7cfb\u7edf\u6717\u8bfb\u4e2d'
+    : '\u8c46\u5305\u6717\u8bfb\u4e2d';
+  await pauseListening(pauseReason);
+  await playReplyWithResolvedConfig(reply, config);
   await safeResumeListening();
 }
 
@@ -1933,6 +1948,10 @@ function setConfig(config) {
     }
     if (key === 'preferBuiltinSearch') {
       if (dom.preferBuiltinSearch) dom.preferBuiltinSearch.checked = Boolean(value);
+      continue;
+    }
+    if (key === 'doubaoAlwaysOnAsr') {
+      if (dom.doubaoAlwaysOnAsr) dom.doubaoAlwaysOnAsr.checked = Boolean(value);
       continue;
     }
     if (key === 'llmApiKeys' || key === 'searchApiKeys') {
@@ -2124,14 +2143,14 @@ async function handleExpandNode() {
   try {
     const config = getConfig();
     // 璋冪敤 LLM 杩涜鎵╁紶
-    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.deepseekV4Pro.llm, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
-        model: config.llmModel || 'qwen-plus',
+        model: config.llmModel || ENDPOINT_PRESETS.deepseekV4Pro.llmModel || 'deepseek-v4-pro',
         messages: [{
           role: 'user',
           content: `Expand the following content. Requirements:
@@ -2190,14 +2209,14 @@ async function handleDeriveNode() {
   try {
     const config = getConfig();
     // 璋冪敤 LLM 鐢熸垚娲剧敓瀛愬眰绾?
-    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.deepseekV4Pro.llm, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
-        model: config.llmModel || 'qwen-plus',
+        model: config.llmModel || ENDPOINT_PRESETS.deepseekV4Pro.llmModel || 'deepseek-v4-pro',
         messages: [{
           role: 'user',
           content: `Based on the following content, generate 2-4 deeper-level subtopics. Each subtopic should include a label (title) and brief content (description). Return ONLY a JSON array: [{"label":"Subtopic 1","content":"Description 1"},{"label":"Subtopic 2","content":"Description 2"}...]
@@ -2274,14 +2293,14 @@ async function handleTranslateNode() {
   try {
     const config = getConfig();
     // 璋冪敤 LLM 杩涜缈昏瘧
-    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.tongyi.llm, {
+    const response = await fetch(config.llmEndpoint || ENDPOINT_PRESETS.deepseekV4Pro.llm, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.llmApiKey}`
       },
       body: JSON.stringify({
-        model: config.llmModel || 'qwen-plus',
+        model: config.llmModel || ENDPOINT_PRESETS.deepseekV4Pro.llmModel || 'deepseek-v4-pro',
         messages: [{
           role: 'user',
           content: `Translate the following content between Chinese and English. Requirements:
@@ -3103,7 +3122,7 @@ function bindEvents() {
   });
 
   // 鈹€鈹€ Demo data 鈹€鈹€
-  dom.resetDemo.addEventListener('click', loadDemoData);
+  dom.resetDemo.addEventListener('click', showDemoMenu);
 
   // 鈹€鈹€ OAuth 鈹€鈹€
   if (dom.oauthStart) {
@@ -3322,6 +3341,81 @@ function runAutoLayoutBenchmark(iterations = 5) {
 
 function loadDemoData() {
   applyCanvasFixture(createDefaultDemoCanvas());
+}
+
+function startAgentResearchDemo() {
+  applyCanvasFixture(createAgentResearchDemoCanvas(), 280);
+  setSearchModeValue('auto');
+  dom.chatPanel.classList.remove('collapsed');
+  dom.chatExpandBtn.classList.remove('visible');
+  dom.chatExpandBtn.setAttribute('aria-hidden', 'true');
+
+  const input = document.getElementById('chatInput');
+  if (input) {
+    input.value = AGENT_RESEARCH_DEMO_PROMPT;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  }
+  const messages = document.getElementById('chatMessages');
+  messages?.querySelector('.demo-ready-msg')?.remove();
+  if (messages) {
+    const notice = document.createElement('div');
+    notice.className = 'chat-msg system demo-ready-msg';
+    notice.innerHTML = '<div class="demo-ready-card"><strong>智能体研究演示已准备</strong><span>研究白板和多智能体任务已载入。检查任务后点击发送，即可观看研究、搜索、质疑校验和白板更新过程。</span></div>';
+    messages.appendChild(notice);
+    messages.scrollTop = messages.scrollHeight;
+  }
+}
+
+function showDemoMenu() {
+  let menu = document.getElementById('demoMenu');
+  if (menu) {
+    menu.remove();
+    dom.resetDemo.setAttribute('aria-expanded', 'false');
+    return;
+  }
+
+  menu = document.createElement('div');
+  menu.id = 'demoMenu';
+  menu.className = 'import-menu demo-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = `
+    <button class="import-item demo-item" type="button" role="menuitem" data-demo="agent-research">
+      <span class="import-icon">◎</span>
+      <span><strong>智能体研究</strong><small>准备多智能体研究白板与任务</small></span>
+    </button>
+    <button class="import-item demo-item" type="button" role="menuitem" data-demo="canvas">
+      <span class="import-icon">◇</span>
+      <span><strong>白板示例</strong><small>载入原有创业计划示例</small></span>
+    </button>
+    <div class="demo-menu-note">准备任务不会产生调用；点击发送后使用当前模型与搜索配置。</div>
+  `;
+
+  const rect = dom.resetDemo.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = `${rect.bottom + 6}px`;
+  menu.style.right = `${window.innerWidth - rect.right}px`;
+  document.body.appendChild(menu);
+  dom.resetDemo.setAttribute('aria-expanded', 'true');
+
+  menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-demo]');
+    if (!item) return;
+    menu.remove();
+    dom.resetDemo.setAttribute('aria-expanded', 'false');
+    if (item.dataset.demo === 'agent-research') startAgentResearchDemo();
+    else loadDemoData();
+  });
+
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function closeDemoMenu(event) {
+      if (!menu.contains(event.target) && event.target !== dom.resetDemo) {
+        menu.remove();
+        dom.resetDemo.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('pointerdown', closeDemoMenu);
+      }
+    });
+  }, 10);
 }
 
 function applyFixtureFromQuery() {

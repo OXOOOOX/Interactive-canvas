@@ -269,73 +269,96 @@ async function parseServerMessage(arrayBuffer) {
   return { isLastPackage, data };
 }
 
-function extractTranscript(data) {
-  if (!data || typeof data !== 'object') return { interim: '', final: '' };
-
-  const resultText = typeof data.result?.text === 'string' ? data.result.text : '';
-  const rootText = typeof data.text === 'string' ? data.text : '';
-  if (resultText || rootText) {
-    return { interim: '', final: resultText || rootText };
-  }
-
-  const utterances = Array.isArray(data.result?.utterances)
-    ? data.result.utterances
-    : Array.isArray(data.utterances)
-      ? data.utterances
-      : [];
-
-  let interim = '';
-  let final = '';
-
-  if (typeof data.result?.text === 'string') final = data.result.text;
-  if (typeof data.text === 'string' && !final) final = data.text;
-
-  for (const item of utterances) {
-    const text = item?.text || item?.transcript || '';
-    if (!text) continue;
-    if (item.definite || item.final) {
-      final += text;
-    } else {
-      interim += text;
-    }
-  }
-
-  return { interim, final };
-}
-
-function mergeFinalTranscript(current, incoming) {
+function appendTranscriptDelta(current, incoming) {
   const base = (current || '').trim();
   const next = (incoming || '').trim();
   if (!next) return base;
   if (!base) return next;
+  if (base.endsWith(next)) return base;
 
-  const normalizeForMerge = (value) => value
-    .toLowerCase()
-    .replace(/[\s,，.。!?！？;；:：'"“”‘’、\-—_()[\]{}<>《》]/g, '');
-  const normalizedBase = normalizeForMerge(base);
-  const normalizedNext = normalizeForMerge(next);
-  const commonPrefixLength = (a, b) => {
-    const max = Math.min(a.length, b.length);
-    let index = 0;
-    while (index < max && a[index] === b[index]) index += 1;
-    return index;
-  };
-
-  if (normalizedBase && normalizedNext) {
-    if (normalizedNext === normalizedBase || normalizedNext.startsWith(normalizedBase)) return next;
-    if (normalizedBase.startsWith(normalizedNext)) return base;
-    if (normalizedBase.endsWith(normalizedNext)) return base;
-
-    const commonPrefix = commonPrefixLength(normalizedBase, normalizedNext);
-    const shorterLength = Math.min(normalizedBase.length, normalizedNext.length);
-    if (commonPrefix >= 6 && commonPrefix / shorterLength >= 0.55) {
-      return next.length >= base.length * 0.6 ? next : base;
+  const maxOverlap = Math.min(base.length, next.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (base.slice(-size) === next.slice(0, size)) {
+      return `${base}${next.slice(size)}`;
     }
   }
 
-  if (next === base || next.startsWith(base)) return next;
-  if (base.endsWith(next)) return base;
-  return `${base}${/[a-zA-Z0-9]$/.test(base) && /^[a-zA-Z0-9]/.test(next) ? ' ' : ''}${next}`;
+  const separator = /[a-zA-Z0-9]$/.test(base) && /^[a-zA-Z0-9]/.test(next) ? ' ' : '';
+  return `${base}${separator}${next}`;
+}
+
+function getUtteranceStart(item, index) {
+  const value = Number(item?.start_time ?? item?.startTime ?? item?.start ?? index);
+  return Number.isFinite(value) ? value : index;
+}
+
+export function normalizeDoubaoTranscriptUpdate(data, context = {}) {
+  if (!data || typeof data !== 'object') return null;
+
+  const result = data.result && typeof data.result === 'object' ? data.result : {};
+  const hasResultSnapshot = typeof result.text === 'string';
+  const hasRootSnapshot = typeof data.text === 'string';
+  const snapshotText = hasResultSnapshot
+    ? result.text
+    : hasRootSnapshot
+      ? data.text
+      : '';
+  const baseUpdate = {
+    sessionId: context.sessionId ?? null,
+    sequence: Number(context.sequence || 0),
+  };
+
+  if (hasResultSnapshot || hasRootSnapshot) {
+    return {
+      ...baseUpdate,
+      text: snapshotText.trim(),
+      updateMode: 'replace',
+      final: Boolean(context.isLastPackage || result.definite || result.final || data.definite || data.final),
+    };
+  }
+
+  const explicitDelta = typeof result.delta === 'string'
+    ? result.delta
+    : typeof data.delta === 'string'
+      ? data.delta
+      : typeof result.text_delta === 'string'
+        ? result.text_delta
+        : typeof data.text_delta === 'string'
+          ? data.text_delta
+          : '';
+  if (explicitDelta.trim()) {
+    return {
+      ...baseUpdate,
+      text: explicitDelta.trim(),
+      updateMode: 'append',
+      final: Boolean(context.isLastPackage || result.final || data.final),
+    };
+  }
+
+  const utterances = Array.isArray(result.utterances)
+    ? result.utterances
+    : Array.isArray(data.utterances)
+      ? data.utterances
+      : [];
+  const ordered = utterances
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => typeof (item?.text || item?.transcript) === 'string')
+    .sort((a, b) => getUtteranceStart(a.item, a.index) - getUtteranceStart(b.item, b.index));
+  const utteranceText = ordered.map(({ item }) => item.text || item.transcript).join('').trim();
+  if (!utteranceText) return null;
+
+  return {
+    ...baseUpdate,
+    text: utteranceText,
+    updateMode: 'replace',
+    final: Boolean(context.isLastPackage || ordered.every(({ item }) => item.definite || item.final)),
+  };
+}
+
+export function applyDoubaoTranscriptUpdate(current, update) {
+  if (!update || typeof update.text !== 'string') return (current || '').trim();
+  if (update.updateMode === 'append') return appendTranscriptDelta(current, update.text);
+  return update.text.trim();
 }
 
 export async function testDoubaoAsrConnection(config, options = {}) {
@@ -432,8 +455,10 @@ export async function testDoubaoAsrConnection(config, options = {}) {
   });
 }
 
-export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+export async function startDoubaoStreamingRecognition(config, callbacks = {}, options = {}) {
+  const stream = options.stream || await navigator.mediaDevices.getUserMedia({ audio: true });
+  const closeStreamOnStop = options.closeStreamOnStop !== false;
+  const preAudioBytes = options.preAudioBytes instanceof Uint8Array ? options.preAudioBytes : new Uint8Array(0);
   const audioContext = new AudioContext();
 
   // 纭繚 AudioContext 澶勪簬杩愯鐘舵€?
@@ -449,8 +474,32 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
   let stopped = false;
   let sending = Promise.resolve();
   let finalText = '';
+  let transcriptSequence = 0;
   const sampleChunks = [];
   const bytesPerChunk = (SAMPLE_RATE * 2 * SEGMENT_DURATION_MS) / 1000;
+
+  const queueAudioChunk = (sequence, bytes, isLast = false) => {
+    sending = sending.then(async () => {
+      const audioPayload = await buildAudioPayload(sequence, bytes, isLast);
+      ws.send(audioPayload);
+    }).catch((error) => {
+      console.error('[doubao-asr] Audio send error:', error);
+      callbacks.onError?.(error);
+    });
+    return sending;
+  };
+
+  const queueAudioBytes = (bytes) => {
+    let buffered = bytes;
+    while (buffered.length >= bytesPerChunk) {
+      const current = buffered.slice(0, bytesPerChunk);
+      buffered = buffered.slice(bytesPerChunk);
+      const currentSeq = seq;
+      seq += 1;
+      queueAudioChunk(currentSeq, current, false);
+    }
+    return buffered;
+  };
 
   source.connect(processor);
   processor.connect(audioContext.destination);
@@ -463,14 +512,15 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
 
     processor.disconnect();
     source.disconnect();
-    stream.getTracks().forEach(track => track.stop());
+    if (closeStreamOnStop) {
+      stream.getTracks().forEach(track => track.stop());
+    }
     await audioContext.close();
 
     const remaining = sampleChunks.length ? concatChunks(sampleChunks.splice(0)) : new Uint8Array(0);
     await sending.catch((error) => callbacks.onError?.(error));
     if (ws.readyState === WebSocket.OPEN) {
-      const payload = await buildAudioPayload(seq, remaining, true);
-      ws.send(payload);
+      await queueAudioChunk(seq, remaining, true);
       setTimeout(() => {
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
           ws.close();
@@ -486,6 +536,11 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
     ws.onopen = async () => {
       try {
         ws.send(await buildInitPayload(config));
+        if (preAudioBytes.length) {
+          const trailing = queueAudioBytes(preAudioBytes);
+          sampleChunks.length = 0;
+          if (trailing.length > 0) sampleChunks.push(trailing);
+        }
         resolve();
       } catch (error) {
         reject(error);
@@ -500,14 +555,23 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
   ws.onmessage = async (event) => {
     try {
       const parsed = await parseServerMessage(event.data);
-      const { interim, final } = extractTranscript(parsed.data);
-      if (interim) callbacks.onInterim?.(interim);
-      if (final) {
-        finalText = mergeFinalTranscript(finalText, final);
-        callbacks.onFinal?.(finalText.trim(), final.trim());
+      const update = normalizeDoubaoTranscriptUpdate(parsed.data, {
+        sessionId: options.sessionId,
+        sequence: ++transcriptSequence,
+        isLastPackage: parsed.isLastPackage,
+      });
+      if (update) {
+        finalText = applyDoubaoTranscriptUpdate(finalText, update);
+        if (callbacks.onTranscript) {
+          callbacks.onTranscript({ ...update, fullText: finalText });
+        } else if (update.final) {
+          callbacks.onFinal?.(finalText, update.text);
+        } else {
+          callbacks.onInterim?.(finalText);
+        }
       }
       if (parsed.isLastPackage) {
-        callbacks.onComplete?.(finalText.trim());
+        callbacks.onComplete?.(finalText.trim(), { sessionId: options.sessionId, sequence: transcriptSequence });
       }
     } catch (error) {
       console.error('[doubao-asr] ws.onmessage parse error:', error);
@@ -520,7 +584,7 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
   };
 
   ws.onclose = () => {
-    callbacks.onClose?.(finalText.trim());
+    callbacks.onClose?.(finalText.trim(), { sessionId: options.sessionId, sequence: transcriptSequence });
   };
 
   processor.onaudioprocess = (event) => {
@@ -538,13 +602,7 @@ export async function startDoubaoStreamingRecognition(config, callbacks = {}) {
 
       const currentSeq = seq;
       seq += 1;
-      sending = sending.then(async () => {
-        const audioPayload = await buildAudioPayload(currentSeq, current, false);
-        ws.send(audioPayload);
-      }).catch((error) => {
-        console.error('[doubao-asr] Audio send error:', error);
-        callbacks.onError?.(error);
-      });
+      queueAudioChunk(currentSeq, current, false);
     }
   };
 

@@ -6,6 +6,7 @@ import { appState, pushHistory, saveCurrentCanvas, loadGlobalMemory } from './st
 import { callChatLlmStream, callCanvasLlm, callDraftMemoryLlm, callGlobalMemoryLlm, callSuggestLlm, callMarkdownRepairLlm } from './services/llm.js';
 import { parseAiResponse, executeOperations, dedupeConnections, renderMarkdown, inspectMarkdownFormatting, repairMarkdownFormatting, assertCanvasIntegrity, stripSearchToolMarkup } from './utils/parser.js';
 import { autoLayout, findFreePosition } from './utils/layout.js';
+import { computeCanvasRevision } from './utils/canvas-revision.js';
 import { renderBlocks, syncBlockSizes } from './canvas.js';
 import { isEmptyGlobalMemorySuggestion } from './utils/memory.js';
 
@@ -21,6 +22,8 @@ let pendingQueue = [];
 let pendingQueueDraining = false;
 let pendingQueueDrainScheduled = false;
 let pendingMessageSeq = 0;
+let activeChatAbortController = null;
+let sendButtonDefaultHtml = '';
 
 function isChatModelBusy() {
   return window.__CHAT_MODEL_BUSY__ === true;
@@ -39,6 +42,19 @@ function setChatModelBusy(isBusy) {
   const current = Number(window.__CHAT_MODEL_BUSY_COUNT__ || 0);
   window.__CHAT_MODEL_BUSY_COUNT__ = Math.max(0, current + (isBusy ? 1 : -1));
   window.__CHAT_MODEL_BUSY__ = window.__CHAT_MODEL_BUSY_COUNT__ > 0;
+  if ($sendBtn) {
+    if (window.__CHAT_MODEL_BUSY__) {
+      $sendBtn.classList.add('is-cancelling');
+      $sendBtn.innerHTML = '<span class="send-stop-icon" aria-hidden="true"></span>';
+      $sendBtn.title = '停止 Agent';
+      $sendBtn.setAttribute('aria-label', '停止 Agent');
+    } else {
+      $sendBtn.classList.remove('is-cancelling');
+      if (sendButtonDefaultHtml) $sendBtn.innerHTML = sendButtonDefaultHtml;
+      $sendBtn.title = '发送';
+      $sendBtn.setAttribute('aria-label', '发送');
+    }
+  }
   renderPendingQueue();
   if (!window.__CHAT_MODEL_BUSY__) schedulePendingQueueDrain();
 }
@@ -186,12 +202,19 @@ export function initChat(configGetter) {
   $exportSessionBtn = document.getElementById('exportSessionBtn');
   $importSessionBtn = document.getElementById('importSessionBtn');
   getConfig = configGetter;
+  sendButtonDefaultHtml = $sendBtn?.innerHTML || '';
 
   initDraftPanel();
   initSessionControls();
   syncChatSessionUI();
 
-  $sendBtn.addEventListener('click', () => sendMessage());
+  $sendBtn.addEventListener('click', () => {
+    if (activeChatAbortController) {
+      activeChatAbortController.abort();
+      return;
+    }
+    sendMessage();
+  });
 
   $input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -741,6 +764,14 @@ function scheduleCanvasUpdate({ config, conversationSnapshot, canvasSnapshot, me
 async function sendMessage(explicitText = null, options = {}) {
   const text = (typeof explicitText === 'string' ? explicitText : $input.value).trim();
   if (!text) return null;
+  const isManualInput = typeof explicitText !== 'string';
+
+  const notifyManualInputCommitted = (queued) => {
+    if (!isManualInput) return;
+    document.dispatchEvent(new CustomEvent('chat:manual-input-committed', {
+      detail: { queued: Boolean(queued) },
+    }));
+  };
 
   if (shouldQueueMessage(options)) {
     if (typeof explicitText !== 'string') {
@@ -750,7 +781,9 @@ async function sendMessage(explicitText = null, options = {}) {
       $input.value = '';
       $input.style.height = 'auto';
     }
-    return enqueuePendingMessage(text, options);
+    const queuedMessage = enqueuePendingMessage(text, options);
+    notifyManualInputCommitted(true);
+    return queuedMessage;
   }
 
   if (typeof explicitText !== 'string') {
@@ -759,6 +792,7 @@ async function sendMessage(explicitText = null, options = {}) {
     $input.value = '';
   }
   $input.style.height = 'auto';
+  notifyManualInputCommitted(false);
 
   const welcome = $messages.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
@@ -769,8 +803,14 @@ async function sendMessage(explicitText = null, options = {}) {
 
   const typing = showTyping();
   let assistantMessage = null;
+  const requestController = new AbortController();
+  activeChatAbortController = requestController;
   setChatModelBusy(true);
   let searchCard = null;
+  let agentTimeline = null;
+  let teamCard = null;
+  let agentCanvasApplyPromise = Promise.resolve();
+  let agentAppliedCanvasOps = false;
 
   try {
     const config = {
@@ -778,6 +818,7 @@ async function sendMessage(explicitText = null, options = {}) {
       markdownDraft: getMarkdownDraft(),
       globalMemory: loadGlobalMemory(),
       voiceOutputEnabled: Boolean(options.voiceOutputEnabled),
+      requestSignal: requestController.signal,
     };
     if (shouldShowInitialSearchStatus(config)) {
       typing.setStatus('已请求通义内置搜索，结果数量由模型返回', 'builtin_searching');
@@ -836,6 +877,45 @@ async function sendMessage(explicitText = null, options = {}) {
         if (!searchCard) searchCard = createSearchStatusCard(status);
         else searchCard.update(status);
       },
+      onAgentEvent(eventName, payload = {}) {
+        if (eventName === 'agent.plan' && payload.mode === 'fast') return;
+        if (eventName === 'team.started') {
+          if (!agentTimeline) agentTimeline = createAgentTimelineCard();
+          agentTimeline.handle('agent.plan', { mode: 'team' });
+          teamCard = createTeamStatusCard(payload);
+          return;
+        }
+        if (eventName === 'team.agent.updated') {
+          teamCard?.update(payload);
+        } else if (eventName === 'team.completed') {
+          teamCard?.complete(payload.status || 'completed');
+        }
+        if (!agentTimeline && (eventName.startsWith('agent.') || eventName.startsWith('tool.') || eventName === 'canvas.operations')) {
+          agentTimeline = createAgentTimelineCard();
+        }
+        agentTimeline?.handle(eventName, payload);
+
+        if (eventName === 'canvas.operations' && Array.isArray(payload.operations) && payload.operations.length) {
+          agentCanvasApplyPromise = enqueueCanvasUpdate(async () => {
+            const currentRevision = computeCanvasRevision(appState.canvas);
+            if (payload.baseRevision && payload.baseRevision !== currentRevision) {
+              agentTimeline?.markCanvas('failed', '白板已变化，Agent 修改未应用');
+              return;
+            }
+            const parsed = parseAiResponse(JSON.stringify({ operations: payload.operations }));
+            if (!parsed.operations.length) {
+              agentTimeline?.markCanvas('failed', 'Agent 未返回有效白板修改');
+              return;
+            }
+            const summaryParts = await applyCanvasOperations(config, parsed.operations);
+            agentAppliedCanvasOps = summaryParts.length > 0;
+            agentTimeline?.markCanvas(agentAppliedCanvasOps ? 'completed' : 'failed', agentAppliedCanvasOps ? summaryParts.join('，') : '白板无需修改');
+            document.dispatchEvent(new CustomEvent('boardChanged'));
+          }).catch(error => {
+            agentTimeline?.markCanvas('failed', `白板修改失败：${error.message}`);
+          });
+        }
+      },
       onDelta(fullText) {
         if (!hasStreamText) {
           typing.remove();
@@ -856,6 +936,8 @@ async function sendMessage(explicitText = null, options = {}) {
       }
     });
 
+    await agentCanvasApplyPromise;
+    agentTimeline?.complete();
     const visibleChatReply = stripSearchToolMarkup(stripVoiceBrief(chatReply));
     const voiceText = config.voiceOutputEnabled && !voiceBriefDisabledForSearch
       ? stripSearchToolMarkup(extractVoiceBrief(chatReply) || '')
@@ -900,12 +982,18 @@ async function sendMessage(explicitText = null, options = {}) {
 
     void draftPromise;
     void globalMemoryPromise;
-    scheduleCanvasUpdate({
-      config,
-      conversationSnapshot: createConversationSnapshot(appState.conversation),
-      canvasSnapshot: createCanvasPromptSnapshot(appState.canvas),
-      message,
-    });
+    if (!agentAppliedCanvasOps) {
+      scheduleCanvasUpdate({
+        config,
+        conversationSnapshot: createConversationSnapshot(appState.conversation),
+        canvasSnapshot: createCanvasPromptSnapshot(appState.canvas),
+        message,
+      });
+    } else {
+      message.setSummary(['Agent 已更新白板']);
+      persistActiveConversation();
+      generateSuggestions();
+    }
 
     if (options.returnVoicePayload) {
       return {
@@ -918,10 +1006,15 @@ async function sendMessage(explicitText = null, options = {}) {
   } catch (err) {
     typing.remove();
     assistantMessage?.remove();
+    if (err?.name === 'AbortError' || requestController.signal.aborted) {
+      appendMessage('system', '已停止本次 Agent 执行。');
+      return null;
+    }
     appendMessage('system', `❌ ${err.message}`);
     console.error('Chat error:', err);
     return null;
   } finally {
+    if (activeChatAbortController === requestController) activeChatAbortController = null;
     setChatModelBusy(false);
   }
 }
@@ -1041,9 +1134,11 @@ function createSearchStatusCard(initialStatus = {}) {
           const title = item.title || item.url || `网页 ${index + 1}`;
           const url = item.url || '';
           const snippet = item.snippet || '';
+          const sourceMeta = [item.provider, item.domain].filter(Boolean).join(' · ');
           return `
             <a class="search-result-item" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">
               <span class="search-result-title">${escapeHtml(title)}</span>
+              ${sourceMeta ? `<span class="search-result-source">${escapeHtml(sourceMeta)}</span>` : ''}
               ${snippet ? `<span class="search-result-snippet">${escapeHtml(snippet)}</span>` : ''}
               ${url ? `<span class="search-result-url">${escapeHtml(url)}</span>` : ''}
             </a>
@@ -1074,6 +1169,128 @@ function createSearchStatusCard(initialStatus = {}) {
     },
     remove() {
       msgDiv.remove();
+    },
+  };
+}
+
+function createAgentTimelineCard() {
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'chat-msg system agent-timeline-msg';
+  const card = document.createElement('div');
+  card.className = 'agent-timeline-card expanded';
+  msgDiv.appendChild(card);
+  $messages.appendChild(msgDiv);
+  const state = { mode: 'single', status: 'running', steps: [], expanded: true };
+
+  const render = () => {
+    const completed = state.steps.filter(step => step.status === 'completed').length;
+    const failed = state.steps.filter(step => step.status === 'failed').length;
+    const title = state.mode === 'team' ? '多智能体协作' : 'Agent 执行过程';
+    const summary = state.status === 'failed'
+      ? '执行失败'
+      : state.status === 'completed'
+        ? `已完成 ${completed} 个步骤`
+        : `正在执行 · ${completed} 已完成${failed ? ` · ${failed} 失败` : ''}`;
+    const steps = state.steps.map(step => `
+      <div class="agent-timeline-step" data-status="${escapeHtml(step.status)}">
+        <span class="agent-step-dot"></span>
+        <span class="agent-step-name">${escapeHtml(step.label)}</span>
+        ${step.elapsedMs != null ? `<span class="agent-step-time">${(step.elapsedMs / 1000).toFixed(1)}s</span>` : ''}
+        <span class="agent-step-status">${escapeHtml(step.status)}</span>
+      </div>
+    `).join('');
+    card.classList.toggle('expanded', state.expanded);
+    card.innerHTML = `
+      <button type="button" class="agent-timeline-toggle" aria-expanded="${state.expanded}">
+        <span class="agent-timeline-chevron">${state.expanded ? '▾' : '▸'}</span>
+        <strong>${title}</strong>
+        <span class="agent-timeline-summary">${escapeHtml(summary)}</span>
+      </button>
+      ${state.expanded ? `<div class="agent-timeline-steps">${steps || '<div class="agent-timeline-empty">正在规划...</div>'}</div>` : ''}
+    `;
+    card.querySelector('.agent-timeline-toggle')?.addEventListener('click', () => {
+      state.expanded = !state.expanded;
+      render();
+    });
+    $messages.scrollTop = $messages.scrollHeight;
+  };
+
+  render();
+  return {
+    handle(eventName, payload = {}) {
+      if (eventName === 'agent.plan') {
+        state.mode = payload.mode || state.mode;
+        if (payload.mode === 'fast') state.status = 'completed';
+      } else if (eventName === 'tool.started') {
+        state.steps.push({ id: payload.callId, label: payload.tool || 'tool', status: 'running' });
+      } else if (eventName === 'tool.completed' || eventName === 'tool.failed') {
+        const step = [...state.steps].reverse().find(item => item.id === payload.callId);
+        if (step) {
+          step.status = eventName === 'tool.completed' ? 'completed' : 'failed';
+          step.elapsedMs = payload.elapsedMs;
+        }
+      } else if (eventName === 'canvas.operations') {
+        state.steps.push({ id: `canvas-${state.steps.length}`, label: payload.summary || '应用白板修改', status: 'running' });
+      } else if (eventName === 'agent.failed') {
+        state.status = 'failed';
+        state.steps.push({ id: 'agent-failed', label: payload.error || 'Agent failed', status: 'failed' });
+      } else if (eventName === 'team.completed') {
+        state.status = payload.status === 'completed' ? 'completed' : payload.status || 'completed';
+      }
+      render();
+    },
+    markCanvas(status, label) {
+      const step = [...state.steps].reverse().find(item => item.label.includes('白板') || item.label.includes('canvas') || item.status === 'running');
+      if (step) {
+        step.status = status;
+        if (label) step.label = label;
+      }
+      render();
+    },
+    complete() {
+      if (state.status === 'running') state.status = 'completed';
+      for (const step of state.steps) if (step.status === 'running') step.status = 'completed';
+      render();
+    },
+  };
+}
+
+function createTeamStatusCard(payload = {}) {
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'chat-msg system team-status-msg';
+  const card = document.createElement('div');
+  card.className = 'team-status-card';
+  msgDiv.appendChild(card);
+  $messages.appendChild(msgDiv);
+  const members = new Map((payload.members || []).map(member => [member.id, { ...member }]));
+  let runStatus = 'running';
+
+  const render = () => {
+    const rows = [...members.values()].map(member => `
+      <div class="team-agent-row" data-status="${escapeHtml(member.status || 'pending')}">
+        <span class="team-agent-role">${escapeHtml(member.role || member.id)}</span>
+        <span class="team-agent-task">${escapeHtml(member.tool || member.summary || member.error || '')}</span>
+        <span class="team-agent-iterations">${member.iterations ? `${member.iterations} 次` : ''}</span>
+        <span class="team-agent-status">${escapeHtml(member.status || 'pending')}</span>
+      </div>
+    `).join('');
+    card.innerHTML = `
+      <div class="team-status-head"><strong>研究团队</strong><span>${escapeHtml(runStatus)}</span></div>
+      <div class="team-agent-list">${rows}</div>
+    `;
+    $messages.scrollTop = $messages.scrollHeight;
+  };
+  render();
+
+  return {
+    update(next = {}) {
+      if (next.agentId) members.set(next.agentId, { ...(members.get(next.agentId) || { id: next.agentId }), ...next });
+      if (next.runStatus) runStatus = next.runStatus;
+      render();
+    },
+    complete(status = 'completed') {
+      runStatus = status;
+      render();
     },
   };
 }

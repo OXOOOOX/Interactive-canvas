@@ -5,6 +5,8 @@ import https from 'node:https';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+import { runResearchAgent } from './search-agent.js';
+import { runAgentRuntime } from './agent-runtime.js';
 
 const rootDir = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const distDir = join(rootDir, 'dist');
@@ -280,9 +282,9 @@ async function proxyDoubaoTts(req, res) {
 }
 
 function getProviderConfig(config = {}) {
-  const provider = config.llmProvider || process.env.LLM_PROVIDER || 'tongyi';
+  const provider = config.llmProvider || process.env.LLM_PROVIDER || 'deepseekV4Pro';
   const endpoint = config.llmEndpoint || process.env.LLM_ENDPOINT || DEFAULT_ENDPOINTS[provider];
-  const model = config.llmModel || process.env.LLM_MODEL || DEFAULT_MODELS[provider] || DEFAULT_MODELS.tongyi;
+  const model = config.llmModel || process.env.LLM_MODEL || DEFAULT_MODELS[provider] || DEFAULT_MODELS.deepseekV4Pro;
   const userApiKey = config.llmApiKey || '';
   const serverApiKey = process.env.LLM_API_KEY || '';
   const apiKey = userApiKey || serverApiKey;
@@ -300,6 +302,8 @@ const SEARCH_ACTION_PATTERN = /搜索|直接搜|搜一下|搜搜|查一下|查�
 const SEARCH_COMMAND_PATTERN = /帮我|帮|请|麻烦|帮忙|给我|能不能|可以|直接搜|搜索一下|搜索|搜一下|搜搜|查一下|查查|查找|查询|检索|联网|网上找|找一下|了解一下|重新搜|重新查|重新跑|再跑/g;
 const GENERIC_SEARCH_TERMS_PATTERN = /中国大陆|中国内地|内地|大陆|国内|中国市场|mainland|地区|新品|新饮品|上新|新品上市|限定|菜单|饮料|饮品|官方|官网|产品|商品|服务|内容|信息|资料|新闻|消息|最近|最新|当前|现在|今天|昨日|今年|继续|再|重新|重跑|跑一趟|一趟|一次|一遍|跑|这个|那个|它|该|这家|那家|上述|前面|刚才|那么|然后|嗯|呃|额|还有|另外|其他|别的|什么|吗|么|嘛|有没有|有无|比如|例如|像是|之类|类似|配套|搭配|同期|同款|同系列|同活动|一下|一些|相关|有关|关于|一期|当期|本期|最新一期|公司|企业|机构|呢|current|latest|recent|today|news|menu|product|products|info|information/g;
 const CONTEXTUAL_FOLLOWUP_PATTERN = /^(那么|那|嗯|呃|额|还有|另外|其他|别的|顺便|再看看|再查|再搜|重新搜|重新查|重新跑|再跑)|还有什么|配套|搭配|同期|同款|同系列|同活动|之类|类似|这个公司|这家公司|该公司|那个公司|那家公司|这个企业|该企业|它的|重新跑一趟|重跑/;
+const GREETING_ONLY_PATTERN = /^(你好|您好|嗨|hi|hello|hey|哈喽|在吗|早上好|下午好|晚上好)[。.!！\s]*$/i;
+const ORG_ENTITY_PATTERN = /[\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,32}(?:有限公司|股份有限公司|科技有限公司|集团|公司|研究院|大学)/g;
 
 function normalizeSearchQueryText(value = '') {
   return String(value || '')
@@ -356,15 +360,39 @@ function resolveSearchProvider(query = '', config = {}) {
 }
 
 function getServerSearchApiKey(provider) {
-  if (provider === 'baidu') {
-    return process.env.BAIDU_SEARCH_API_KEY || process.env.QIANFAN_API_KEY || (String(process.env.SEARCH_PROVIDER || '').toLowerCase() === 'baidu' ? process.env.SEARCH_API_KEY : '');
-  }
-  return process.env.SEARCH_API_KEY || '';
+  const configured = String(process.env.SEARCH_PROVIDER || '').toLowerCase();
+  const generic = configured === provider || ((!configured || configured === 'auto') && provider === 'tavily')
+    ? process.env.SEARCH_API_KEY
+    : '';
+  const keys = {
+    baidu: process.env.BAIDU_SEARCH_API_KEY || process.env.QIANFAN_API_KEY,
+    tavily: process.env.TAVILY_API_KEY,
+    bocha: process.env.BOCHA_API_KEY,
+    serper: process.env.SERPER_API_KEY,
+    bing: process.env.BING_SEARCH_API_KEY,
+  };
+  return keys[provider] || generic || '';
+}
+
+function getUserSearchApiKey(config = {}, provider = '', query = '') {
+  if (config.searchApiKeys?.[provider]) return config.searchApiKeys[provider];
+  const configured = String(config.searchProvider || '').toLowerCase();
+  return (!configured || configured === 'auto' || resolveSearchProvider(query, config) === provider)
+    && resolveSearchProvider(query, config) === provider
+    ? (config.searchApiKey || '')
+    : '';
+}
+
+function getSearchProviderOrder(query = '', config = {}) {
+  const primary = resolveSearchProvider(query, config);
+  const supported = ['baidu', 'tavily', 'bocha', 'serper', 'bing'];
+  return [primary, ...supported]
+    .filter((provider, index, list) => supported.includes(provider) && list.indexOf(provider) === index)
+    .filter(provider => Boolean(getUserSearchApiKey(config, provider, query) || getServerSearchApiKey(provider)));
 }
 
 function hasExternalSearchKey(config = {}, query = '') {
-  const provider = resolveSearchProvider(query, config);
-  return Boolean(config.searchApiKey || getServerSearchApiKey(provider));
+  return getSearchProviderOrder(query, config).length > 0;
 }
 
 function shouldUseBuiltinSearch(provider, mode, query, config = {}) {
@@ -383,9 +411,14 @@ function normalizeSearchText(value = '') {
   return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function isGreetingOnly(query = '') {
+  return GREETING_ONLY_PATTERN.test(normalizeSearchText(query));
+}
+
 function isVagueFollowupSearch(query = '') {
   const text = normalizeSearchText(query);
   if (!text) return true;
+  if (isGreetingOnly(text)) return true;
   if (CONTEXTUAL_FOLLOWUP_PATTERN.test(text)) {
     return true;
   }
@@ -414,16 +447,46 @@ function getRecentUserMessages(messages = []) {
     .filter(Boolean);
 }
 
+function cleanExtractedEntity(value = '') {
+  return normalizeSearchQueryText(value)
+    .replace(/^(?:你想查|想查|查询|搜索|检索|了解|关于|根据搜索结果|结果显示|刚才我们在聊的是)/, '')
+    .replace(/[，。！？、；：,.!?;:].*$/, '')
+    .trim();
+}
+
+function extractRecentAssistantEntity(messages = []) {
+  const assistantMessages = (Array.isArray(messages) ? messages : [])
+    .filter(message => message?.role === 'assistant' && typeof message.content === 'string')
+    .map(message => message.content)
+    .reverse();
+  for (const content of assistantMessages) {
+    const matches = content.match(ORG_ENTITY_PATTERN) || [];
+    const entity = matches
+      .map(cleanExtractedEntity)
+      .filter(Boolean)
+      .find(item => /[a-z0-9]{2,}/i.test(item) || /[\u4e00-\u9fff]{2,}/.test(item));
+    if (entity) return entity;
+  }
+  return '';
+}
+
 function buildContextualSearchQuery(query = '', messages = []) {
   const cleaned = String(query || '').trim();
   const userMessages = getRecentUserMessages(messages);
-  const previous = [...userMessages].reverse().find(message => message !== cleaned && !isVagueFollowupSearch(message));
+  const previous = [...userMessages].reverse().find(message => (
+    message !== cleaned
+    && !isGreetingOnly(message)
+    && !isVagueFollowupSearch(message)
+    && hasSpecificSearchTopic(message)
+  ));
+  const assistantEntity = extractRecentAssistantEntity(messages);
+  const contextualPrevious = previous || assistantEntity;
   const shouldReuseFullPrevious = isVagueFollowupSearch(cleaned) && previous;
-  const shouldReuseStablePrevious = !shouldReuseFullPrevious && previous && isContextualFollowupSearch(cleaned);
+  const shouldReuseStablePrevious = !shouldReuseFullPrevious && contextualPrevious && isContextualFollowupSearch(cleaned);
   const source = shouldReuseFullPrevious
     ? `${previous} ${cleaned}`
     : shouldReuseStablePrevious
-      ? `${previous} ${cleaned}`
+      ? `${contextualPrevious} ${cleaned}`
       : cleaned;
 
   const dateText = getSearchDateText(source);
@@ -861,19 +924,13 @@ function extractBaiduSearchResults(data, maxResults) {
     }));
 }
 
-async function runExternalSearch(query, req, config = {}) {
-  const provider = resolveSearchProvider(query, config);
-  const userApiKey = config.searchApiKeys?.[provider] || config.searchApiKey || '';
+async function runExternalSearchProvider(query, config = {}, provider, maxResults) {
+  const userApiKey = getUserSearchApiKey(config, provider, query);
   const serverApiKey = getServerSearchApiKey(provider);
   const apiKey = userApiKey || serverApiKey;
-  const maxResults = Math.max(1, Math.min(8, Number(process.env.SEARCH_MAX_RESULTS || 5)));
 
   if (!apiKey) {
     throw new Error(`Search API key is not configured for ${provider}. Set ${provider === 'baidu' ? 'BAIDU_SEARCH_API_KEY or QIANFAN_API_KEY' : 'SEARCH_API_KEY'} on the server or add your own Search API Key in settings.`);
-  }
-
-  if (!userApiKey) {
-    consumeFreeSearchQuota(req);
   }
 
   if (provider === 'tavily') {
@@ -972,6 +1029,40 @@ async function runExternalSearch(query, req, config = {}) {
   throw new Error(`Unsupported SEARCH_PROVIDER: ${provider}`);
 }
 
+async function runExternalSearch(query, req, config = {}, requestedMaxResults) {
+  const maxResults = Math.max(1, Math.min(8, Number(requestedMaxResults || process.env.SEARCH_MAX_RESULTS || 5)));
+  const providers = getSearchProviderOrder(query, config);
+  if (!providers.length) throw new Error('No configured search provider is available. Add a Search API Key in settings or on the server.');
+
+  const attempts = [];
+  let quotaConsumed = false;
+  for (const provider of providers) {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        if (!getUserSearchApiKey(config, provider, query) && !quotaConsumed) {
+          consumeFreeSearchQuota(req);
+          quotaConsumed = true;
+        }
+        const results = await runExternalSearchProvider(query, config, provider, maxResults);
+        attempts.push({ provider, attempt, status: results.length ? 'completed' : 'empty' });
+        if (results.length) {
+          const retrievedAt = new Date().toISOString();
+          return {
+            results: results.map(item => ({ ...item, provider, retrievedAt })),
+            provider,
+            attempts,
+          };
+        }
+      } catch (error) {
+        attempts.push({ provider, attempt, status: 'failed', error: error.message });
+        if (attempt < 2) await new Promise(resolveDelay => setTimeout(resolveDelay, 150 * attempt));
+      }
+    }
+  }
+  const summary = attempts.map(item => `${item.provider}#${item.attempt}:${item.status}`).join(', ');
+  throw new Error(`All configured search providers failed or returned no results (${summary}).`);
+}
+
 function buildSearchContext(results = []) {
   if (!results.length) return '';
   const lines = results.map((item, index) => {
@@ -1034,7 +1125,7 @@ function disableVoiceBriefInMessages(messages = []) {
     });
 }
 
-function buildPayload({ body, provider, model, searchContext, searchFailureContext, searchClarificationContext, noSearchContext, builtinSearch, disableVoiceBrief }) {
+function buildPayload({ body, provider, model, searchContext, searchFailureContext, searchClarificationContext, noSearchContext, agentContext, builtinSearch, disableVoiceBrief }) {
   const messages = Array.isArray(body.messages) ? [...body.messages] : [];
   const finalMessages = disableVoiceBrief ? disableVoiceBriefInMessages(messages) : messages;
   if (searchContext) {
@@ -1045,6 +1136,9 @@ function buildPayload({ body, provider, model, searchContext, searchFailureConte
     finalMessages.splice(1, 0, { role: 'system', content: searchClarificationContext });
   } else if (noSearchContext) {
     finalMessages.splice(1, 0, { role: 'system', content: noSearchContext });
+  }
+  if (agentContext) {
+    finalMessages.splice(1, 0, { role: 'system', content: agentContext });
   }
 
   const payload = {
@@ -1093,6 +1187,10 @@ export async function proxyChatStream(req, res) {
     ensureSse();
     writeSseEvent(res, 'status', payload);
   };
+  const writeAgentEvent = (event, payload) => {
+    ensureSse();
+    writeSseEvent(res, event, payload);
+  };
   const writeStreamError = (status, message) => {
     if (!sseStarted) {
       sendSseError(res, status, message);
@@ -1125,25 +1223,33 @@ export async function proxyChatStream(req, res) {
   let externalSearchError = '';
   let searchClarificationContext = '';
   let didAttemptExternalSearch = false;
-  const searchPlan = !isCanvas && (searchMode === 'auto' || searchMode === 'external')
-    ? await planSearchWithLlm({ query, messages: body.messages, provider, endpoint, model, apiKey })
-    : buildFallbackSearchPlan(query, body.messages);
-  const searchQuery = searchMode === 'external'
-    ? (searchPlan.query || buildContextualSearchQuery(query, body.messages))
-    : searchPlan.query;
-  const effectiveSearchProvider = resolveSearchProvider(searchQuery, config);
-  const builtinSearch = !isCanvas && shouldUseBuiltinSearch(provider, searchMode, searchQuery, config);
-  const wantsAutoSearch = !isCanvas && searchMode === 'auto' && searchPlan.action === 'search' && searchQuery;
-  const disableVoiceBriefForDirectSearch = Boolean(!isCanvas && config.voiceOutputEnabled && wantsAutoSearch);
-  const needsSearchClarification = !isCanvas
-    && searchMode === 'auto'
-    && query
-    && searchPlan.action === 'clarify';
 
-  if (!isCanvas && searchMode === 'builtin' && !builtinSearch) {
+  if (!isCanvas && searchMode === 'builtin' && provider !== 'tongyi') {
     sendSseError(res, 400, 'LLM built-in search is currently supported only for Tongyi in this app. Use Auto or Independent Search for other providers.');
     return;
   }
+
+  const researchResult = await runResearchAgent({
+    query,
+    messages: body.messages,
+    searchMode,
+    isCanvas,
+    provider,
+    endpoint,
+    model,
+    apiKey,
+    config,
+    runExternalSearch: (searchQuery) => runExternalSearch(searchQuery, req, config),
+    hasExternalSearchKey,
+    resolveSearchProvider,
+  });
+  const searchQuery = researchResult.query || '';
+  const builtinSearch = Boolean(researchResult.builtinSearch);
+  const disableVoiceBriefForDirectSearch = Boolean(researchResult.disableVoiceBriefForDirectSearch);
+  searchContext = researchResult.searchContext || '';
+  externalSearchError = researchResult.externalSearchError || '';
+  searchClarificationContext = researchResult.searchClarificationContext || '';
+  didAttemptExternalSearch = Boolean(researchResult.didAttemptExternalSearch);
 
   if (disableVoiceBriefForDirectSearch) {
     writeStatus({
@@ -1153,80 +1259,65 @@ export async function proxyChatStream(req, res) {
     });
   }
 
-  if (!isCanvas && searchQuery && (searchMode === 'external' || (wantsAutoSearch && hasExternalSearchKey(config, searchQuery))) && !builtinSearch) {
+  for (const status of researchResult.statusEvents || []) {
+    writeStatus(status);
+  }
+  if (researchResult.results?.length) {
+    writeAgentEvent('search.results', {
+      query: searchQuery,
+      provider: researchResult.statusEvents?.find(status => status.phase === 'searched')?.provider || researchResult.effectiveSearchProvider,
+      results: researchResult.results,
+    });
+  }
+  if (researchResult.fatalError) {
+    writeStreamError(424, researchResult.fatalError);
+    return;
+  }
+
+  let agentContext = '';
+  let agentMode = 'fast';
+  const agentRuntimeAllowed = !usesServerKey || process.env.ENABLE_FREE_AGENT_RUNTIME === '1';
+  if (!isCanvas && isStreaming && agentRuntimeAllowed && body.agentRuntime !== false && body.canvas && typeof body.canvas === 'object') {
+    const abortController = new AbortController();
+    const abortAgent = () => abortController.abort();
+    req.once('aborted', abortAgent);
+    res.once('close', () => {
+      if (!res.writableEnded) abortAgent();
+    });
     try {
-      didAttemptExternalSearch = true;
-      writeStatus({
-        phase: 'searching',
-        label: 'Web Search',
-        provider: effectiveSearchProvider,
-        query: searchQuery,
-      });
-      const rawSearchResults = await runExternalSearch(searchQuery, req, config);
-      const llmSelectedResults = await selectSearchResultsWithLlm({
-        query: searchQuery,
-        results: rawSearchResults,
+      const agentResult = await runAgentRuntime({
+        query,
+        messages: body.messages,
+        canvas: body.canvas,
         endpoint,
-        model,
         apiKey,
+        model,
+        signal: abortController.signal,
+        emit: writeAgentEvent,
+        searchWeb: async (agentQuery, maxResults) => {
+          if (researchResult.results?.length && agentQuery.trim() === searchQuery.trim()) {
+            return { results: researchResult.results, provider: researchResult.effectiveSearchProvider, attempts: [] };
+          }
+          return runExternalSearch(agentQuery, req, config, maxResults);
+        },
       });
-      const searchResults = Array.isArray(llmSelectedResults)
-        ? llmSelectedResults
-        : filterSearchResults(rawSearchResults, searchQuery);
-      if (!searchResults.length) {
-        externalSearchError = `Search returned ${rawSearchResults.length} pages, but none matched the requested topic closely enough. Query: ${searchQuery}`;
-        writeStatus({
-          phase: 'search_no_relevant_results',
-          label: 'No relevant search results',
-          count: 0,
-          rawCount: rawSearchResults.length,
-          query: searchQuery,
-          provider: config.searchProvider || process.env.SEARCH_PROVIDER || 'tavily',
-          error: externalSearchError,
+      agentMode = agentResult.mode;
+      agentContext = agentResult.context || '';
+      if (agentResult.operations?.length) {
+        writeAgentEvent('canvas.operations', {
+          baseRevision: agentResult.baseRevision,
+          operations: agentResult.operations,
+          summary: `Agent prepared ${agentResult.operations.length} canvas operation(s).`,
         });
       }
-      searchContext = buildSearchContext(searchResults);
-      writeStatus({
-        phase: 'searched',
-        label: 'Search complete',
-        count: searchResults.length,
-        provider: effectiveSearchProvider,
-        query: searchQuery,
-        results: buildSearchStatusResults(searchResults),
-      });
-      if (searchResults.length) {
-        writeStatus({ phase: 'thinking', label: 'Reading results', count: searchResults.length });
-      }
     } catch (error) {
-      externalSearchError = error.message;
-      writeStatus({
-        phase: 'search_failed',
-        label: 'Search failed',
-        error: externalSearchError,
-        query: searchQuery,
-        provider: effectiveSearchProvider,
-      });
-      if (searchMode === 'external') {
-        writeStreamError(424, externalSearchError);
+      writeAgentEvent('agent.failed', { error: error.message });
+      if (abortController.signal.aborted) {
+        res.end();
         return;
       }
+      agentContext = `The preparatory agent failed: ${error.message}. Do not claim its work succeeded; answer using the available conversation and search context.`;
     }
-  } else if (wantsAutoSearch && !builtinSearch && !hasExternalSearchKey(config, searchQuery)) {
-    externalSearchError = 'Search is on, but no Search API Key is configured. Add a Tavily / Serper / Bing key in settings or configure SEARCH_API_KEY on the server.';
-    writeStatus({
-      phase: 'search_unavailable',
-      label: 'Search unavailable',
-      error: externalSearchError,
-    });
-  } else if (needsSearchClarification) {
-    searchClarificationContext = searchPlan.question
-      ? buildSearchClarificationContext(`${searchQuery}\nSuggested question: ${searchPlan.question}`)
-      : buildSearchClarificationContext(searchQuery);
-    writeStatus({
-      phase: 'search_needs_clarification',
-      label: 'Search needs clarification',
-      query: searchQuery,
-    });
   }
 
   const searchFailureContext = !searchContext && externalSearchError
@@ -1249,12 +1340,10 @@ export async function proxyChatStream(req, res) {
     searchFailureContext,
     searchClarificationContext,
     noSearchContext,
+    agentContext,
     builtinSearch,
     disableVoiceBrief: disableVoiceBriefForDirectSearch,
   });
-  if (builtinSearch) {
-    writeStatus({ phase: 'builtin_searching', label: 'Tongyi built-in search requested', provider: 'tongyi' });
-  }
   if (usesServerKey) {
     const maxTokens = Number(process.env.FREE_LLM_MAX_OUTPUT_TOKENS || 2000);
     if (Number.isFinite(maxTokens) && maxTokens > 0) {
@@ -1319,6 +1408,10 @@ export async function proxyChatStream(req, res) {
   } catch (error) {
     writeSseEvent(res, '', { error: error.message });
   } finally {
+    if (agentMode === 'team' && !res.writableEnded) {
+      writeSseEvent(res, 'team.agent.updated', { agentId: 'synthesizer', role: '综合输出', status: 'completed' });
+      writeSseEvent(res, 'team.completed', { status: 'completed' });
+    }
     res.end();
   }
 }
@@ -1388,10 +1481,13 @@ export {
   buildFallbackSearchPlan,
   buildSearchContext,
   filterSearchResults,
+  getSearchProviderOrder,
   isVagueFollowupSearch,
   normalizeSearchPlan,
   planSearchWithLlm,
   reconcileSearchPlan,
+  runResearchAgent,
+  runExternalSearch,
   selectSearchResultsWithLlm,
   shouldAutoSearch,
   shouldUseBuiltinSearch,

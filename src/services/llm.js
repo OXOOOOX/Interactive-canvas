@@ -183,7 +183,7 @@ const DEFAULT_LLM_MODELS = {
 };
 
 function getDefaultModel(config) {
-  return DEFAULT_LLM_MODELS[config.llmProvider] || 'qwen-max-latest';
+  return DEFAULT_LLM_MODELS[config.llmProvider] || DEFAULT_LLM_MODELS.deepseekV4Pro;
 }
 
 function shouldUseDirectBuiltinSearch(config = {}) {
@@ -222,6 +222,8 @@ function buildProxyBody(config, messages, isCanvas = false, stream = false) {
     temperature: isCanvas ? 0.2 : 0.7,
     searchMode: isCanvas ? 'off' : (config.searchMode || 'off'),
     searchQuery: lastUserMessage?.content || '',
+    agentRuntime: !isCanvas && config.agentRuntime !== false,
+    canvas: !isCanvas ? (config.canvasSnapshot || null) : null,
     config: {
       llmProvider: config.llmProvider,
       llmEndpoint: config.llmEndpoint,
@@ -311,6 +313,7 @@ async function sendRequest(config, messages, isCanvas = false) {
   if (shouldUseServerProxy(config)) {
     const res = await fetch(getServerProxyEndpoint(config), {
       method: 'POST',
+      signal: config.requestSignal,
       headers: buildHeaders({}),
       body: JSON.stringify(buildProxyBody(config, messages, isCanvas, false)),
     });
@@ -328,6 +331,7 @@ async function sendRequest(config, messages, isCanvas = false) {
 
   const res = await fetch(endpoint, {
     method: 'POST',
+    signal: config.requestSignal,
     headers: buildHeaders(config),
     body: JSON.stringify(payload),
   });
@@ -344,6 +348,7 @@ async function sendStreamingChatRequest(config, messages, handlers = {}) {
   if (shouldUseServerProxy(config)) {
     const res = await fetch(getServerProxyEndpoint(config), {
       method: 'POST',
+      signal: config.requestSignal,
       headers: buildHeaders({}),
       body: JSON.stringify(buildProxyBody(config, messages, false, true)),
     });
@@ -360,6 +365,7 @@ async function sendStreamingChatRequest(config, messages, handlers = {}) {
 
   const res = await fetch(endpoint, {
     method: 'POST',
+    signal: config.requestSignal,
     headers: buildHeaders(config),
     body: JSON.stringify(payload),
   });
@@ -396,6 +402,10 @@ async function consumeStreamingResponse(res, handlers = {}) {
       }
       if (eventName === 'warning') {
         handlers.onWarning?.(payload);
+        return;
+      }
+      if (eventName.includes('.') || eventName === 'canvas.operations') {
+        handlers.onAgentEvent?.(eventName, payload);
         return;
       }
       if (payload?.error) {
@@ -464,7 +474,7 @@ export async function callChatLlmStream(config, conversation, canvas, handlers =
     }] : []),
     ...conversation,
   ];
-  return await sendStreamingChatRequest(config, messages, handlers);
+  return await sendStreamingChatRequest({ ...config, canvasSnapshot: canvas }, messages, handlers);
 }
 
 export async function callDraftMemoryLlm(config, currentDraft, userText, assistantText, canvas) {

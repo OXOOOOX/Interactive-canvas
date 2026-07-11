@@ -1,12 +1,28 @@
 import { defineConfig } from 'vite'
 import http from 'node:http'
 import https from 'node:https'
+import fs from 'node:fs'
+import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { proxyChatStream } from './server/index.js'
 
 const port = Number(process.env.PORT || 8080)
 const host = '0.0.0.0'
+const vadAssetDir = path.resolve('node_modules/@ricky0123/vad-web/dist')
+const ortAssetDir = path.resolve('node_modules/onnxruntime-web/dist')
+const vadAssetNames = [
+  'vad.worklet.bundle.min.js',
+  'silero_vad_legacy.onnx',
+  'ort-wasm-simd-threaded.mjs',
+  'ort-wasm-simd-threaded.wasm',
+  'ort-wasm-simd-threaded.asyncify.mjs',
+  'ort-wasm-simd-threaded.asyncify.wasm',
+  'ort-wasm-simd-threaded.jsep.mjs',
+  'ort-wasm-simd-threaded.jsep.wasm',
+  'ort-wasm-simd-threaded.jspi.mjs',
+  'ort-wasm-simd-threaded.jspi.wasm',
+]
 
 function readJsonBody(req, maxBytes = 1_000_000) {
   return new Promise((resolve, reject) => {
@@ -238,10 +254,53 @@ function createChatStreamProxyPlugin() {
   }
 }
 
+function createVadAssetsPlugin() {
+  return {
+    name: 'local-vad-assets',
+    configureServer(server) {
+      server.middlewares.use('/vad/', (req, res, next) => {
+        const fileName = decodeURIComponent((req.url || '').replace(/^\//, '').split('?')[0])
+        if (!vadAssetNames.includes(fileName)) {
+          next()
+          return
+        }
+
+        const sourceDir = fileName.startsWith('ort-') ? ortAssetDir : vadAssetDir
+        const filePath = path.join(sourceDir, fileName)
+        if (!fs.existsSync(filePath)) {
+          next()
+          return
+        }
+
+        const ext = path.extname(fileName)
+        const contentType = ext === '.wasm'
+          ? 'application/wasm'
+          : ext === '.onnx'
+            ? 'application/octet-stream'
+            : 'text/javascript; charset=utf-8'
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        })
+        fs.createReadStream(filePath).pipe(res)
+      })
+    },
+    writeBundle(options) {
+      const outDir = options.dir || 'dist'
+      const targetDir = path.join(outDir, 'vad')
+      fs.mkdirSync(targetDir, { recursive: true })
+      for (const fileName of vadAssetNames) {
+        const sourceDir = fileName.startsWith('ort-') ? ortAssetDir : vadAssetDir
+        fs.copyFileSync(path.join(sourceDir, fileName), path.join(targetDir, fileName))
+      }
+    },
+  }
+}
+
 export default defineConfig({
   root: '.',
   publicDir: 'public',
-  plugins: [createDoubaoTtsProxyPlugin(), createDoubaoAsrProxyPlugin(), createChatStreamProxyPlugin()],
+  plugins: [createDoubaoTtsProxyPlugin(), createDoubaoAsrProxyPlugin(), createChatStreamProxyPlugin(), createVadAssetsPlugin()],
   build: {
     outDir: 'dist',
     sourcemap: true,

@@ -1608,6 +1608,30 @@ body.chat-resizing {
   transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
 .waveform-bar.active { display: flex; }
+.waveform-bar.is-vad-standby {
+  background: rgba(20,184,166,0.11);
+  border-color: rgba(13,148,136,0.28);
+}
+.waveform-bar.is-vad-checking {
+  background: rgba(245,158,11,0.12);
+  border-color: rgba(217,119,6,0.32);
+}
+.waveform-bar.is-vad-paused {
+  background: rgba(148,163,184,0.14);
+  border-color: rgba(100,116,139,0.28);
+}
+.waveform-bar.is-vad-error {
+  background: rgba(239,68,68,0.12);
+  border-color: rgba(220,38,38,0.38);
+}
+.waveform-bar.is-manual-edit {
+  background: rgba(148,163,184,0.14);
+  border-color: rgba(100,116,139,0.28);
+}
+.waveform-bar.is-doubao-streaming {
+  background: rgba(239,68,68,0.1);
+  border-color: rgba(220,38,38,0.28);
+}
 .waveform-bar.is-paused {
   background: rgba(148,163,184,0.14);
   border-color: rgba(100,116,139,0.22);
@@ -1621,16 +1645,40 @@ body.chat-resizing {
   border-radius: 4px;
 }
 .wave-status {
-  flex: 0 0 auto;
-  max-width: 72px;
+  flex: 0 0 58px;
+  width: 58px;
   overflow: hidden;
-  text-overflow: clip;
+  text-overflow: ellipsis;
   font-size: 11px !important;
   line-height: 1.2;
   font-weight: 700;
   color: var(--accent-red);
   text-align: right;
   white-space: nowrap;
+}
+.waveform-bar.is-vad-standby .wave-status,
+.waveform-bar.is-vad-standby .wave-time {
+  color: #0f766e;
+}
+.waveform-bar.is-vad-checking .wave-status,
+.waveform-bar.is-vad-checking .wave-time {
+  color: #b45309;
+}
+.waveform-bar.is-vad-paused .wave-status,
+.waveform-bar.is-vad-paused .wave-time {
+  color: var(--text-muted);
+}
+.waveform-bar.is-vad-error .wave-status,
+.waveform-bar.is-vad-error .wave-time {
+  color: #b91c1c;
+}
+.waveform-bar.is-manual-edit .wave-status,
+.waveform-bar.is-manual-edit .wave-time {
+  color: var(--text-muted);
+}
+.waveform-bar.is-doubao-streaming .wave-status,
+.waveform-bar.is-doubao-streaming .wave-time {
+  color: var(--accent-red);
 }
 .wave-submit-btn {
   flex: 0 0 auto;
@@ -1674,7 +1722,8 @@ body.chat-resizing {
     padding-inline: 8px;
   }
   .wave-status {
-    max-width: 58px;
+    flex-basis: 58px;
+    width: 58px;
     font-size: 10px !important;
   }
   .wave-submit-btn {
@@ -2092,6 +2141,105 @@ select.cfg-input {
 .search-status-msg {
   align-self: stretch;
 }
+
+.agent-timeline-msg,
+.team-status-msg {
+  align-self: stretch;
+}
+
+.agent-timeline-card,
+.team-status-card {
+  width: min(100%, 620px);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: var(--radius-md);
+  background: rgba(99, 102, 241, 0.045);
+  overflow: hidden;
+}
+
+.agent-timeline-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-timeline-chevron { color: var(--text-secondary); }
+.agent-timeline-summary { margin-left: auto; color: var(--text-secondary); font-size: 11px; }
+
+.agent-timeline-steps,
+.team-agent-list {
+  border-top: 1px solid rgba(99, 102, 241, 0.12);
+  padding: 6px 12px 10px;
+}
+
+.agent-timeline-step {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 11px;
+}
+
+.agent-step-dot { width: 7px; height: 7px; border-radius: 50%; background: #6366f1; }
+.agent-timeline-step[data-status="completed"] .agent-step-dot { background: #10b981; }
+.agent-timeline-step[data-status="failed"] .agent-step-dot { background: #ef4444; }
+
+.agent-step-name,
+.team-agent-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.agent-step-time,
+.agent-step-status,
+.team-agent-iterations { color: var(--text-secondary); font-size: 10px; }
+
+.agent-timeline-empty { padding: 6px 0; color: var(--text-secondary); font-size: 11px; }
+
+.team-status-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.team-status-head span { color: var(--text-secondary); font-size: 10px; }
+
+.team-agent-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 46px 72px;
+  gap: 8px;
+  align-items: center;
+  min-height: 31px;
+  border-bottom: 1px solid rgba(99, 102, 241, 0.08);
+  font-size: 11px;
+}
+
+.team-agent-row:last-child { border-bottom: 0; }
+.team-agent-role { font-weight: 700; }
+
+.team-agent-status {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-align: center;
+}
+
+.team-agent-row[data-status="completed"] .team-agent-status { background: rgba(16, 185, 129, 0.14); color: #059669; }
+.team-agent-row[data-status="failed"] .team-agent-status,
+.team-agent-row[data-status="cancelled"] .team-agent-status { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+
+.search-result-source { color: var(--accent-blue); font-size: 10px; font-weight: 700; }
+
+.send-btn.is-cancelling { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+.send-stop-icon { width: 9px; height: 9px; border-radius: 2px; background: currentColor; }
 .search-status-card {
   width: min(100%, 520px);
   padding: 10px 12px;
@@ -2683,6 +2831,17 @@ select.cfg-input {
   text-align: center;
   opacity: 0.7;
 }
+
+.demo-menu { min-width: 292px; }
+.demo-item { align-items: flex-start; padding: 10px; }
+.demo-item > span:last-child { display: grid; gap: 2px; text-align: left; }
+.demo-item strong { font-size: 13px; color: var(--text-primary); }
+.demo-item small { color: var(--text-secondary); font-size: 10px; line-height: 1.35; }
+.demo-menu-note { margin: 4px 6px 2px; padding-top: 7px; border-top: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 10px; }
+.demo-ready-msg { align-self: stretch; }
+.demo-ready-card { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid rgba(99, 102, 241, 0.2); border-radius: var(--radius-md); background: rgba(99, 102, 241, 0.06); }
+.demo-ready-card strong { color: var(--text-primary); font-size: 12px; }
+.demo-ready-card span { color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
 
 .import-text {
   min-width: 0;

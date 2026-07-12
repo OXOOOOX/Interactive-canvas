@@ -11,6 +11,5 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY server ./server
-COPY --from=builder /app/src/utils/canvas-revision.js ./src/utils/canvas-revision.js
 EXPOSE 8080
 CMD ["node", "server/index.js"]

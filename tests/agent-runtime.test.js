@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { fallbackAgentPlan, runAgentRuntime, runWorker } from '../server/agent-runtime.js';
+import { computeCanvasRevision as computeServerCanvasRevision } from '../server/canvas-revision.js';
 import { getSearchProviderOrder, runExternalSearch } from '../server/index.js';
-import { computeCanvasRevision } from '../src/utils/canvas-revision.js';
+import { computeCanvasRevision as computeClientCanvasRevision } from '../src/utils/canvas-revision.js';
 
 const canvas = {
   id: 'canvas-1',
@@ -30,12 +31,14 @@ test('agent routing preserves the fast path and selects team only for complex wo
 });
 
 test('canvas revision changes after text edits and is stable across array order', () => {
-  const original = computeCanvasRevision(canvas);
+  const original = computeServerCanvasRevision(canvas);
   const reordered = { ...canvas, blocks: [...canvas.blocks].reverse() };
-  assert.equal(computeCanvasRevision(reordered), original);
+  assert.equal(computeServerCanvasRevision(reordered), original);
   const edited = structuredClone(canvas);
   edited.blocks[0].content = 'new';
-  assert.notEqual(computeCanvasRevision(edited), original);
+  assert.notEqual(computeServerCanvasRevision(edited), original);
+  assert.equal(computeClientCanvasRevision(canvas), original);
+  assert.equal(computeClientCanvasRevision(edited), computeServerCanvasRevision(edited));
 });
 
 test('bounded worker executes multiple tools and rejects locked block edits', async () => {

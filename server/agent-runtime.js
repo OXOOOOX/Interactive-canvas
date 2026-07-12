@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { computeCanvasRevision } from '../src/utils/canvas-revision.js';
+import { computeCanvasRevision } from './canvas-revision.js';
 
 const TEAM_PATTERN = /多智能体|多代理|多个智能体|组队|团队分析|研究团队|交叉验证|正反分析|分别研究|multi[- ]?agent|swarm|research team/i;
 const COMPLEX_RESEARCH_PATTERN = /深度研究|综合研究|全面调研|多个来源|多方来源|来源核验|方案对比|竞品分析|风险审查|批判性分析|research|compare|verify sources/i;

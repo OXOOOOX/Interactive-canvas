@@ -17,6 +17,10 @@
 
 ## 快速开始 / Quick Start
 
+生产环境已采用 GitHub 自动更新、腾讯云服务器打包部署。推送到 `main` 后，
+可在仓库 Actions 中查看源码同步、测试、构建和上线结果；配置与回退步骤见
+[服务器部署说明](deploy/README.md)。
+
 当前项目基于 Vite 开发与构建。  
 This project uses Vite for development and build.
 

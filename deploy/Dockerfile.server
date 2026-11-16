@@ -1,0 +1,25 @@
+ARG CANVAS_RUNTIME_IMAGE
+FROM ${CANVAS_RUNTIME_IMAGE} AS dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund
+
+FROM dependencies AS builder
+COPY . .
+ENV NODE_OPTIONS=--max-old-space-size=768
+# The configuration generator mutates this disposable build copy only.
+# Production credentials and browser data are never included in the build.
+RUN --network=none npm test && npm run build
+
+FROM ${CANVAS_RUNTIME_IMAGE} AS runner
+WORKDIR /app
+ENV NODE_ENV=production PORT=8080 HOST=0.0.0.0
+COPY --from=dependencies /app/package.json /app/package-lock.json ./
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/server ./server
+COPY deploy/verify-service.mjs /app/verify-service.mjs
+EXPOSE 8080
+CMD ["node", "server/index.js"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=6 \
+ CMD node -e "fetch('http://127.0.0.1:8080/api/health').then(async r=>{if(!r.ok||!(r.headers.get('content-type')||'').includes('application/json')||(await r.json()).ok!==true)process.exit(1)}).catch(()=>process.exit(1))"

@@ -1,0 +1,70 @@
+name: Interactive-canvas deployment checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      activate:
+        description: Activate the tested release on the existing server
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canvas-deploy
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check deployment scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile deploy/source-snapshot.py deploy/release.py
+          bash -n deploy/upload-source.sh deploy/build-on-server.sh deploy/deploy.sh
+          python3 -B deploy/test-release.py
+      - name: Create and verify the exact source snapshot
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          temporary=$(mktemp -d)
+          cleanup() { rm -rf -- "$temporary"; }
+          trap cleanup EXIT
+          python3 deploy/source-snapshot.py create "$commit" "$temporary/snapshot"
+          python3 deploy/source-snapshot.py verify \
+            "$commit" "$temporary/snapshot/source" \
+            "$temporary/snapshot/source-manifest.json"
+
+  deploy:
+    needs: checks
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.CANVAS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANVAS_DEPLOY_HOST: ${{ vars.CANVAS_DEPLOY_HOST }}
+      CANVAS_DEPLOY_PORT: ${{ vars.CANVAS_DEPLOY_PORT }}
+      CANVAS_DEPLOY_USER: ${{ vars.CANVAS_DEPLOY_USER }}
+      CANVAS_SSH_PRIVATE_KEY: ${{ secrets.CANVAS_SSH_PRIVATE_KEY }}
+      CANVAS_SSH_KNOWN_HOSTS: ${{ secrets.CANVAS_SSH_KNOWN_HOSTS }}
+      CANVAS_ACTIVATE_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.activate == true) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Transfer, build and optionally activate the tested release
+        run: bash deploy/upload-source.sh

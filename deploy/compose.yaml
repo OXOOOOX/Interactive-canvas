@@ -1,0 +1,21 @@
+name: canvas
+services:
+  app:
+    image: ${CANVAS_IMAGE:?Verified image required}
+    pull_policy: never
+    restart: unless-stopped
+    env_file:
+      - path: /opt/canvas/shared/runtime.env
+        format: raw
+    environment:
+      PORT: "8080"
+      HOST: 0.0.0.0
+      NODE_ENV: production
+    ports: ["127.0.0.1:4190:8080"]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 256
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
